@@ -8,7 +8,7 @@ import sys
 def run_optimizer_command(args):
     """Dispatch optimizer subcommands."""
     if args.command in ("benchmark", "compare", "load-benchmark", "load-compare",
-                        "score", "trends", "history"):
+                        "score", "trends", "history", "wifi"):
         if args.command == "benchmark":
             _cmd_benchmark(label=args.label, ping_count=args.pings)
         elif args.command == "compare":
@@ -23,6 +23,8 @@ def run_optimizer_command(args):
             _cmd_trends(hours=args.hours)
         elif args.command == "history":
             _cmd_history(count=args.count)
+        elif args.command == "wifi":
+            _cmd_wifi()
         return
 
     from losshound.core.optimizer import NetworkOptimizer
@@ -353,3 +355,15 @@ def _cmd_history(count: int):
         print(f"  {ts:<22} {label:<10} {score:<8} {grade:<6} {lat:<10} {jit:<10} {loss:<8}")
 
     print(f"\n  Showing {len(entries)}/{len(benchmarks)} entries.")
+
+
+def _cmd_wifi():
+    """Run WiFi diagnostics and display results."""
+    from losshound.core.wifi_diag import run_wifi_diagnostics, format_wifi_report
+
+    print("Losshound WiFi Diagnostics")
+    print("=" * 65)
+    print("Scanning...\n")
+
+    report = run_wifi_diagnostics()
+    print(format_wifi_report(report))

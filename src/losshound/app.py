@@ -78,6 +78,8 @@ def main():
         help="Number of entries to show (default: 20)",
     )
 
+    sub.add_parser("wifi", help="Run WiFi diagnostics (channel scan, signal, interference)")
+
     args = parser.parse_args()
 
     from losshound.core.config import load_config
