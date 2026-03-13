@@ -1,0 +1,312 @@
+
+Task is to design and implement an open-source Windows tool called **Losshound** from scratch, end to end.
+
+# Product goal
+
+Build a lightweight Windows network diagnosis tool that continuously monitors connectivity and determines whether current failures are most likely caused by:
+
+1. LAN / local network
+2. Router / gateway path
+3. ISP / WAN connection
+4. DNS failure
+5. Upstream / internet routing issue
+6. Route instability / path changes
+
+The tool must be useful for normal users but technically credible for power users.
+
+# Core concept
+
+Losshound should continuously compare:
+
+- Router/default gateway ping
+- Public IP ping
+- DNS resolution health
+- Route/traceroute changes over time
+
+Then it should infer the most likely fault domain and present a clear status like:
+
+- "LAN issue likely"
+- "ISP / WAN instability likely"
+- "DNS issue likely"
+- "Upstream route issue likely"
+- "Connection healthy"
+- "Intermittent packet loss detected"
+
+# Platform
+
+- Primary target: Windows 10/11
+- Language: Python 3.11+
+- GUI: PySide6 preferred
+- Packaging: PyInstaller
+- License: MIT
+- Repo structure should be clean and production-ready
+- Avoid unnecessary dependencies
+- Do not build anything offensive or invasive
+- No driver/kernel code
+- No privileged or stealthy behavior
+- No packet interception or malware-like functionality
+
+# Deliverables
+
+Produce the following:
+
+1. Full project structure
+2. Working implementation
+3. Clear README.md
+4. requirements.txt or pyproject.toml
+5. Sample config file
+6. Logging support
+7. Basic test coverage for core logic
+8. Build instructions for Windows
+9. Simple release-ready packaging instructions
+10. A polished but minimal GUI
+11. Optional CLI mode if feasible
+
+# Product requirements
+
+## Functional requirements
+
+Losshound must:
+
+- Detect the default gateway automatically
+- Ping the default gateway on a schedule
+- Ping at least one public IP on a schedule, ideally configurable defaults such as:
+  - 1.1.1.1
+  - 8.8.8.8
+- Perform DNS resolution tests on a schedule, for example:
+  - resolve google.com
+  - resolve chatgpt.com
+- Periodically run route checks and detect route changes
+- Track:
+  - packet loss
+  - average latency
+  - jitter estimate
+  - timeout bursts
+  - route differences over time
+- Keep a rolling time window of recent observations
+- Infer likely cause of failure using explicit decision logic
+- Show current status and recent history
+- Export logs or a diagnostic report
+
+## Inference logic requirements
+
+Implement a transparent rule-based diagnosis engine. Do not use ML for the core diagnosis.
+
+The logic should distinguish cases like:
+
+### LAN issue likely
+Examples:
+- gateway ping failing or high loss
+- public IP ping failing too
+- DNS failing too
+
+### ISP / WAN issue likely
+Examples:
+- gateway stable
+- public IP ping failing or showing high loss
+- DNS also failing because internet path is broken
+
+### DNS issue likely
+Examples:
+- gateway stable
+- public IP ping stable
+- DNS resolution failing
+
+### Upstream route issue likely
+Examples:
+- gateway stable
+- public IP reachable intermittently
+- route path changing often
+- route destination reachable but with instability outside local network
+
+### Healthy
+Examples:
+- low latency
+- near-zero packet loss
+- stable DNS
+- no suspicious route changes
+
+### Intermittent instability
+Examples:
+- short bursts of loss or timeouts
+- route remains reachable
+- destination loss appears only periodically
+
+The diagnosis engine must be clearly implemented in a dedicated module with readable comments and easily adjustable thresholds.
+
+# UI requirements
+
+Create a compact Windows desktop UI with a clean dark theme.
+
+The UI should show:
+
+- Current overall status
+- Gateway IP
+- Current local status
+- Public IP reachability
+- DNS status
+- Route status
+- Packet loss %
+- Latency and jitter
+- Recent event timeline
+- Last route change time
+- Current diagnosis summary
+
+Tabs or sections:
+1. Dashboard
+2. History / Events
+3. Route details
+4. Settings
+5. Export / Report
+
+The interface should feel useful and modern, but not over-designed.
+
+# Suggested architecture
+
+Use a modular architecture.
+
+Suggested modules:
+
+- `app.py` or entrypoint
+- `gui/`
+- `core/network_tests.py`
+- `core/gateway.py`
+- `core/dns_checks.py`
+- `core/route_monitor.py`
+- `core/diagnosis.py`
+- `core/models.py`
+- `core/config.py`
+- `core/logger.py`
+- `storage/history.py`
+- `utils/`
+- `tests/`
+
+Use dataclasses or typed models for observations.
+
+# Technical implementation notes
+
+## Gateway detection
+- Detect default gateway on Windows using reliable Python or subprocess methods
+
+## Ping implementation
+- Prefer reliable subprocess-based ping parsing for Windows compatibility
+- Handle timeouts, packet loss, average RTT, min/max RTT
+- Avoid requiring raw sockets or admin privileges
+
+## DNS checks
+- Use Python socket or dnspython if needed
+- Measure success/failure and resolution time
+- Make resolver targets configurable if practical
+
+## Route monitoring
+- Use `tracert` on Windows
+- Parse output into hop lists
+- Compare route snapshots over time
+- Detect meaningful route changes, not just cosmetic noise
+- Gracefully handle hops that do not respond
+
+## Scheduling
+- Background worker or timer-based approach
+- Do not block the GUI
+- Ensure the app remains responsive
+
+## Persistence
+- Store recent history locally in JSON or SQLite
+- Save enough information for useful troubleshooting
+- Rotate or cap logs/history to avoid bloat
+
+## Reporting
+The app should be able to export a plain-language report such as:
+- timestamp
+- gateway status
+- public IP status
+- DNS status
+- route snapshot
+- inferred diagnosis
+- short explanation
+
+# Decision engine detail
+
+Implement explicit thresholds in configuration. For example:
+
+- gateway_loss_threshold
+- public_loss_threshold
+- dns_failure_threshold
+- latency_warning_ms
+- jitter_warning_ms
+- route_change_sensitivity
+- timeout_burst_threshold
+
+Then build human-readable explanations, for example:
+- "Gateway is stable, but public IP tests are failing. This suggests WAN/ISP instability."
+- "Public IP remains reachable while DNS resolution repeatedly fails. DNS issue likely."
+- "Route path changed 3 times in the last 10 minutes while gateway remained stable. Upstream route instability likely."
+
+# User experience requirements
+
+- App should start gracefully even if some tests fail
+- Show useful status, not scary red nonsense everywhere
+- Use plain language for diagnosis
+- Include a small technical details area for advanced users
+- Avoid false certainty, use terms like:
+  - likely
+  - probable
+  - possible
+- Show confidence or evidence summary if feasible
+
+# OSS expectations
+
+Treat this as a real open-source project.
+
+Include:
+- README with screenshots placeholder notes
+- installation instructions
+- development instructions
+- packaging instructions
+- architecture overview
+- roadmap section
+- known limitations
+- contribution guide stub
+- sensible `.gitignore`
+
+# Nice-to-have features if time permits
+
+- system tray support
+- start minimized
+- CSV/JSON export
+- alert when diagnosis changes
+- route diff viewer
+- configurable check intervals
+- multiple public IP targets
+- optional CLI mode
+- optional dark/light theme toggle
+
+# Constraints
+
+- Do not invent fake results
+- Do not hardcode bogus network assumptions
+- Do not use web APIs unless absolutely necessary
+- Prefer local OS tools and direct diagnostics
+- Keep the tool lightweight and auditable
+- Do not add telemetry
+- Do not collect sensitive personal data
+- Do not require admin rights unless clearly justified
+
+# Development process
+
+Work in this order:
+
+1. Define architecture
+2. Create project structure
+3. Implement core data models
+4. Implement gateway detection
+5. Implement ping tests
+6. Implement DNS checks
+7. Implement route monitoring
+8. Implement diagnosis engine
+9. Implement persistence/logging
+10. Build GUI
+11. Add export/reporting
+12. Add tests
+13. Write README and packaging instructions
+14. Review for polish and correctness
