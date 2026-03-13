@@ -22,6 +22,44 @@ def main():
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging level",
     )
+
+    # Optimizer subcommands
+    sub = parser.add_subparsers(dest="command")
+
+    opt_parser = sub.add_parser("optimize", help="Optimize network performance")
+    opt_parser.add_argument(
+        "--skip-dns", action="store_true",
+        help="Skip DNS benchmark and optimization",
+    )
+    opt_parser.add_argument(
+        "--skip-mtu", action="store_true",
+        help="Skip MTU discovery and optimization",
+    )
+
+    sub.add_parser("dns-benchmark", help="Benchmark DNS servers")
+    sub.add_parser("net-status", help="Show current network optimization status")
+    sub.add_parser("restore", help="Restore network settings from backup")
+
+    bench_parser = sub.add_parser("benchmark", help="Run network performance benchmark")
+    bench_parser.add_argument(
+        "--label", type=str, default="snapshot",
+        help="Label for this benchmark (e.g. 'before' or 'after')",
+    )
+    bench_parser.add_argument(
+        "--pings", type=int, default=20,
+        help="Number of pings per target (default: 20)",
+    )
+    sub.add_parser("compare", help="Compare last 'before' vs 'after' benchmarks")
+
+    load_bench_parser = sub.add_parser(
+        "load-benchmark", help="Benchmark under network load (bufferbloat, throughput)",
+    )
+    load_bench_parser.add_argument(
+        "--label", type=str, default="snapshot",
+        help="Label for this benchmark (e.g. 'before' or 'after')",
+    )
+    sub.add_parser("load-compare", help="Compare before vs after load benchmarks")
+
     args = parser.parse_args()
 
     from losshound.core.config import load_config
@@ -33,7 +71,10 @@ def main():
     from losshound.core.logger import setup_logging
     setup_logging(config.log_level)
 
-    if args.cli:
+    if args.command:
+        from losshound.cli.optimizer_cli import run_optimizer_command
+        run_optimizer_command(args)
+    elif args.cli:
         from losshound.cli.runner import run_cli
         run_cli(config)
     else:

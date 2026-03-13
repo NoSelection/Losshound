@@ -13,6 +13,7 @@ from losshound.core.scheduler import MonitorThread
 from losshound.gui.dashboard import DashboardTab
 from losshound.gui.export_tab import ExportTab
 from losshound.gui.history_tab import HistoryTab
+from losshound.gui.optimizer_tab import OptimizerTab
 from losshound.gui.route_tab import RouteTab
 from losshound.gui.settings_tab import SettingsTab
 from losshound.gui.theme import get_dark_stylesheet
@@ -47,10 +48,12 @@ class MainWindow(QMainWindow):
         self._route_tab = RouteTab(self._history)
         self._settings_tab = SettingsTab(config)
         self._export_tab = ExportTab(self._history)
+        self._optimizer_tab = OptimizerTab()
 
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._history_tab, "History")
         self._tabs.addTab(self._route_tab, "Routes")
+        self._tabs.addTab(self._optimizer_tab, "Optimizer")
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._export_tab, "Export")
 

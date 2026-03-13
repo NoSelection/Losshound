@@ -22,6 +22,14 @@ env/
 # Application data
 *.db
 *.log
+config.json
+optimizer_backup.json
+benchmark_history.json
+load_benchmark_history.json
+
+# Environment
+.env
+.env.*
 
 # OS
 Thumbs.db

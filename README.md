@@ -1,11 +1,12 @@
 # Losshound
 
-Lightweight Windows network diagnosis tool that continuously monitors connectivity and determines the most likely cause of network issues.
+Lightweight Windows network diagnosis and optimization tool that continuously monitors connectivity, determines the most likely cause of network issues, and can automatically tune your network stack for better performance.
 
 Losshound identifies whether failures originate from your **LAN**, **router/gateway**, **ISP/WAN**, **DNS**, or **upstream routing** — and tells you in plain language.
 
 ## Features
 
+### Network Diagnosis
 - **Automatic gateway detection** — finds your default gateway automatically
 - **Continuous monitoring** — ping, DNS, and route checks on configurable intervals
 - **Rule-based diagnosis** — transparent fault-domain inference with adjustable thresholds
@@ -14,8 +15,23 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 - **CLI mode** — run from the terminal with `--cli` flag
 - **Export reports** — save diagnostic reports as TXT or JSON
 - **Local storage** — SQLite-based history with automatic pruning
-- **No admin required** — uses standard OS tools (ping, tracert, ipconfig)
 - **No telemetry** — fully offline, no data collection
+
+### Network Optimizer
+- **One-click optimization** — automatically tune your Windows network stack
+- **DNS benchmark** — test 14 public DNS servers, auto-switch to the fastest
+- **TCP/IP stack tuning** — auto-tuning level, CTCP congestion provider, ECN, RSS, timestamps
+- **Nagle's algorithm** — disable for lower latency in games and real-time apps
+- **Network throttling** — disable Windows multimedia network throttling
+- **MTU optimization** — binary search for optimal MTU without fragmentation
+- **Adapter tuning** — disable power management and interrupt moderation
+- **Backup & restore** — full settings snapshot before changes, one-click revert
+
+### Performance Benchmarking
+- **Idle benchmark** — ping latency, jitter, packet loss, DNS resolution, TCP connect times
+- **Load benchmark** — latency under load, bufferbloat grade (A-F), throughput, small packet responsiveness
+- **Before/after comparison** — see the real impact of optimizations with detailed metrics
+- **Persistent history** — benchmarks saved to disk for later comparison
 
 ## Screenshots
 
@@ -43,7 +59,7 @@ python -m losshound
 
 ### Requirements
 
-- Python 3.11+
+- Python 3.10+
 - Windows 10/11
 - PySide6
 
@@ -61,6 +77,38 @@ python -m losshound
 python -m losshound --cli
 ```
 
+### Optimizer commands
+
+```bash
+# Check current network settings
+losshound net-status
+
+# Benchmark DNS servers
+losshound dns-benchmark
+
+# Optimize everything (run as Administrator for full optimization)
+losshound optimize
+
+# Revert all changes
+losshound restore
+```
+
+### Benchmark commands
+
+```bash
+# Basic benchmark (idle network tests)
+losshound benchmark --label before
+losshound optimize
+losshound benchmark --label after
+losshound compare
+
+# Load benchmark (latency under load, bufferbloat, throughput)
+losshound load-benchmark --label before
+losshound optimize
+losshound load-benchmark --label after
+losshound load-compare
+```
+
 ### Options
 
 ```
@@ -68,6 +116,37 @@ python -m losshound --cli
 --config PATH      Path to configuration file
 --log-level LEVEL  Logging level (DEBUG, INFO, WARNING, ERROR)
 ```
+
+### Subcommands
+
+| Command | Description |
+|---------|-------------|
+| `optimize` | Optimize network performance (best with Administrator) |
+| `restore` | Revert all optimizations from backup |
+| `net-status` | Show current network optimization status |
+| `dns-benchmark` | Benchmark 14 public DNS servers |
+| `benchmark` | Run idle network performance benchmark |
+| `compare` | Compare before vs after idle benchmarks |
+| `load-benchmark` | Run network load benchmark (bufferbloat, throughput) |
+| `load-compare` | Compare before vs after load benchmarks |
+
+## What the Optimizer Does
+
+| Optimization | What it changes | Why |
+|---|---|---|
+| DNS servers | Switches to fastest tested DNS | Faster domain resolution |
+| TCP auto-tuning | Sets to `normal` | Ensures receive window scales properly |
+| Congestion provider | Sets to `ctcp` (Compound TCP) | Better throughput under packet loss |
+| ECN capability | Enables | Routers signal congestion instead of dropping |
+| RSS | Enables | Distributes network processing across CPU cores |
+| TCP timestamps | Enables | Better RTT estimation and PAWS protection |
+| Nagle's algorithm | Disables | Sends small packets immediately (lower game latency) |
+| Network throttling | Disables | Removes Windows multimedia network throttle |
+| MTU | Optimizes via binary search | Eliminates packet fragmentation |
+| Adapter power mgmt | Disables | Prevents adapter sleep causing latency spikes |
+| Interrupt moderation | Disables | Lower latency at cost of slightly more CPU |
+
+All changes are backed up before applying. Run `losshound restore` to undo everything.
 
 ## Configuration
 
@@ -101,32 +180,38 @@ You can also edit settings through the GUI's Settings tab.
 
 ```
 src/losshound/
-├── app.py              # Application entry point
+├── app.py                 # Application entry point
 ├── core/
-│   ├── config.py       # Configuration management
-│   ├── diagnosis.py    # Rule-based diagnosis engine
-│   ├── dns_checks.py   # DNS resolution testing
-│   ├── gateway.py      # Default gateway detection
-│   ├── logger.py       # Logging setup
-│   ├── models.py       # Data models (dataclasses)
-│   ├── ping.py         # Subprocess ping wrapper
-│   ├── route_monitor.py # Tracert wrapper and route diffing
-│   └── scheduler.py    # Background test scheduler (QThread)
+│   ├── config.py          # Configuration management
+│   ├── diagnosis.py       # Rule-based diagnosis engine
+│   ├── dns_checks.py      # DNS resolution testing
+│   ├── dns_bench.py       # Raw UDP DNS server benchmarking
+│   ├── gateway.py         # Default gateway detection
+│   ├── logger.py          # Logging setup
+│   ├── models.py          # Data models (dataclasses)
+│   ├── optimizer.py       # Network performance optimizer
+│   ├── benchmark.py       # Idle network benchmarking
+│   ├── load_benchmark.py  # Load benchmarking (bufferbloat, throughput)
+│   ├── ping.py            # Subprocess ping wrapper
+│   ├── route_monitor.py   # Tracert wrapper and route diffing
+│   └── scheduler.py       # Background test scheduler (QThread)
 ├── storage/
-│   └── history.py      # SQLite persistence
+│   └── history.py         # SQLite persistence
 ├── gui/
-│   ├── main_window.py  # Main window with tabs
-│   ├── dashboard.py    # Dashboard tab
-│   ├── history_tab.py  # History/events tab
-│   ├── route_tab.py    # Route details tab
-│   ├── settings_tab.py # Settings tab
-│   ├── export_tab.py   # Export/report tab
-│   ├── theme.py        # Dark theme stylesheet
-│   └── widgets.py      # Reusable widgets
+│   ├── main_window.py     # Main window with tabs
+│   ├── dashboard.py       # Dashboard tab
+│   ├── history_tab.py     # History/events tab
+│   ├── route_tab.py       # Route details tab
+│   ├── optimizer_tab.py   # Network optimizer tab
+│   ├── settings_tab.py    # Settings tab
+│   ├── export_tab.py      # Export/report tab
+│   ├── theme.py           # Dark theme stylesheet (Catppuccin)
+│   └── widgets.py         # Reusable widgets
 ├── cli/
-│   └── runner.py       # CLI mode runner
+│   ├── runner.py          # CLI mode runner
+│   └── optimizer_cli.py   # Optimizer/benchmark CLI commands
 └── utils/
-    └── formatting.py   # Display helpers
+    └── formatting.py      # Display helpers
 ```
 
 ### Data flow
@@ -167,26 +252,35 @@ The built application will be in `dist/Losshound/`.
 
 ## Data storage
 
+All data is stored locally:
+
 - **History database**: `%LOCALAPPDATA%\Losshound\history.db`
 - **Configuration**: `%LOCALAPPDATA%\Losshound\config.json`
 - **Logs**: `%LOCALAPPDATA%\Losshound\losshound.log`
+- **Optimizer backup**: `%LOCALAPPDATA%\Losshound\optimizer_backup.json`
+- **Benchmark history**: `%LOCALAPPDATA%\Losshound\benchmark_history.json`
 
 ## Roadmap
 
+- [x] Network performance optimizer
+- [x] DNS benchmarking
+- [x] Before/after performance benchmarking
+- [x] Load benchmarking (bufferbloat, throughput)
 - [ ] System tray support with minimize-to-tray
 - [ ] Alerts when diagnosis status changes
 - [ ] Dark/light theme toggle
 - [ ] CSV export
 - [ ] Route diff viewer (side-by-side comparison)
-- [ ] Configurable alert sounds
 - [ ] Multi-language ping output parsing
 
 ## Known limitations
 
+- Windows only (uses Windows-specific tools: ping, tracert, ipconfig, netsh)
 - Ping and tracert output parsing assumes English locale (forces codepage 437)
 - Tracert checks are slow (30-90 seconds) and run on a longer interval
 - VPN connections may confuse gateway detection
 - No IPv6 support currently
+- Some optimizer features require Administrator privileges
 
 ## Contributing
 
