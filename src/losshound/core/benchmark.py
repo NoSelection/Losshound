@@ -345,8 +345,11 @@ def compare_snapshots(
 # ---------------------------------------------------------------------------
 
 def save_snapshot(snapshot: BenchmarkSnapshot) -> None:
-    """Append a snapshot to the benchmark history file."""
+    """Append a snapshot to the benchmark history file and SQLite store."""
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    snap_dict = asdict(snapshot)
+
+    # JSON file (legacy, capped at 20)
     history: list[dict] = []
     if _BENCH_FILE.is_file():
         try:
@@ -355,12 +358,23 @@ def save_snapshot(snapshot: BenchmarkSnapshot) -> None:
         except Exception:
             history = []
 
-    history.append(asdict(snapshot))
-    # Keep last 20 snapshots
+    history.append(snap_dict)
     history = history[-20:]
 
     with open(_BENCH_FILE, "w", encoding="utf-8") as fh:
         json.dump(history, fh, indent=2)
+
+    # SQLite store (primary, unlimited history)
+    try:
+        from losshound.core.scoring import score_snapshot
+        from losshound.storage.history import HistoryStore
+
+        score = score_snapshot(snapshot)
+        store = HistoryStore()
+        store.save_benchmark(snap_dict, score=score.overall, grade=score.grade)
+        store.close()
+    except Exception as exc:
+        logger.warning("Failed to save benchmark to SQLite: %s", exc)
 
 
 def load_snapshots() -> list[BenchmarkSnapshot]:

@@ -51,9 +51,25 @@ CREATE TABLE IF NOT EXISTS route_snapshots (
     completed INTEGER DEFAULT 1
 );
 
+CREATE TABLE IF NOT EXISTS benchmark_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    label TEXT,
+    avg_latency_ms REAL,
+    avg_jitter_ms REAL,
+    avg_loss_pct REAL,
+    avg_dns_ms REAL,
+    avg_tcp_ms REAL,
+    overall_score REAL,
+    grade TEXT,
+    raw_json TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_obs_ts ON observations(timestamp);
 CREATE INDEX IF NOT EXISTS idx_diag_ts ON diagnoses(timestamp);
 CREATE INDEX IF NOT EXISTS idx_route_ts ON route_snapshots(timestamp);
+CREATE INDEX IF NOT EXISTS idx_bench_ts ON benchmark_snapshots(timestamp);
+CREATE INDEX IF NOT EXISTS idx_bench_label ON benchmark_snapshots(label);
 """
 
 
@@ -201,10 +217,67 @@ class HistoryStore:
             ))
         return results
 
+    # ------------------------------------------------------------------
+    # Benchmark snapshots
+    # ------------------------------------------------------------------
+
+    def save_benchmark(self, snap_dict: dict, score: float | None = None, grade: str = "") -> None:
+        """Persist a benchmark snapshot with its score."""
+        self._conn.execute(
+            """INSERT INTO benchmark_snapshots
+               (timestamp, label, avg_latency_ms, avg_jitter_ms, avg_loss_pct,
+                avg_dns_ms, avg_tcp_ms, overall_score, grade, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                snap_dict.get("timestamp", ""),
+                snap_dict.get("label", ""),
+                snap_dict.get("avg_latency_ms"),
+                snap_dict.get("avg_jitter_ms"),
+                snap_dict.get("avg_loss_pct"),
+                snap_dict.get("avg_dns_ms"),
+                snap_dict.get("avg_tcp_ms"),
+                score,
+                grade,
+                json.dumps(snap_dict),
+            ),
+        )
+        self._conn.commit()
+
+    def get_benchmarks(self, hours: int = 168, label: str | None = None) -> list[dict]:
+        """Return benchmark rows from the last *hours* hours."""
+        cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
+        query = """SELECT timestamp, label, avg_latency_ms, avg_jitter_ms,
+                          avg_loss_pct, avg_dns_ms, avg_tcp_ms,
+                          overall_score, grade
+                   FROM benchmark_snapshots WHERE timestamp > ?"""
+        params: list = [cutoff]
+        if label:
+            query += " AND label = ?"
+            params.append(label)
+        query += " ORDER BY timestamp"
+        rows = self._conn.execute(query, params).fetchall()
+        return [
+            {
+                "timestamp": r[0], "label": r[1],
+                "avg_latency_ms": r[2], "avg_jitter_ms": r[3],
+                "avg_loss_pct": r[4], "avg_dns_ms": r[5],
+                "avg_tcp_ms": r[6], "overall_score": r[7],
+                "grade": r[8],
+            }
+            for r in rows
+        ]
+
+    def get_benchmark_count(self) -> int:
+        """Return total number of stored benchmarks."""
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM benchmark_snapshots"
+        ).fetchone()
+        return row[0] if row else 0
+
     def prune(self, retention_hours: int = 24) -> int:
         cutoff = (datetime.now() - timedelta(hours=retention_hours)).isoformat()
         total = 0
-        for table in ["observations", "diagnoses", "route_snapshots"]:
+        for table in ["observations", "diagnoses", "route_snapshots", "benchmark_snapshots"]:
             cursor = self._conn.execute(
                 f"DELETE FROM {table} WHERE timestamp < ?", (cutoff,)
             )

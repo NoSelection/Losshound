@@ -7,7 +7,8 @@ import sys
 
 def run_optimizer_command(args):
     """Dispatch optimizer subcommands."""
-    if args.command in ("benchmark", "compare", "load-benchmark", "load-compare"):
+    if args.command in ("benchmark", "compare", "load-benchmark", "load-compare",
+                        "score", "trends", "history"):
         if args.command == "benchmark":
             _cmd_benchmark(label=args.label, ping_count=args.pings)
         elif args.command == "compare":
@@ -16,6 +17,12 @@ def run_optimizer_command(args):
             _cmd_load_benchmark(label=args.label)
         elif args.command == "load-compare":
             _cmd_load_compare()
+        elif args.command == "score":
+            _cmd_score(ping_count=args.pings)
+        elif args.command == "trends":
+            _cmd_trends(hours=args.hours)
+        elif args.command == "history":
+            _cmd_history(count=args.count)
         return
 
     from losshound.core.optimizer import NetworkOptimizer
@@ -271,3 +278,78 @@ def _cmd_load_compare():
     print()
     print(format_load_comparison(report))
     print()
+
+
+def _cmd_score(ping_count: int):
+    """Run a benchmark and display the network score."""
+    from losshound.core.benchmark import run_benchmark, save_snapshot
+    from losshound.core.scoring import format_score, score_snapshot
+
+    print("Losshound Network Score")
+    print("=" * 55)
+    print("Running benchmark...\n")
+
+    snapshot = run_benchmark(
+        label="score",
+        ping_count=ping_count,
+        progress_callback=lambda msg: print(f"  {msg}"),
+    )
+    save_snapshot(snapshot)
+
+    score = score_snapshot(snapshot)
+    print()
+    print(format_score(score))
+
+
+def _cmd_trends(hours: int):
+    """Show network performance trends from stored history."""
+    from losshound.core.trending import analyze_trends, format_trends
+    from losshound.storage.history import HistoryStore
+
+    store = HistoryStore()
+    benchmarks = store.get_benchmarks(hours=hours)
+    store.close()
+
+    if not benchmarks:
+        print("No benchmark history found.")
+        print("Run 'losshound score' or 'losshound benchmark' a few times to build up data.")
+        return
+
+    summary = analyze_trends(benchmarks, hours=hours)
+    print()
+    print(format_trends(summary))
+
+
+def _cmd_history(count: int):
+    """List recent benchmark snapshots with scores."""
+    from losshound.storage.history import HistoryStore
+
+    store = HistoryStore()
+    benchmarks = store.get_benchmarks(hours=8760)  # up to 1 year
+    store.close()
+
+    if not benchmarks:
+        print("No benchmark history found.")
+        print("Run 'losshound score' or 'losshound benchmark' to create entries.")
+        return
+
+    # Show most recent N
+    entries = benchmarks[-count:]
+
+    print("Losshound Benchmark History")
+    print("=" * 80)
+    print(f"  {'Timestamp':<22} {'Label':<10} {'Score':<8} {'Grade':<6} "
+          f"{'Latency':<10} {'Jitter':<10} {'Loss':<8}")
+    print(f"  {'-'*22} {'-'*10} {'-'*8} {'-'*6} {'-'*10} {'-'*10} {'-'*8}")
+
+    for b in entries:
+        ts = b["timestamp"][:19] if b.get("timestamp") else "--"
+        label = b.get("label", "--") or "--"
+        score = f"{b['overall_score']:.0f}" if b.get("overall_score") is not None else "--"
+        grade = b.get("grade") or "--"
+        lat = f"{b['avg_latency_ms']:.1f}ms" if b.get("avg_latency_ms") is not None else "--"
+        jit = f"{b['avg_jitter_ms']:.1f}ms" if b.get("avg_jitter_ms") is not None else "--"
+        loss = f"{b['avg_loss_pct']:.1f}%" if b.get("avg_loss_pct") is not None else "--"
+        print(f"  {ts:<22} {label:<10} {score:<8} {grade:<6} {lat:<10} {jit:<10} {loss:<8}")
+
+    print(f"\n  Showing {len(entries)}/{len(benchmarks)} entries.")

@@ -15,6 +15,7 @@ from losshound.gui.export_tab import ExportTab
 from losshound.gui.history_tab import HistoryTab
 from losshound.gui.optimizer_tab import OptimizerTab
 from losshound.gui.route_tab import RouteTab
+from losshound.gui.score_tab import ScoreTab
 from losshound.gui.settings_tab import SettingsTab
 from losshound.gui.theme import get_dark_stylesheet
 from losshound.storage.history import HistoryStore
@@ -49,11 +50,13 @@ class MainWindow(QMainWindow):
         self._settings_tab = SettingsTab(config)
         self._export_tab = ExportTab(self._history)
         self._optimizer_tab = OptimizerTab()
+        self._score_tab = ScoreTab()
 
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._history_tab, "History")
         self._tabs.addTab(self._route_tab, "Routes")
         self._tabs.addTab(self._optimizer_tab, "Optimizer")
+        self._tabs.addTab(self._score_tab, "Score")
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._export_tab, "Export")
 

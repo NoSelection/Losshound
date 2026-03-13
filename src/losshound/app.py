@@ -60,6 +60,24 @@ def main():
     )
     sub.add_parser("load-compare", help="Compare before vs after load benchmarks")
 
+    score_parser = sub.add_parser("score", help="Run benchmark and show network score")
+    score_parser.add_argument(
+        "--pings", type=int, default=20,
+        help="Number of pings per target (default: 20)",
+    )
+
+    trends_parser = sub.add_parser("trends", help="Show network performance trends")
+    trends_parser.add_argument(
+        "--hours", type=int, default=168,
+        help="Lookback period in hours (default: 168 = 7 days)",
+    )
+
+    history_parser = sub.add_parser("history", help="List recent benchmark snapshots with scores")
+    history_parser.add_argument(
+        "--count", type=int, default=20,
+        help="Number of entries to show (default: 20)",
+    )
+
     args = parser.parse_args()
 
     from losshound.core.config import load_config
