@@ -4,6 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QLabel,
     QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
@@ -12,10 +13,26 @@ from PySide6.QtWidgets import (
 from losshound.storage.history import HistoryStore
 
 
+class _IspReportWorker(QObject):
+    finished = Signal(str)  # formatted report text
+
+    def __init__(self, history: HistoryStore, hours: int):
+        super().__init__()
+        self._history = history
+        self._hours = hours
+
+    def run(self):
+        from losshound.core.isp_report import format_isp_report, generate_isp_report
+        report = generate_isp_report(self._history, self._hours)
+        text = format_isp_report(report)
+        self.finished.emit(text)
+
+
 class ExportTab(QWidget):
     def __init__(self, history: HistoryStore, parent=None):
         super().__init__(parent)
         self._history = history
+        self._thread: QThread | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -26,17 +43,28 @@ class ExportTab(QWidget):
         controls.addWidget(QLabel("Report window:"))
 
         self._hours = QSpinBox()
-        self._hours.setRange(1, 24)
-        self._hours.setValue(1)
+        self._hours.setRange(1, 168)
+        self._hours.setValue(24)
         self._hours.setSuffix(" hours")
         controls.addWidget(self._hours)
 
-        gen_btn = QPushButton("Generate Report")
+        gen_btn = QPushButton("Quick Report")
         gen_btn.setStyleSheet(
             "background-color: #89b4fa; color: #1e1e2e; font-weight: bold;"
         )
         gen_btn.clicked.connect(self._generate)
         controls.addWidget(gen_btn)
+
+        isp_btn = QPushButton("ISP Report")
+        isp_btn.setStyleSheet(
+            "background-color: #cba6f7; color: #1e1e2e; font-weight: bold;"
+        )
+        isp_btn.setToolTip(
+            "Generate a comprehensive report with benchmarks, scores, and diagnostics "
+            "suitable for sharing with your ISP support team."
+        )
+        isp_btn.clicked.connect(self._generate_isp)
+        controls.addWidget(isp_btn)
 
         controls.addStretch()
         layout.addLayout(controls)
@@ -45,8 +73,10 @@ class ExportTab(QWidget):
         self._preview = QTextEdit()
         self._preview.setReadOnly(True)
         self._preview.setPlaceholderText(
-            "Click 'Generate Report' to create a diagnostic report..."
+            "Click 'Quick Report' for a basic diagnostic report, or\n"
+            "'ISP Report' for a comprehensive report to share with your ISP..."
         )
+        self._preview.setStyleSheet("font-family: Consolas, monospace; font-size: 12px;")
         layout.addWidget(self._preview)
 
         # Export buttons
@@ -73,6 +103,24 @@ class ExportTab(QWidget):
         hours = self._hours.value()
         self._report_data = self._history.export_report(hours)
         self._preview.setText(self._format_report(self._report_data))
+
+    def _generate_isp(self):
+        hours = self._hours.value()
+        self._preview.setText("Generating ISP report...")
+
+        thread = QThread()
+        worker = _IspReportWorker(self._history, hours)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda text: self._on_isp_done(text, thread))
+        thread.start()
+        self._thread = thread
+
+    def _on_isp_done(self, text: str, thread: QThread):
+        thread.quit()
+        thread.wait(3000)
+        self._preview.setText(text)
+        self._report_data = None  # ISP report is text-only for now
 
     def _format_report(self, data: dict) -> str:
         lines = [

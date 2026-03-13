@@ -8,7 +8,8 @@ import sys
 def run_optimizer_command(args):
     """Dispatch optimizer subcommands."""
     if args.command in ("benchmark", "compare", "load-benchmark", "load-compare",
-                        "score", "trends", "history", "wifi"):
+                        "score", "trends", "history", "wifi", "qos", "qos-list",
+                        "qos-clear", "isp-report"):
         if args.command == "benchmark":
             _cmd_benchmark(label=args.label, ping_count=args.pings)
         elif args.command == "compare":
@@ -25,6 +26,14 @@ def run_optimizer_command(args):
             _cmd_history(count=args.count)
         elif args.command == "wifi":
             _cmd_wifi()
+        elif args.command == "qos":
+            _cmd_qos(app=args.app, priority=args.priority)
+        elif args.command == "qos-list":
+            _cmd_qos_list()
+        elif args.command == "qos-clear":
+            _cmd_qos_clear()
+        elif args.command == "isp-report":
+            _cmd_isp_report(hours=args.hours, output=args.output)
         return
 
     from losshound.core.optimizer import NetworkOptimizer
@@ -367,3 +376,100 @@ def _cmd_wifi():
 
     report = run_wifi_diagnostics()
     print(format_wifi_report(report))
+
+
+def _cmd_qos(app: str, priority: str):
+    """Add and apply a QoS rule for an application."""
+    from pathlib import Path
+    from losshound.core.qos import (
+        PRIORITY_PRESETS, QosRule, apply_rule, load_saved_rules, save_rules,
+    )
+
+    if priority not in PRIORITY_PRESETS:
+        print(f"Unknown priority '{priority}'. Choose from: {', '.join(PRIORITY_PRESETS)}")
+        return
+
+    dscp = PRIORITY_PRESETS[priority]
+    name = Path(app).stem if "\\" in app or "/" in app else app.replace(".exe", "")
+
+    rule = QosRule(
+        name=name, app_path=app,
+        priority_preset=priority, dscp_value=dscp,
+    )
+
+    print(f"Losshound QoS — {name}")
+    print("=" * 50)
+    print(f"  App:      {app}")
+    print(f"  Priority: {priority} (DSCP {dscp})")
+    print()
+
+    result = apply_rule(rule)
+    if result.success:
+        print(f"  OK: {result.message}")
+        # Save to persistent rules
+        rules = load_saved_rules()
+        rules = [r for r in rules if r.name != name]
+        rules.append(rule)
+        save_rules(rules)
+        print(f"  Rule saved.")
+    else:
+        print(f"  FAILED: {result.message}")
+
+
+def _cmd_qos_list():
+    """List all QoS rules."""
+    from losshound.core.qos import get_existing_policies, load_saved_rules
+
+    print("Losshound QoS Rules")
+    print("=" * 60)
+
+    rules = load_saved_rules()
+    if rules:
+        print(f"\n  Saved rules ({len(rules)}):")
+        print(f"  {'Name':<20} {'App':<25} {'Priority':<12} {'DSCP':<6}")
+        print(f"  {'-'*20} {'-'*25} {'-'*12} {'-'*6}")
+        for r in rules:
+            print(f"  {r.name:<20} {r.app_path:<25} {r.priority_preset:<12} {r.dscp_value:<6}")
+    else:
+        print("\n  No saved rules.")
+
+    policies = get_existing_policies()
+    lh_policies = [p for p in policies if p.get("Name", "").startswith("Losshound_")]
+    if lh_policies:
+        print(f"\n  Active Windows policies ({len(lh_policies)}):")
+        for p in lh_policies:
+            print(f"    {p.get('Name', '')} -> DSCP {p.get('DSCPAction', 'N/A')}")
+
+
+def _cmd_qos_clear():
+    """Remove all Losshound QoS policies."""
+    from losshound.core.qos import remove_all_losshound_policies
+
+    print("Removing all Losshound QoS policies...")
+    results = remove_all_losshound_policies()
+    if not results:
+        print("  No Losshound policies found.")
+    for r in results:
+        status = "OK" if r.success else "FAILED"
+        print(f"  [{status}] {r.rule_name}: {r.message}")
+
+
+def _cmd_isp_report(hours: int, output: str | None):
+    """Generate ISP report."""
+    from losshound.core.isp_report import format_isp_report, generate_isp_report
+    from losshound.storage.history import HistoryStore
+
+    print(f"Generating ISP report (last {hours} hours)...\n")
+
+    store = HistoryStore()
+    report = generate_isp_report(store, hours)
+    store.close()
+
+    text = format_isp_report(report)
+
+    if output:
+        from pathlib import Path
+        Path(output).write_text(text, encoding="utf-8")
+        print(f"Report saved to: {output}")
+    else:
+        print(text)

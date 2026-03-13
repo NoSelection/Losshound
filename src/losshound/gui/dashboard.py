@@ -46,6 +46,27 @@ class DashboardTab(QWidget):
         self._route_label.setStyleSheet("color: #6c7086; font-size: 12px; padding: 4px;")
         layout.addWidget(self._route_label)
 
+        # Rolling observation history
+        obs_label = QLabel("LIVE READINGS")
+        obs_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        layout.addWidget(obs_label)
+
+        self._obs_table = QTableWidget(0, 6)
+        self._obs_table.setHorizontalHeaderLabels([
+            "Time", "Gateway RTT", "Public RTT", "Loss", "DNS", "Jitter",
+        ])
+        for col in range(6):
+            mode = (
+                QHeaderView.ResizeMode.Stretch if col == 0
+                else QHeaderView.ResizeMode.ResizeToContents
+            )
+            self._obs_table.horizontalHeader().setSectionResizeMode(col, mode)
+        self._obs_table.verticalHeader().setVisible(False)
+        self._obs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._obs_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._obs_table.setMaximumHeight(160)
+        layout.addWidget(self._obs_table)
+
         # Recent events table
         events_label = QLabel("RECENT EVENTS")
         events_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
@@ -65,7 +86,7 @@ class DashboardTab(QWidget):
         self._events_table.verticalHeader().setVisible(False)
         self._events_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._events_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._events_table.setMaximumHeight(200)
+        self._events_table.setMaximumHeight(160)
         layout.addWidget(self._events_table)
 
     def update_observation(self, obs: Observation):
@@ -140,6 +161,9 @@ class DashboardTab(QWidget):
             status = "healthy" if avg_jitter < 10 else ("warning" if avg_jitter < 50 else "error")
             self._jitter_card.set_value(f"{avg_jitter:.1f} ms", "", status)
 
+        # Rolling observation history row
+        self._add_obs_row(obs)
+
         # Route status
         if obs.route_snapshot:
             rs = obs.route_snapshot
@@ -182,3 +206,60 @@ class DashboardTab(QWidget):
         # Keep max 50 rows
         while self._events_table.rowCount() > 50:
             self._events_table.removeRow(self._events_table.rowCount() - 1)
+
+    def _add_obs_row(self, obs: Observation):
+        """Add a row to the live readings table."""
+        from PySide6.QtGui import QColor
+
+        row = 0
+        self._obs_table.insertRow(row)
+
+        time_str = obs.timestamp.strftime("%H:%M:%S")
+
+        # Gateway RTT
+        gw_rtt = "--"
+        if obs.gateway_ping and obs.gateway_ping.rtt_avg is not None:
+            gw_rtt = f"{obs.gateway_ping.rtt_avg:.0f} ms"
+
+        # Public RTT (average)
+        pub_rtt = "--"
+        pub_rtts = [p.rtt_avg for p in obs.public_pings if p.rtt_avg is not None]
+        if pub_rtts:
+            pub_rtt = f"{sum(pub_rtts) / len(pub_rtts):.0f} ms"
+
+        # Overall loss
+        all_losses = []
+        if obs.gateway_ping:
+            all_losses.append(obs.gateway_ping.loss_percent)
+        all_losses.extend(p.loss_percent for p in obs.public_pings)
+        loss_str = f"{sum(all_losses) / len(all_losses):.1f}%" if all_losses else "--"
+
+        # DNS
+        dns_str = "--"
+        if obs.dns_results:
+            resolved = sum(1 for d in obs.dns_results if d.resolved)
+            dns_str = f"{resolved}/{len(obs.dns_results)}"
+
+        # Jitter
+        jitters = []
+        if obs.gateway_ping and obs.gateway_ping.rtt_jitter is not None:
+            jitters.append(obs.gateway_ping.rtt_jitter)
+        jitters.extend(p.rtt_jitter for p in obs.public_pings if p.rtt_jitter is not None)
+        jitter_str = f"{sum(jitters) / len(jitters):.1f} ms" if jitters else "--"
+
+        values = [time_str, gw_rtt, pub_rtt, loss_str, dns_str, jitter_str]
+        for col, val in enumerate(values):
+            item = QTableWidgetItem(val)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            # Color loss column red/yellow if elevated
+            if col == 3 and all_losses:
+                avg_loss = sum(all_losses) / len(all_losses)
+                if avg_loss > 10:
+                    item.setForeground(QColor("#f38ba8"))
+                elif avg_loss > 2:
+                    item.setForeground(QColor("#f9e2af"))
+            self._obs_table.setItem(row, col, item)
+
+        # Keep max 30 rows
+        while self._obs_table.rowCount() > 30:
+            self._obs_table.removeRow(self._obs_table.rowCount() - 1)

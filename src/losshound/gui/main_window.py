@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QLabel, QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget,
 )
@@ -14,9 +15,11 @@ from losshound.gui.dashboard import DashboardTab
 from losshound.gui.export_tab import ExportTab
 from losshound.gui.history_tab import HistoryTab
 from losshound.gui.optimizer_tab import OptimizerTab
+from losshound.gui.qos_tab import QosTab
 from losshound.gui.route_tab import RouteTab
 from losshound.gui.score_tab import ScoreTab
 from losshound.gui.settings_tab import SettingsTab
+from losshound.gui.tray import TrayIcon
 from losshound.gui.wifi_tab import WifiTab
 from losshound.gui.theme import get_dark_stylesheet
 from losshound.storage.history import HistoryStore
@@ -29,6 +32,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._config = config
         self._history = HistoryStore()
+        self._really_quit = False
 
         self.setWindowTitle("Losshound — Network Diagnosis")
         self.setMinimumSize(800, 550)
@@ -53,11 +57,13 @@ class MainWindow(QMainWindow):
         self._optimizer_tab = OptimizerTab()
         self._score_tab = ScoreTab()
         self._wifi_tab = WifiTab()
+        self._qos_tab = QosTab()
 
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._history_tab, "History")
         self._tabs.addTab(self._route_tab, "Routes")
         self._tabs.addTab(self._optimizer_tab, "Optimizer")
+        self._tabs.addTab(self._qos_tab, "QoS")
         self._tabs.addTab(self._score_tab, "Score")
         self._tabs.addTab(self._wifi_tab, "WiFi")
         self._tabs.addTab(self._settings_tab, "Settings")
@@ -77,6 +83,12 @@ class MainWindow(QMainWindow):
         self._countdown_timer.timeout.connect(self._tick_countdown)
         self._countdown_timer.start(1000)
 
+        # System tray icon
+        self._tray = TrayIcon(self)
+        self._tray.show_requested.connect(self._show_from_tray)
+        self._tray.quit_requested.connect(self._quit_from_tray)
+        self._tray.show()
+
         # Connect settings changes
         self._settings_tab.config_changed.connect(self._on_config_changed)
 
@@ -90,6 +102,7 @@ class MainWindow(QMainWindow):
     def _on_observation(self, obs: Observation):
         self._dashboard.update_observation(obs)
         self._route_tab.update_route(obs)
+        self._tray.update_observation(obs)
         self._status_label.setText(
             f"Last check: {obs.timestamp.strftime('%H:%M:%S')}"
         )
@@ -97,6 +110,7 @@ class MainWindow(QMainWindow):
 
     def _on_diagnosis(self, diag: Diagnosis):
         self._dashboard.update_diagnosis(diag)
+        self._tray.update_diagnosis(diag)
 
     def _on_error(self, msg: str):
         logger.error("Monitor error: %s", msg)
@@ -111,7 +125,28 @@ class MainWindow(QMainWindow):
         self._seconds_until_next = max(0, self._seconds_until_next - 1)
         self._countdown_label.setText(f"Next check in {self._seconds_until_next}s")
 
-    def closeEvent(self, event):
+    def _show_from_tray(self):
+        self.showNormal()
+        self.activateWindow()
+
+    def _quit_from_tray(self):
+        self._really_quit = True
+        self.close()
+
+    def closeEvent(self, event: QCloseEvent):
+        if not self._really_quit and self._tray.isVisible():
+            # Minimize to tray instead of closing
+            self.hide()
+            self._tray.showMessage(
+                "Losshound",
+                "Still monitoring in the background. Right-click tray icon to quit.",
+                self._tray.MessageIcon.Information,
+                2000,
+            )
+            event.ignore()
+            return
+
+        self._tray.hide()
         self._monitor.stop()
         self._history.close()
         event.accept()

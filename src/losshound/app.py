@@ -80,6 +80,26 @@ def main():
 
     sub.add_parser("wifi", help="Run WiFi diagnostics (channel scan, signal, interference)")
 
+    qos_parser = sub.add_parser("qos", help="Add a per-app QoS priority rule")
+    qos_parser.add_argument("app", help="Application name or path (e.g. chrome.exe)")
+    qos_parser.add_argument(
+        "--priority", type=str, default="High",
+        choices=["Realtime", "High", "Normal", "Low", "Bulk"],
+        help="Priority preset (default: High)",
+    )
+    sub.add_parser("qos-list", help="List all QoS rules and active policies")
+    sub.add_parser("qos-clear", help="Remove all Losshound QoS policies")
+
+    isp_parser = sub.add_parser("isp-report", help="Generate comprehensive ISP report")
+    isp_parser.add_argument(
+        "--hours", type=int, default=24,
+        help="Report period in hours (default: 24)",
+    )
+    isp_parser.add_argument(
+        "--output", type=str, default=None,
+        help="Save report to file instead of printing",
+    )
+
     args = parser.parse_args()
 
     from losshound.core.config import load_config
