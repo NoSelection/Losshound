@@ -838,26 +838,38 @@ class OptimizerTab(QWidget):
             self._dns_table.setItem(row, 5, success_item)
 
     def _populate_results_table(self, results: list[OptimizeResult]):
+        _STATUS_COLORS = {
+            "Applied": Qt.GlobalColor.green,
+            "Verified": Qt.GlobalColor.cyan,
+            "No change": Qt.GlobalColor.white,
+            "Skipped": Qt.GlobalColor.yellow,
+            "Failed": Qt.GlobalColor.red,
+            "Unsupported": Qt.GlobalColor.darkYellow,
+            "Reboot required": Qt.GlobalColor.magenta,
+        }
+
         self._results_table.setRowCount(len(results))
         for row, r in enumerate(results):
             name_item = QTableWidgetItem(r.name)
 
-            if r.success:
-                status_text = "Applied"
-                color = Qt.GlobalColor.green
-            elif r.needs_admin and r.error and "Administrator" in r.error:
-                status_text = "Skipped (needs Admin)"
-                color = Qt.GlobalColor.yellow
-            else:
-                status_text = "Failed"
-                color = Qt.GlobalColor.red
+            # Use the new status field; fall back to legacy logic for
+            # results that haven't been migrated yet.
+            status_text = r.status
+            if not status_text:
+                if r.success:
+                    status_text = "Applied"
+                elif r.needs_admin and r.error and "Administrator" in r.error:
+                    status_text = "Skipped"
+                else:
+                    status_text = "Failed"
 
+            color = _STATUS_COLORS.get(status_text, Qt.GlobalColor.white)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(color)
 
             before_item = QTableWidgetItem(r.before or "--")
             after_item = QTableWidgetItem(r.after or "--")
-            note_item = QTableWidgetItem(r.error or "")
+            note_item = QTableWidgetItem(r.note or r.error or "")
 
             self._results_table.setItem(row, 0, name_item)
             self._results_table.setItem(row, 1, status_item)

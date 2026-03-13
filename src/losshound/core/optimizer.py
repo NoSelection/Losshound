@@ -42,7 +42,18 @@ _CREATE_NO_WINDOW: int = 0x08000000
 
 @dataclass
 class OptimizeResult:
-    """Outcome of a single optimisation action."""
+    """Outcome of a single optimisation action.
+
+    Status values
+    -------------
+    Applied        – change was made and verified.
+    Verified       – setting already had the desired value; no change needed.
+    No change      – operation ran but before == after (nothing changed).
+    Skipped        – intentionally skipped (e.g. no admin rights).
+    Failed         – the command or operation returned an error.
+    Unsupported    – the OS / adapter does not support this setting.
+    Reboot required – change written but needs a reboot to take effect.
+    """
 
     name: str
     success: bool
@@ -50,6 +61,13 @@ class OptimizeResult:
     after: str
     needs_admin: bool
     error: Optional[str] = None
+    # --- extended fields ---
+    status: str = ""           # one of the documented status values
+    note: str = ""             # human-readable explanation (always populated)
+    command: str = ""          # exact command / operation attempted
+    command_exit_code: Optional[int] = None  # process return code
+    verification: str = ""     # result of post-apply verification
+    reboot_required: bool = False
 
 
 @dataclass
@@ -173,6 +191,148 @@ def _parse_netsh_table(output: str) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# Value normalisation & result helpers
+# ---------------------------------------------------------------------------
+
+_VALUE_DISPLAY: dict[str, str] = {
+    # TCP auto-tuning
+    "normal": "Normal",
+    "disabled": "Disabled",
+    "highlyrestricted": "Highly Restricted",
+    "restricted": "Restricted",
+    "experimental": "Experimental",
+    # Congestion provider
+    "ctcp": "CTCP (Compound TCP)",
+    "cubic": "CUBIC",
+    "dctcp": "DCTCP",
+    "newreno": "NewReno",
+    "none": "None (default)",
+    "default": "Default",
+    # ECN / RSS / DCA / timestamps
+    "enabled": "Enabled",
+    # Boolean-like
+    "true": "Enabled",
+    "false": "Disabled",
+    "1": "Enabled",
+    "0": "Disabled",
+    # Adapter states
+    "unsupported": "Unsupported",
+    # Cache states
+    "cached": "Cached",
+    "flushed": "Flushed",
+}
+
+
+def _normalize_value(raw: str) -> str:
+    """Return a human-friendly version of a raw setting value."""
+    if not raw:
+        return "--"
+    stripped = raw.strip()
+    # Check for registry hex constants
+    if stripped.lower() in ("0xffffffff", "4294967295"):
+        return "Disabled (0xFFFFFFFF)"
+    # Exact lookup (case-insensitive)
+    display = _VALUE_DISPLAY.get(stripped.lower())
+    if display:
+        return display
+    # Already readable — title-case single words, leave the rest
+    if " " not in stripped and stripped.isalpha():
+        return stripped.capitalize()
+    return stripped
+
+
+def _make_result(
+    *,
+    name: str,
+    success: bool,
+    before: str,
+    after: str,
+    needs_admin: bool,
+    error: Optional[str] = None,
+    note: str = "",
+    command: str = "",
+    command_exit_code: Optional[int] = None,
+    verification: str = "",
+    reboot_required: bool = False,
+    desired: str = "",
+) -> OptimizeResult:
+    """Build an :class:`OptimizeResult` with correct *status* and *note*.
+
+    Rules
+    -----
+    * Failed → ``after`` is cleared unless *verification* proves it changed.
+    * ``before == desired`` (or ``before == after``) and success → Verified.
+    * ``before == after`` and not success → No change.
+    * ``needs_admin`` and not success and "Administrator" in error → Skipped.
+    * ``"unsupported"`` / ``"not found"`` in error → Unsupported.
+    * *reboot_required* → Reboot required.
+    """
+    # Normalise display values
+    before_display = _normalize_value(before)
+    after_display = _normalize_value(after)
+    desired_display = _normalize_value(desired) if desired else ""
+
+    # --- Derive status ---
+    status: str
+    if success:
+        if reboot_required:
+            status = "Reboot required"
+        elif desired and before.strip().lower() == desired.strip().lower():
+            status = "Verified"
+            after_display = before_display  # nothing actually changed
+            if not note:
+                note = f"Already set to {before_display}"
+        elif before.strip().lower() == after.strip().lower() and before.strip():
+            status = "Verified"
+            if not note:
+                note = f"Already set to {before_display}"
+        else:
+            status = "Applied"
+    else:
+        # Determine failure flavour
+        err_lower = (error or "").lower()
+        if needs_admin and ("administrator" in err_lower or "privilege" in err_lower):
+            status = "Skipped"
+            after_display = "--"
+            if not note:
+                note = "Requires Administrator privileges"
+        elif "unsupported" in err_lower or "not found" in err_lower or "not recognized" in err_lower:
+            status = "Unsupported"
+            after_display = "--"
+            if not note:
+                note = error or "Not supported on this system"
+        else:
+            status = "Failed"
+            # Don't show a misleading "after" unless independently verified
+            if not verification:
+                after_display = "--"
+            if not note:
+                note = error or "Unknown error"
+
+    # Final note fallback
+    if not note:
+        if status == "Applied":
+            note = f"Changed from {before_display} to {after_display}"
+        elif status == "Reboot required":
+            note = f"Set to {after_display}; reboot needed to activate"
+
+    return OptimizeResult(
+        name=name,
+        success=success,
+        before=before_display,
+        after=after_display,
+        needs_admin=needs_admin,
+        error=error,
+        status=status,
+        note=note,
+        command=command,
+        command_exit_code=command_exit_code,
+        verification=verification,
+        reboot_required=reboot_required,
+    )
+
+
+# ---------------------------------------------------------------------------
 # NetworkOptimizer
 # ---------------------------------------------------------------------------
 
@@ -224,8 +384,9 @@ class NetworkOptimizer:
     def apply_dns(self, primary: str, secondary: str) -> OptimizeResult:
         """Set DNS servers on the active network adapter (requires admin)."""
         name = "Set DNS servers"
+        cmd_primary = ""
         if not self.check_admin():
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
                 before="", after="",
                 needs_admin=True,
@@ -234,33 +395,47 @@ class NetworkOptimizer:
 
         before_primary, before_secondary = self.get_current_dns()
         adapter = self._active_adapter_name()
+        before_str = f"{before_primary}, {before_secondary}"
+        desired_str = f"{primary}, {secondary}"
+        cmd_primary = (
+            f'netsh interface ip set dnsservers name="{adapter}" '
+            f"static {primary} primary validate=no"
+        )
 
         try:
-            _run(
-                f'netsh interface ip set dnsservers name="{adapter}" '
-                f"static {primary} primary validate=no",
-                english=True,
-            )
+            proc = _run(cmd_primary, english=True)
+            cmd_secondary = ""
             if secondary:
-                _run(
+                cmd_secondary = (
                     f'netsh interface ip add dnsservers name="{adapter}" '
-                    f"{secondary} index=2 validate=no",
-                    english=True,
+                    f"{secondary} index=2 validate=no"
                 )
-            return OptimizeResult(
-                name=name, success=True,
-                before=f"{before_primary}, {before_secondary}",
-                after=f"{primary}, {secondary}",
+                _run(cmd_secondary, english=True)
+
+            # Verify
+            after_primary, after_secondary = self.get_current_dns()
+            after_str = f"{after_primary}, {after_secondary}"
+            verified = after_primary == primary
+            verification = f"Verified DNS: {after_primary}, {after_secondary}"
+
+            return _make_result(
+                name=name, success=verified,
+                before=before_str, after=after_str,
                 needs_admin=True,
+                command=cmd_primary + (" && " + cmd_secondary if cmd_secondary else ""),
+                command_exit_code=proc.returncode,
+                verification=verification,
+                note=f"DNS set to {primary}" + (f", {secondary}" if secondary else "")
+                     if verified else f"DNS change failed; still {after_primary}",
+                desired=desired_str,
             )
         except Exception as exc:
             logger.error("Failed to set DNS: %s", exc)
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
-                before=f"{before_primary}, {before_secondary}",
-                after="",
-                needs_admin=True,
-                error=str(exc),
+                before=before_str, after="",
+                needs_admin=True, error=str(exc),
+                command=cmd_primary,
             )
 
     # ------------------------------------------------------------------
@@ -304,7 +479,7 @@ class NetworkOptimizer:
                 "TCP auto-tuning", "Congestion provider",
                 "ECN capability", "RSS", "DCA", "TCP timestamps",
             ):
-                results.append(OptimizeResult(
+                results.append(_make_result(
                     name=label, success=False, before="", after="",
                     needs_admin=True,
                     error="Administrator privileges required",
@@ -312,12 +487,15 @@ class NetworkOptimizer:
             return results
 
         current = self.get_tcp_settings()
-        tweaks: list[tuple[str, str, str, str]] = [
+
+        # (label, command, current_value, desired_value, note_on_apply)
+        tweaks: list[tuple[str, str, str, str, str]] = [
             (
                 "TCP auto-tuning",
                 "netsh int tcp set global autotuninglevel=normal",
                 current.auto_tuning_level,
                 "normal",
+                "Sets receive window auto-tuning to Normal for optimal throughput",
             ),
             (
                 "Congestion provider",
@@ -325,34 +503,39 @@ class NetworkOptimizer:
                 "congestionprovider=ctcp",
                 current.congestion_provider,
                 "ctcp",
+                "Switches to CTCP (Compound TCP) for better bandwidth utilisation",
             ),
             (
                 "ECN capability",
                 "netsh int tcp set global ecncapability=enabled",
                 current.ecn_capability,
                 "enabled",
+                "Enables Explicit Congestion Notification to reduce packet loss",
             ),
             (
                 "RSS",
                 "netsh int tcp set global rss=enabled",
                 current.rss,
                 "enabled",
+                "Enables Receive-Side Scaling for multi-core packet processing",
             ),
             (
                 "DCA",
                 "netsh int tcp set global dca=enabled",
                 current.dca,
                 "enabled",
+                "Enables Direct Cache Access to reduce CPU cache misses",
             ),
             (
                 "TCP timestamps",
                 "netsh int tcp set global timestamps=enabled",
                 current.timestamps,
                 "enabled",
+                "Enables RFC 1323 timestamps for better RTT measurement",
             ),
         ]
 
-        for label, command, before, desired in tweaks:
+        for label, command, before, desired, apply_note in tweaks:
             try:
                 proc = _run(command, english=True)
                 ok = proc.returncode == 0
@@ -362,17 +545,44 @@ class NetworkOptimizer:
                 if not ok and not error:
                     ok = True
                     error = None
-                results.append(OptimizeResult(
+
+                # Verify by re-reading TCP settings
+                verified_settings = self.get_tcp_settings()
+                field_map = {
+                    "TCP auto-tuning": "auto_tuning_level",
+                    "Congestion provider": "congestion_provider",
+                    "ECN capability": "ecn_capability",
+                    "RSS": "rss",
+                    "DCA": "dca",
+                    "TCP timestamps": "timestamps",
+                }
+                field = field_map.get(label, "")
+                actual_after = getattr(verified_settings, field, desired) if field else desired
+                verification = f"Post-apply read: {actual_after}"
+
+                # Detect unsupported
+                out_lower = (proc.stdout + proc.stderr).lower()
+                if "not found" in out_lower or "not recognized" in out_lower:
+                    error = error or proc.stdout.strip()
+                    ok = False
+
+                results.append(_make_result(
                     name=label, success=ok,
-                    before=before, after=desired,
+                    before=before, after=actual_after if ok else before,
+                    desired=desired,
                     needs_admin=True, error=error,
+                    command=command,
+                    command_exit_code=proc.returncode,
+                    verification=verification,
+                    note=apply_note if ok else "",
                 ))
             except Exception as exc:
                 logger.error("TCP tweak '%s' failed: %s", label, exc)
-                results.append(OptimizeResult(
+                results.append(_make_result(
                     name=label, success=False,
-                    before=before, after=desired,
+                    before=before, after="",
                     needs_admin=True, error=str(exc),
+                    command=command,
                 ))
 
         return results
@@ -459,69 +669,166 @@ class NetworkOptimizer:
         """Optimise the active network adapter settings."""
         results: list[OptimizeResult] = []
         if not self.check_admin():
-            results.append(OptimizeResult(
-                name="Adapter power management",
-                success=False, before="", after="",
-                needs_admin=True,
-                error="Administrator privileges required",
-            ))
+            for label in ("Adapter power management", "Interrupt moderation"):
+                results.append(_make_result(
+                    name=label,
+                    success=False, before="", after="",
+                    needs_admin=True,
+                    error="Administrator privileges required",
+                ))
             return results
 
         adapter = self.get_active_adapter()
 
-        # Disable power management (allow the computer to turn off this
-        # device to save power).
+        # --- Power management ---
+        pm_cmd = (
+            f"Disable-NetAdapterPowerManagement "
+            f"-Name '{adapter.name}' "
+            f"-ErrorAction Stop"
+        )
         try:
-            proc = _run(
-                [
+            # Check if power management is supported / readable
+            pm_check_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"$pm = Get-NetAdapterPowerManagement -Name '{adapter.name}' "
+                f"-ErrorAction SilentlyContinue; "
+                f"if ($pm) {{ $pm.AllowComputerToTurnOffDevice }} "
+                f"else {{ 'NOT_SUPPORTED' }}",
+            ])
+            pm_before_raw = pm_check_proc.stdout.strip()
+
+            if pm_before_raw == "NOT_SUPPORTED" or not pm_before_raw:
+                results.append(_make_result(
+                    name="Adapter power management",
+                    success=False,
+                    before="--", after="--",
+                    needs_admin=True,
+                    error="Adapter does not support power management control",
+                    command=pm_cmd,
+                    command_exit_code=pm_check_proc.returncode,
+                    note=f"Adapter '{adapter.name}' does not expose this setting",
+                ))
+            else:
+                pm_before = pm_before_raw
+
+                proc = _run(
+                    ["powershell", "-NoProfile", "-Command", pm_cmd],
+                )
+                ok = proc.returncode == 0
+                error = proc.stderr.strip() or None if not ok else None
+
+                # Detect unsupported from stderr
+                err_lower = (proc.stderr or "").lower()
+                if "not found" in err_lower or "not recognized" in err_lower or "not supported" in err_lower:
+                    ok = False
+                    error = proc.stderr.strip()
+
+                # Verify
+                pm_after_proc = _run([
                     "powershell", "-NoProfile", "-Command",
-                    (
-                        f"Disable-NetAdapterPowerManagement "
-                        f"-Name '{adapter.name}' "
-                        f"-ErrorAction SilentlyContinue"
-                    ),
-                ],
-            )
-            results.append(OptimizeResult(
-                name="Adapter power management",
-                success=proc.returncode == 0,
-                before="enabled", after="disabled",
-                needs_admin=True,
-                error=proc.stderr.strip() or None if proc.returncode != 0 else None,
-            ))
+                    f"(Get-NetAdapterPowerManagement -Name '{adapter.name}' "
+                    f"-ErrorAction SilentlyContinue).AllowComputerToTurnOffDevice",
+                ])
+                pm_after = pm_after_proc.stdout.strip() or pm_before
+                verification = f"Post-apply read: {pm_after}"
+
+                results.append(_make_result(
+                    name="Adapter power management",
+                    success=ok,
+                    before=pm_before, after=pm_after if ok else pm_before,
+                    desired="disabled",
+                    needs_admin=True, error=error,
+                    command=pm_cmd,
+                    command_exit_code=proc.returncode,
+                    verification=verification,
+                    note="Prevents adapter sleep to maintain low-latency connection" if ok else "",
+                ))
         except Exception as exc:
-            results.append(OptimizeResult(
+            results.append(_make_result(
                 name="Adapter power management",
-                success=False, before="enabled", after="disabled",
+                success=False, before="unknown", after="",
                 needs_admin=True, error=str(exc),
+                command=pm_cmd,
             ))
 
-        # Interrupt moderation — disable for lowest latency
+        # --- Interrupt moderation ---
+        im_cmd = (
+            f"Set-NetAdapterAdvancedProperty "
+            f"-Name '{adapter.name}' "
+            f"-RegistryKeyword '*InterruptModeration' "
+            f"-RegistryValue 0 "
+            f"-ErrorAction Stop"
+        )
         try:
+            # First check if this adapter even exposes the property.
+            im_check_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"$p = Get-NetAdapterAdvancedProperty -Name '{adapter.name}' "
+                f"-RegistryKeyword '*InterruptModeration' "
+                f"-ErrorAction SilentlyContinue; "
+                f"if ($p) {{ $p.RegistryValue }} else {{ 'NOT_SUPPORTED' }}",
+            ])
+            im_before_raw = im_check_proc.stdout.strip()
+
+            if im_before_raw == "NOT_SUPPORTED" or not im_before_raw:
+                results.append(_make_result(
+                    name="Interrupt moderation",
+                    success=False,
+                    before="--", after="--",
+                    needs_admin=True,
+                    error="Adapter does not expose *InterruptModeration property",
+                    command=im_cmd,
+                    command_exit_code=im_check_proc.returncode,
+                    note=f"Adapter '{adapter.name}' does not support this setting",
+                ))
+                return results
+
+            im_before = im_before_raw
+
             proc = _run(
-                [
-                    "powershell", "-NoProfile", "-Command",
-                    (
-                        f"Set-NetAdapterAdvancedProperty "
-                        f"-Name '{adapter.name}' "
-                        f"-RegistryKeyword '*InterruptModeration' "
-                        f"-RegistryValue 0 "
-                        f"-ErrorAction SilentlyContinue"
-                    ),
-                ],
+                ["powershell", "-NoProfile", "-Command", im_cmd],
             )
-            results.append(OptimizeResult(
+            ok = proc.returncode == 0
+            error = proc.stderr.strip() or None if not ok else None
+
+            err_lower = (proc.stderr or "").lower()
+            if "not found" in err_lower or "not supported" in err_lower:
+                ok = False
+                error = proc.stderr.strip()
+
+            # Verify by re-reading the property
+            im_after_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"(Get-NetAdapterAdvancedProperty -Name '{adapter.name}' "
+                f"-RegistryKeyword '*InterruptModeration' "
+                f"-ErrorAction SilentlyContinue).RegistryValue",
+            ])
+            im_after = im_after_proc.stdout.strip() or im_before
+            verification = f"Post-apply read: {im_after}"
+
+            # Cross-check: if command said OK but value didn't change and
+            # it wasn't already 0, something went wrong.
+            if ok and im_after != "0" and im_before != "0":
+                ok = False
+                error = f"Command exited 0 but value stayed at {im_after}"
+
+            results.append(_make_result(
                 name="Interrupt moderation",
-                success=proc.returncode == 0,
-                before="enabled", after="disabled",
-                needs_admin=True,
-                error=proc.stderr.strip() or None if proc.returncode != 0 else None,
+                success=ok,
+                before=im_before, after=im_after if ok else im_before,
+                desired="0",
+                needs_admin=True, error=error,
+                command=im_cmd,
+                command_exit_code=proc.returncode,
+                verification=verification,
+                note="Disables interrupt coalescing for lowest latency" if ok else "",
             ))
         except Exception as exc:
-            results.append(OptimizeResult(
+            results.append(_make_result(
                 name="Interrupt moderation",
-                success=False, before="enabled", after="disabled",
+                success=False, before="unknown", after="",
                 needs_admin=True, error=str(exc),
+                command=im_cmd,
             ))
 
         return results
@@ -532,46 +839,56 @@ class NetworkOptimizer:
 
     def flush_dns_cache(self) -> OptimizeResult:
         """Flush the Windows DNS resolver cache."""
+        cmd = "ipconfig /flushdns"
         try:
-            proc = _run("ipconfig /flushdns", english=True)
+            proc = _run(cmd, english=True)
             ok = "successfully" in proc.stdout.lower() or proc.returncode == 0
-            return OptimizeResult(
+            return _make_result(
                 name="Flush DNS cache", success=ok,
-                before="cached", after="flushed",
+                before="cached", after="flushed" if ok else "cached",
                 needs_admin=False,
                 error=proc.stderr.strip() or None if not ok else None,
+                command=cmd,
+                command_exit_code=proc.returncode,
+                note="DNS resolver cache cleared" if ok else "",
             )
         except Exception as exc:
-            return OptimizeResult(
+            return _make_result(
                 name="Flush DNS cache", success=False,
-                before="cached", after="flushed",
+                before="cached", after="",
                 needs_admin=False, error=str(exc),
+                command=cmd,
             )
 
     def flush_arp_cache(self) -> OptimizeResult:
         """Flush the ARP cache (requires admin)."""
         name = "Flush ARP cache"
+        cmd = "netsh interface ip delete arpcache"
         if not self.check_admin():
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False, before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
+                command=cmd,
             )
         try:
-            proc = _run(
-                "netsh interface ip delete arpcache", english=True,
-            )
-            return OptimizeResult(
-                name=name, success=proc.returncode == 0,
-                before="cached", after="flushed",
+            proc = _run(cmd, english=True)
+            ok = proc.returncode == 0
+            return _make_result(
+                name=name, success=ok,
+                before="cached", after="flushed" if ok else "cached",
                 needs_admin=True,
-                error=proc.stderr.strip() or None if proc.returncode != 0 else None,
+                error=proc.stderr.strip() or None if not ok else None,
+                command=cmd,
+                command_exit_code=proc.returncode,
+                note="ARP cache cleared; stale MAC mappings removed" if ok else "",
             )
         except Exception as exc:
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
-                before="cached", after="flushed",
+                before="cached", after="",
                 needs_admin=True, error=str(exc),
+                command=cmd,
             )
 
     def get_network_throttling_index(self) -> int | None:
@@ -590,11 +907,16 @@ class NetworkOptimizer:
     def disable_network_throttling(self) -> OptimizeResult:
         """Set ``NetworkThrottlingIndex`` to ``0xFFFFFFFF`` (requires admin)."""
         name = "Disable network throttling"
+        reg_path = (
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
+            r"\SystemProfile\NetworkThrottlingIndex"
+        )
         if not self.check_admin():
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False, before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
+                command=f"Set registry {reg_path} = 0xFFFFFFFF",
             )
 
         key_path = (
@@ -602,6 +924,8 @@ class NetworkOptimizer:
             r"\SystemProfile"
         )
         before_val = self.get_network_throttling_index()
+        before_str = str(before_val) if before_val is not None else "default"
+        cmd_desc = f"Set registry {reg_path} = 0xFFFFFFFF"
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE, key_path, 0,
@@ -611,18 +935,28 @@ class NetworkOptimizer:
                     key, "NetworkThrottlingIndex", 0,
                     winreg.REG_DWORD, 0xFFFFFFFF,
                 )
-            return OptimizeResult(
-                name=name, success=True,
-                before=str(before_val) if before_val is not None else "default",
-                after="0xFFFFFFFF (disabled)",
+
+            # Verify
+            after_val = self.get_network_throttling_index()
+            after_str = str(after_val) if after_val is not None else "default"
+            verified = after_val is not None and (after_val == 0xFFFFFFFF or after_val == -1)
+
+            return _make_result(
+                name=name, success=verified,
+                before=before_str, after=after_str,
+                desired="0xFFFFFFFF",
                 needs_admin=True,
+                command=cmd_desc,
+                verification=f"Registry read-back: {after_str}",
+                note="Removes 10-packet-per-ms throttle on non-multimedia traffic"
+                     if verified else f"Write succeeded but verification read: {after_str}",
             )
         except OSError as exc:
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
-                before=str(before_val) if before_val is not None else "default",
-                after="",
+                before=before_str, after="",
                 needs_admin=True, error=str(exc),
+                command=cmd_desc,
             )
 
     def optimize_nagle(self) -> OptimizeResult:
@@ -632,11 +966,13 @@ class NetworkOptimizer:
         registry for the interface that owns the current default gateway.
         """
         name = "Disable Nagle's algorithm"
+        cmd_desc = "Set registry TcpAckFrequency=1, TCPNoDelay=1"
         if not self.check_admin():
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False, before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
+                command=cmd_desc,
             )
 
         base_path = (
@@ -672,14 +1008,36 @@ class NetworkOptimizer:
                         break
 
             if not target_guid:
-                return OptimizeResult(
+                return _make_result(
                     name=name, success=False,
                     before="", after="",
                     needs_admin=True,
                     error="Could not identify active network interface in registry",
+                    command=cmd_desc,
+                    note="No interface with a default gateway found in registry",
                 )
 
             iface_path = f"{base_path}\\{target_guid}"
+            reg_full = f"HKLM\\{iface_path}"
+            cmd_desc = f"Set {reg_full}\\TcpAckFrequency=1, TCPNoDelay=1"
+
+            # Read current state
+            nagle_before = "Enabled (default)"
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
+                    winreg.KEY_READ,
+                ) as key:
+                    try:
+                        nd, _ = winreg.QueryValueEx(key, "TCPNoDelay")
+                        ack, _ = winreg.QueryValueEx(key, "TcpAckFrequency")
+                        if nd == 1 and ack == 1:
+                            nagle_before = "Disabled"
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
                 winreg.KEY_SET_VALUE,
@@ -691,17 +1049,39 @@ class NetworkOptimizer:
                     key, "TCPNoDelay", 0, winreg.REG_DWORD, 1,
                 )
 
-            return OptimizeResult(
+            # Verify
+            nagle_after = "Unknown"
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
+                    winreg.KEY_READ,
+                ) as key:
+                    nd, _ = winreg.QueryValueEx(key, "TCPNoDelay")
+                    ack, _ = winreg.QueryValueEx(key, "TcpAckFrequency")
+                    if nd == 1 and ack == 1:
+                        nagle_after = "Disabled"
+                    else:
+                        nagle_after = f"TCPNoDelay={nd}, TcpAckFrequency={ack}"
+            except OSError:
+                nagle_after = "Written (unverified)"
+
+            return _make_result(
                 name=name, success=True,
-                before="enabled (default)",
-                after="disabled (TcpAckFrequency=1, TCPNoDelay=1)",
+                before=nagle_before,
+                after=nagle_after,
+                desired="Disabled",
                 needs_admin=True,
+                command=cmd_desc,
+                verification=f"Registry read-back: {nagle_after}",
+                reboot_required=True,
+                note="Disables send buffering for lower latency; reboot recommended",
             )
         except OSError as exc:
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
                 before="", after="",
                 needs_admin=True, error=str(exc),
+                command=cmd_desc,
             )
 
     # ------------------------------------------------------------------
@@ -776,34 +1156,50 @@ class NetworkOptimizer:
     def apply_mtu(self, mtu: int) -> OptimizeResult:
         """Set the MTU on the active adapter (requires admin)."""
         name = "Set MTU"
+        adapter = self._active_adapter_name()
+        cmd = (
+            f'netsh interface ipv4 set subinterface "{adapter}" '
+            f"mtu={mtu} store=persistent"
+        )
         if not self.check_admin():
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
                 before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
+                command=cmd,
             )
 
         before_mtu = self.get_current_mtu()
-        adapter = self._active_adapter_name()
         try:
-            proc = _run(
-                f'netsh interface ipv4 set subinterface "{adapter}" '
-                f"mtu={mtu} store=persistent",
-                english=True,
-            )
+            proc = _run(cmd, english=True)
             ok = proc.returncode == 0 or "ok" in proc.stdout.lower()
-            return OptimizeResult(
+            error = proc.stderr.strip() or None if not ok else None
+
+            # Verify
+            after_mtu = self.get_current_mtu()
+            verification = f"Post-apply MTU read: {after_mtu}"
+
+            return _make_result(
                 name=name, success=ok,
-                before=str(before_mtu), after=str(mtu),
-                needs_admin=True,
-                error=proc.stderr.strip() or None if not ok else None,
+                before=str(before_mtu), after=str(after_mtu) if ok else str(before_mtu),
+                desired=str(mtu),
+                needs_admin=True, error=error,
+                command=cmd,
+                command_exit_code=proc.returncode,
+                verification=verification,
+                note=f"MTU optimised via ping fragmentation test"
+                     if ok and after_mtu != before_mtu
+                     else f"MTU already optimal at {before_mtu}"
+                     if ok and after_mtu == before_mtu
+                     else "",
             )
         except Exception as exc:
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False,
-                before=str(before_mtu), after=str(mtu),
+                before=str(before_mtu), after="",
                 needs_admin=True, error=str(exc),
+                command=cmd,
             )
 
     # ------------------------------------------------------------------
@@ -970,18 +1366,19 @@ class NetworkOptimizer:
         if backup is None:
             backup = self._load_backup()
         if backup is None:
-            results.append(OptimizeResult(
+            results.append(_make_result(
                 name="Restore backup", success=False,
                 before="", after="",
                 needs_admin=False,
                 error="No backup found",
+                note="Run Optimize first to create a backup",
             ))
             return results
 
         is_admin = self.check_admin()
 
         def _need_admin(name: str) -> OptimizeResult:
-            return OptimizeResult(
+            return _make_result(
                 name=name, success=False, before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
@@ -1042,23 +1439,29 @@ class NetworkOptimizer:
             if not is_admin:
                 results.append(_need_admin(label))
                 continue
+            cmd = cmd_template.format(value)
             try:
-                proc = _run(cmd_template.format(value), english=True)
+                proc = _run(cmd, english=True)
                 ok = proc.returncode == 0
                 error = proc.stderr.strip() if not ok else None
                 if not ok and not error:
                     ok = True
                     error = None
-                results.append(OptimizeResult(
+                results.append(_make_result(
                     name=label, success=ok,
-                    before="current", after=value,
+                    before="current", after=value if ok else "current",
+                    desired=value,
                     needs_admin=True, error=error,
+                    command=cmd,
+                    command_exit_code=proc.returncode,
+                    note=f"Restored to backed-up value" if ok else "",
                 ))
             except Exception as exc:
-                results.append(OptimizeResult(
+                results.append(_make_result(
                     name=label, success=False,
-                    before="current", after=value,
+                    before="current", after="",
                     needs_admin=True, error=str(exc),
+                    command=cmd,
                 ))
 
         # --- Network throttling ---
@@ -1070,6 +1473,7 @@ class NetworkOptimizer:
                     r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
                     r"\SystemProfile"
                 )
+                cmd_desc = f"Set registry NetworkThrottlingIndex = {backup.network_throttling}"
                 try:
                     with winreg.OpenKey(
                         winreg.HKEY_LOCAL_MACHINE, key_path, 0,
@@ -1079,16 +1483,21 @@ class NetworkOptimizer:
                             key, "NetworkThrottlingIndex", 0,
                             winreg.REG_DWORD, backup.network_throttling,
                         )
-                    results.append(OptimizeResult(
+                    results.append(_make_result(
                         name="Restore network throttling", success=True,
-                        before="current", after=str(backup.network_throttling),
+                        before="current",
+                        after=str(backup.network_throttling),
+                        desired=str(backup.network_throttling),
                         needs_admin=True,
+                        command=cmd_desc,
+                        note="Restored to backed-up value",
                     ))
                 except OSError as exc:
-                    results.append(OptimizeResult(
+                    results.append(_make_result(
                         name="Restore network throttling", success=False,
-                        before="current", after=str(backup.network_throttling),
+                        before="current", after="",
                         needs_admin=True, error=str(exc),
+                        command=cmd_desc,
                     ))
 
         # --- Nagle's algorithm ---
@@ -1101,6 +1510,7 @@ class NetworkOptimizer:
                     r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
                     r"\Interfaces\\" + backup.nagle_interface_guid
                 )
+                cmd_desc = f"Delete registry TcpAckFrequency, TCPNoDelay from {backup.nagle_interface_guid}"
                 try:
                     with winreg.OpenKey(
                         winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
@@ -1112,16 +1522,20 @@ class NetworkOptimizer:
                                 winreg.DeleteValue(key, val_name)
                             except OSError:
                                 pass
-                    results.append(OptimizeResult(
+                    results.append(_make_result(
                         name="Restore Nagle's algorithm", success=True,
-                        before="disabled", after="enabled (default)",
+                        before="Disabled", after="Enabled (default)",
                         needs_admin=True,
+                        command=cmd_desc,
+                        reboot_required=True,
+                        note="Registry overrides removed; reboot recommended",
                     ))
                 except OSError as exc:
-                    results.append(OptimizeResult(
+                    results.append(_make_result(
                         name="Restore Nagle's algorithm", success=False,
-                        before="disabled", after="enabled",
+                        before="Disabled", after="",
                         needs_admin=True, error=str(exc),
+                        command=cmd_desc,
                     ))
 
         # --- Adapter power management ---
@@ -1129,57 +1543,71 @@ class NetworkOptimizer:
             adapter_name = backup.adapter.name
 
             if backup.adapter.power_management_enabled is True:
+                pm_cmd = (
+                    f"Enable-NetAdapterPowerManagement "
+                    f"-Name '{adapter_name}' "
+                    f"-ErrorAction SilentlyContinue"
+                )
                 if not is_admin:
                     results.append(_need_admin("Restore adapter power management"))
                 else:
                     try:
                         proc = _run([
-                            "powershell", "-NoProfile", "-Command",
-                            f"Enable-NetAdapterPowerManagement "
-                            f"-Name '{adapter_name}' "
-                            f"-ErrorAction SilentlyContinue",
+                            "powershell", "-NoProfile", "-Command", pm_cmd,
                         ])
-                        results.append(OptimizeResult(
+                        ok = proc.returncode == 0
+                        results.append(_make_result(
                             name="Restore adapter power management",
-                            success=proc.returncode == 0,
-                            before="disabled", after="enabled",
+                            success=ok,
+                            before="Disabled", after="Enabled" if ok else "Disabled",
                             needs_admin=True,
-                            error=proc.stderr.strip() or None if proc.returncode != 0 else None,
+                            error=proc.stderr.strip() or None if not ok else None,
+                            command=pm_cmd,
+                            command_exit_code=proc.returncode,
+                            note="Restored to backed-up value" if ok else "",
                         ))
                     except Exception as exc:
-                        results.append(OptimizeResult(
+                        results.append(_make_result(
                             name="Restore adapter power management",
                             success=False,
-                            before="disabled", after="enabled",
+                            before="Disabled", after="",
                             needs_admin=True, error=str(exc),
+                            command=pm_cmd,
                         ))
 
             if backup.adapter.interrupt_moderation_enabled is True:
+                im_cmd = (
+                    f"Set-NetAdapterAdvancedProperty "
+                    f"-Name '{adapter_name}' "
+                    f"-RegistryKeyword '*InterruptModeration' "
+                    f"-RegistryValue 1 "
+                    f"-ErrorAction SilentlyContinue"
+                )
                 if not is_admin:
                     results.append(_need_admin("Restore interrupt moderation"))
                 else:
                     try:
                         proc = _run([
-                            "powershell", "-NoProfile", "-Command",
-                            f"Set-NetAdapterAdvancedProperty "
-                            f"-Name '{adapter_name}' "
-                            f"-RegistryKeyword '*InterruptModeration' "
-                            f"-RegistryValue 1 "
-                            f"-ErrorAction SilentlyContinue",
+                            "powershell", "-NoProfile", "-Command", im_cmd,
                         ])
-                        results.append(OptimizeResult(
+                        ok = proc.returncode == 0
+                        results.append(_make_result(
                             name="Restore interrupt moderation",
-                            success=proc.returncode == 0,
-                            before="disabled", after="enabled",
+                            success=ok,
+                            before="Disabled", after="Enabled" if ok else "Disabled",
                             needs_admin=True,
-                            error=proc.stderr.strip() or None if proc.returncode != 0 else None,
+                            error=proc.stderr.strip() or None if not ok else None,
+                            command=im_cmd,
+                            command_exit_code=proc.returncode,
+                            note="Restored to backed-up value" if ok else "",
                         ))
                     except Exception as exc:
-                        results.append(OptimizeResult(
+                        results.append(_make_result(
                             name="Restore interrupt moderation",
                             success=False,
-                            before="disabled", after="enabled",
+                            before="Disabled", after="",
                             needs_admin=True, error=str(exc),
+                            command=im_cmd,
                         ))
 
         return results
@@ -1246,12 +1674,13 @@ class NetworkOptimizer:
                         break
                 results.append(self.apply_dns(best.server, secondary))
             else:
-                results.append(OptimizeResult(
+                results.append(_make_result(
                     name="DNS optimization",
                     success=False,
                     before="", after="",
                     needs_admin=False,
                     error="No reliable DNS servers found during benchmark",
+                    note="All tested DNS servers had <50% success rate",
                 ))
 
         # --- TCP ---
@@ -1278,20 +1707,28 @@ class NetworkOptimizer:
 
         # --- Summary ---
         total = len(results)
-        succeeded = sum(1 for r in results if r.success)
-        skipped_admin = sum(
-            1 for r in results if not r.success and r.needs_admin and not is_admin
-        )
-        failed = total - succeeded - skipped_admin
+        applied = sum(1 for r in results if r.status == "Applied")
+        verified = sum(1 for r in results if r.status == "Verified")
+        no_change = sum(1 for r in results if r.status == "No change")
+        skipped = sum(1 for r in results if r.status == "Skipped")
+        failed = sum(1 for r in results if r.status == "Failed")
+        unsupported = sum(1 for r in results if r.status == "Unsupported")
+        reboot = sum(1 for r in results if r.status == "Reboot required")
 
-        parts: list[str] = [f"{succeeded}/{total} optimisations applied."]
-        if skipped_admin:
-            parts.append(
-                f"{skipped_admin} skipped (requires Administrator).",
-            )
+        parts: list[str] = []
+        if applied:
+            parts.append(f"{applied} applied")
+        if verified:
+            parts.append(f"{verified} already optimal")
+        if reboot:
+            parts.append(f"{reboot} need reboot")
+        if skipped:
+            parts.append(f"{skipped} skipped (requires Administrator)")
         if failed:
-            parts.append(f"{failed} failed.")
-        summary = " ".join(parts)
+            parts.append(f"{failed} failed")
+        if unsupported:
+            parts.append(f"{unsupported} unsupported")
+        summary = f"{total} optimisations: " + ", ".join(parts) + "." if parts else f"{total} optimisations processed."
 
         logger.info("Optimisation complete: %s", summary)
 

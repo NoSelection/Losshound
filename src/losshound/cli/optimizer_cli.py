@@ -146,20 +146,24 @@ def _cmd_restore(opt):
 
 def _print_results(results):
     """Print a table of optimization results."""
-    print(f"  {'Optimization':<30} {'Status':<20} {'Before':<20} {'After':<20}")
-    print(f"  {'-'*30} {'-'*20} {'-'*20} {'-'*20}")
+    print(f"  {'Optimization':<28} {'Status':<18} {'Before':<18} {'After':<18} {'Note'}")
+    print(f"  {'-'*28} {'-'*18} {'-'*18} {'-'*18} {'-'*30}")
 
     for r in results:
-        if r.success:
-            status = "Applied"
-        elif r.needs_admin and r.error and "Administrator" in r.error:
-            status = "Skipped (no admin)"
-        else:
-            status = f"Failed: {r.error or 'unknown'}"
+        # Use the new status field; fall back to legacy logic
+        status = r.status
+        if not status:
+            if r.success:
+                status = "Applied"
+            elif r.needs_admin and r.error and "Administrator" in r.error:
+                status = "Skipped"
+            else:
+                status = "Failed"
 
-        before = (r.before or "--")[:18]
-        after = (r.after or "--")[:18]
-        print(f"  {r.name:<30} {status:<20} {before:<20} {after:<20}")
+        before = (r.before or "--")[:16]
+        after = (r.after or "--")[:16]
+        note = (r.note or r.error or "")[:40]
+        print(f"  {r.name:<28} {status:<18} {before:<18} {after:<18} {note}")
 
 
 def _cmd_benchmark(label: str, ping_count: int):
