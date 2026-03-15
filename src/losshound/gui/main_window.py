@@ -12,6 +12,7 @@ from losshound.core.config import AppConfig
 from losshound.core.models import Diagnosis, Observation
 from losshound.core.scheduler import MonitorThread
 from losshound.gui.dashboard import DashboardTab
+from losshound.gui.drop_tab import DropTab
 from losshound.gui.export_tab import ExportTab
 from losshound.gui.history_tab import HistoryTab
 from losshound.gui.optimizer_tab import OptimizerTab
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self._optimizer_tab = OptimizerTab()
         self._score_tab = ScoreTab()
         self._wifi_tab = WifiTab()
+        self._drop_tab = DropTab()
         self._qos_tab = QosTab()
 
         self._tabs.addTab(self._dashboard, "Dashboard")
@@ -66,6 +68,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._qos_tab, "QoS")
         self._tabs.addTab(self._score_tab, "Score")
         self._tabs.addTab(self._wifi_tab, "WiFi")
+        self._tabs.addTab(self._drop_tab, "Drops")
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._export_tab, "Export")
 

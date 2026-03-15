@@ -80,6 +80,23 @@ def main():
 
     sub.add_parser("wifi", help="Run WiFi diagnostics (channel scan, signal, interference)")
 
+    drop_parser = sub.add_parser(
+        "drop-analyze",
+        help="Analyze connectivity drops (jammer/ISP/cable diagnosis)",
+    )
+    drop_parser.add_argument(
+        "--duration", type=int, default=120,
+        help="Monitoring duration in seconds (default: 120)",
+    )
+    drop_parser.add_argument(
+        "--interval", type=float, default=3.0,
+        help="Polling interval in seconds (default: 3.0)",
+    )
+    drop_parser.add_argument(
+        "--wan-target", type=str, default="8.8.8.8",
+        help="Public IP to ping for WAN check (default: 8.8.8.8)",
+    )
+
     qos_parser = sub.add_parser("qos", help="Add a per-app QoS priority rule")
     qos_parser.add_argument("app", help="Application name or path (e.g. chrome.exe)")
     qos_parser.add_argument(

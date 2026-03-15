@@ -8,8 +8,8 @@ import sys
 def run_optimizer_command(args):
     """Dispatch optimizer subcommands."""
     if args.command in ("benchmark", "compare", "load-benchmark", "load-compare",
-                        "score", "trends", "history", "wifi", "qos", "qos-list",
-                        "qos-clear", "isp-report"):
+                        "score", "trends", "history", "wifi", "drop-analyze",
+                        "qos", "qos-list", "qos-clear", "isp-report"):
         if args.command == "benchmark":
             _cmd_benchmark(label=args.label, ping_count=args.pings)
         elif args.command == "compare":
@@ -26,6 +26,12 @@ def run_optimizer_command(args):
             _cmd_history(count=args.count)
         elif args.command == "wifi":
             _cmd_wifi()
+        elif args.command == "drop-analyze":
+            _cmd_drop_analyze(
+                duration=args.duration,
+                interval=args.interval,
+                wan_target=args.wan_target,
+            )
         elif args.command == "qos":
             _cmd_qos(app=args.app, priority=args.priority)
         elif args.command == "qos-list":
@@ -376,6 +382,46 @@ def _cmd_wifi():
 
     report = run_wifi_diagnostics()
     print(format_wifi_report(report))
+
+
+def _cmd_drop_analyze(duration: int, interval: float, wan_target: str):
+    """Run connectivity drop analysis."""
+    from losshound.core.drop_analyzer import (
+        format_drop_report, run_drop_analysis,
+    )
+    from losshound.core.gateway import detect_gateway
+
+    print("Losshound Drop Analyzer")
+    print("=" * 65)
+    print("  Detecting gateway...")
+
+    gw = detect_gateway()
+    if not gw:
+        print("  ERROR: Could not detect gateway. Check your network connection.")
+        return
+
+    print(f"  Gateway:      {gw}")
+    print(f"  WAN target:   {wan_target}")
+    print(f"  Duration:     {duration}s")
+    print(f"  Poll interval:{interval}s")
+    print()
+    print("  Starting rapid connectivity monitoring...")
+    print("  (Press Ctrl+C to stop early)\n")
+
+    try:
+        report = run_drop_analysis(
+            gateway=gw,
+            wan_target=wan_target,
+            duration_seconds=duration,
+            poll_interval=interval,
+            progress_callback=lambda msg: print(msg),
+        )
+    except KeyboardInterrupt:
+        print("\n  Scan interrupted — analyzing collected data...\n")
+        return
+
+    print()
+    print(format_drop_report(report))
 
 
 def _cmd_qos(app: str, priority: str):
