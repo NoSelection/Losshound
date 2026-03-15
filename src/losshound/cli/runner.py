@@ -17,6 +17,10 @@ from losshound.storage.history import HistoryStore
 
 def run_cli(config: AppConfig):
     """Run Losshound in CLI mode, printing results to stdout."""
+    import functools
+    import builtins
+    builtins.print = functools.partial(print, flush=True)
+
     history = HistoryStore()
     running = True
 
