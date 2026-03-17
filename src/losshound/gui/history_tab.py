@@ -42,7 +42,7 @@ class HistoryTab(QWidget):
         # Table
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels([
-            "Time", "Status", "Summary", "Confidence", "Details",
+            "Date / Time", "Status", "Summary", "Confidence", "Details",
         ])
         self._table.horizontalHeader().setSectionResizeMode(
             2, QHeaderView.ResizeMode.Stretch
@@ -82,7 +82,8 @@ class HistoryTab(QWidget):
 
             ts = entry["timestamp"]
             if "T" in ts:
-                ts = ts.split("T")[1][:8]
+                date_part, time_part = ts.split("T")
+                ts = f"{date_part}  {time_part[:8]}"
 
             self._table.setItem(row, 0, QTableWidgetItem(ts))
 
