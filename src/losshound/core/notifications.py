@@ -51,3 +51,33 @@ def format_generic_payload(event: AlertEvent) -> dict:
         "message": event.message,
         "is_resolution": event.is_resolution,
     }
+
+
+def post_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
+    """POST ``payload`` as JSON to ``url``. Returns True on 2xx.
+
+    Catches all exceptions and logs them. Never raises — callers that
+    fire-and-forget can ignore the return value.
+    """
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=body,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "Losshound/0.1",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            status = getattr(resp, "status", 0)
+            return 200 <= status < 300
+    except urllib.error.HTTPError as exc:
+        logger.warning("Webhook POST returned %s for %s", exc.code, url)
+        return False
+    except urllib.error.URLError as exc:
+        logger.warning("Webhook POST failed (network): %s", exc)
+        return False
+    except Exception:
+        logger.exception("Webhook POST raised unexpectedly")
+        return False

@@ -70,3 +70,70 @@ def test_format_generic_payload_resolution():
     )
     assert payload["is_resolution"] is True
     assert payload["severity"] == "info"
+
+
+# -- post_webhook --------------------------------------------------
+
+def test_post_webhook_returns_true_on_2xx(monkeypatch):
+    from losshound.core.notifications import post_webhook
+    captured = {}
+
+    class _FakeResponse:
+        status = 204
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def read(self): return b""
+
+    def _fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["data"] = req.data
+        captured["timeout"] = timeout
+        return _FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    ok = post_webhook("https://example.com/h", {"hello": "world"}, timeout=5)
+    assert ok is True
+    assert captured["url"] == "https://example.com/h"
+    assert b'"hello"' in captured["data"]
+    assert captured["timeout"] == 5
+
+
+def test_post_webhook_returns_false_on_http_error(monkeypatch):
+    from losshound.core.notifications import post_webhook
+    import urllib.error
+
+    def _fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url, 500, "Server Error", {}, None
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    ok = post_webhook("https://example.com/h", {})
+    assert ok is False
+
+
+def test_post_webhook_returns_false_on_url_error(monkeypatch):
+    from losshound.core.notifications import post_webhook
+    import urllib.error
+
+    def _fake_urlopen(req, timeout=None):
+        raise urllib.error.URLError("network down")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    ok = post_webhook("https://example.com/h", {})
+    assert ok is False
+
+
+def test_post_webhook_returns_false_on_unexpected_exception(monkeypatch):
+    from losshound.core.notifications import post_webhook
+
+    def _fake_urlopen(req, timeout=None):
+        raise RuntimeError("something weird")
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+
+    ok = post_webhook("https://example.com/h", {})
+    assert ok is False
