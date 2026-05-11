@@ -55,6 +55,7 @@ class _DropAnalyzeWorker(QThread):
                 duration_seconds=self._duration,
                 poll_interval=self._interval,
                 progress_callback=lambda msg: self.progress.emit(msg),
+                stop_check=lambda: self._stop_requested,
             )
             self.finished.emit(report)
         except Exception as exc:

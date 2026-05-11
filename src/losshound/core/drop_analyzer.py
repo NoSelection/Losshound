@@ -384,6 +384,7 @@ def run_drop_analysis(
     duration_seconds: int = 120,
     poll_interval: float = 3.0,
     progress_callback=None,
+    stop_check=None,
 ) -> DropAnalysisReport:
     """Run rapid connectivity polling to catch and classify drop events.
 
@@ -393,6 +394,7 @@ def run_drop_analysis(
         duration_seconds: How long to monitor.
         poll_interval: Seconds between samples.
         progress_callback: Optional callable for status updates.
+        stop_check: optional callable returning True to abort early.
     """
     samples: list[ConnSample] = []
     start_time = time.monotonic()
@@ -407,6 +409,10 @@ def run_drop_analysis(
         progress_callback(f"  Gateway: {gateway}  |  WAN target: {wan_target}")
 
     while time.monotonic() < end_time:
+        if stop_check is not None and stop_check():
+            if progress_callback:
+                progress_callback("Stopping (user requested)...")
+            break
         sample_num += 1
         now = datetime.now()
 
