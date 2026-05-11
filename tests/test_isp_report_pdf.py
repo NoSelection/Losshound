@@ -1,5 +1,47 @@
-import losshound.core.isp_report_pdf  # noqa: F401
+from datetime import datetime
+from pathlib import Path
+
+import pytest
+
+from losshound.core.isp_report import IspReportData
+from losshound.core.isp_report_pdf import render_isp_report_pdf
 
 
-def test_module_imports():
-    assert True
+def _minimal_data() -> IspReportData:
+    return IspReportData(
+        generated_at=datetime(2026, 5, 11, 18, 0, 0).isoformat(),
+        report_period_hours=24,
+        system_info={
+            "os": "Windows-11", "hostname": "TEST",
+            "default_gateway": "192.168.1.1",
+            "active_adapters": [
+                {"name": "Wi-Fi", "description": "Intel AX201",
+                 "link_speed": "866 Mbps"},
+            ],
+        },
+        total_observations=12,
+        total_benchmarks=2,
+        avg_latency_ms=18.4,
+        avg_jitter_ms=2.1,
+        avg_loss_pct=0.3,
+        max_latency_ms=45.0,
+        max_loss_pct=2.0,
+        avg_dns_ms=11.0,
+        avg_score=87.0,
+        latest_grade="B",
+        issue_counts={"lan_issue": 1, "dns_issue": 2},
+    )
+
+
+def test_renders_pdf_to_path(tmp_path: Path):
+    data = _minimal_data()
+    out = tmp_path / "report.pdf"
+
+    returned = render_isp_report_pdf(data, out)
+
+    assert returned == out
+    assert out.exists()
+    assert out.stat().st_size > 0
+    with out.open("rb") as f:
+        head = f.read(5)
+    assert head == b"%PDF-", f"PDF magic header missing, got {head!r}"
