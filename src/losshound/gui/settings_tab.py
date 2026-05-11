@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QCheckBox, QDoubleSpinBox, QFormLayout, QGridLayout, QGroupBox, QHBoxLayout,
     QLineEdit, QMessageBox, QPushButton, QScrollArea,
     QSpinBox, QVBoxLayout, QWidget,
 )
 
-from losshound.core.config import AppConfig, DiagnosisConfig, save_config
+from losshound.core.config import AlertsConfig, AppConfig, DiagnosisConfig, save_config
 
 
 class SettingsTab(QWidget):
@@ -134,6 +134,52 @@ class SettingsTab(QWidget):
 
         main_layout.addWidget(diag_group)
 
+        # Alerts group
+        alerts_group = QGroupBox("Alerts")
+        alerts_form = QFormLayout(alerts_group)
+
+        self._alerts_enabled = QCheckBox("Enable alerts")
+        self._alerts_enabled.setChecked(config.alerts.enabled)
+        alerts_form.addRow("Master:", self._alerts_enabled)
+
+        cats = [
+            ("lan_issue", "LAN issues"),
+            ("isp_wan_issue", "ISP / WAN issues"),
+            ("dns_issue", "DNS issues"),
+            ("upstream_route_issue", "Upstream route changes"),
+            ("intermittent", "Intermittent loss"),
+        ]
+        cats_widget = QWidget()
+        cats_grid = QGridLayout(cats_widget)
+        cats_grid.setContentsMargins(0, 0, 0, 0)
+        self._alert_cat_boxes: dict[str, QCheckBox] = {}
+        for i, (cat_key, cat_label) in enumerate(cats):
+            cb = QCheckBox(cat_label)
+            cb.setChecked(cat_key in config.alerts.categories)
+            self._alert_cat_boxes[cat_key] = cb
+            cats_grid.addWidget(cb, i // 2, i % 2)
+        alerts_form.addRow("Categories:", cats_widget)
+
+        self._alert_min_duration = QSpinBox()
+        self._alert_min_duration.setRange(5, 600)
+        self._alert_min_duration.setSuffix(" sec")
+        self._alert_min_duration.setValue(config.alerts.min_duration_seconds)
+        alerts_form.addRow("Wait before alerting:", self._alert_min_duration)
+
+        self._alert_snooze = QSpinBox()
+        self._alert_snooze.setRange(60, 3600)
+        self._alert_snooze.setSuffix(" sec")
+        self._alert_snooze.setValue(config.alerts.snooze_seconds)
+        alerts_form.addRow("Snooze duration:", self._alert_snooze)
+
+        self._alert_debounce = QSpinBox()
+        self._alert_debounce.setRange(30, 600)
+        self._alert_debounce.setSuffix(" sec")
+        self._alert_debounce.setValue(config.alerts.debounce_seconds)
+        alerts_form.addRow("Debounce:", self._alert_debounce)
+
+        main_layout.addWidget(alerts_group)
+
         # Behavior group
         behavior_group = QGroupBox("Behavior")
         behavior_form = QFormLayout(behavior_group)
@@ -204,6 +250,17 @@ class SettingsTab(QWidget):
             ping_timeout_ms=self._ping_timeout.value(),
             auto_benchmark_interval_minutes=self._config.auto_benchmark_interval_minutes,
             close_to_tray=self._close_to_tray.isChecked(),
+            pdf_default_dir=self._config.pdf_default_dir,
+            alerts=AlertsConfig(
+                enabled=self._alerts_enabled.isChecked(),
+                categories=[
+                    cat for cat, cb in self._alert_cat_boxes.items()
+                    if cb.isChecked()
+                ],
+                min_duration_seconds=self._alert_min_duration.value(),
+                snooze_seconds=self._alert_snooze.value(),
+                debounce_seconds=self._alert_debounce.value(),
+            ),
             diagnosis=diag,
         )
 
@@ -236,3 +293,11 @@ class SettingsTab(QWidget):
         self._route_sensitivity.setValue(dc.route_change_sensitivity)
         self._min_obs.setValue(dc.min_observations)
         self._window.setValue(dc.window_minutes)
+
+        default_alerts = AlertsConfig()
+        self._alerts_enabled.setChecked(default_alerts.enabled)
+        for cat_key, cb in self._alert_cat_boxes.items():
+            cb.setChecked(cat_key in default_alerts.categories)
+        self._alert_min_duration.setValue(default_alerts.min_duration_seconds)
+        self._alert_snooze.setValue(default_alerts.snooze_seconds)
+        self._alert_debounce.setValue(default_alerts.debounce_seconds)
