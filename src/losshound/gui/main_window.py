@@ -5,7 +5,8 @@ import logging
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
-    QLabel, QMainWindow, QStatusBar, QTabWidget, QVBoxLayout, QWidget,
+    QApplication, QLabel, QMainWindow, QStatusBar, QTabWidget,
+    QVBoxLayout, QWidget,
 )
 
 from losshound.core.config import AppConfig
@@ -137,7 +138,8 @@ class MainWindow(QMainWindow):
         self.close()
 
     def closeEvent(self, event: QCloseEvent):
-        if not self._really_quit and self._tray.isVisible():
+        close_to_tray = getattr(self._config, "close_to_tray", False)
+        if not self._really_quit and close_to_tray and self._tray.isVisible():
             # Minimize to tray instead of closing
             self.hide()
             self._tray.showMessage(
@@ -149,7 +151,59 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
-        self._tray.hide()
-        self._monitor.stop()
-        self._history.close()
+        # Real quit: stop everything, then ask the app to exit. The
+        # remaining cleanup is idempotent and also runs via aboutToQuit.
+        self.shutdown_all()
         event.accept()
+        QApplication.instance().quit()
+
+    def shutdown_all(self):
+        """Stop every worker, thread, and timer this window owns.
+
+        Safe to call multiple times — also wired to QApplication.aboutToQuit
+        so a hard quit still flushes resources.
+        """
+        if getattr(self, "_shutdown_done", False):
+            return
+        self._shutdown_done = True
+
+        # Stop the countdown timer first so nothing tries to update widgets
+        # while we're tearing things down.
+        try:
+            self._countdown_timer.stop()
+        except Exception:
+            pass
+
+        # Hide tray so its menu can't fire signals during teardown.
+        try:
+            self._tray.hide()
+        except Exception:
+            pass
+
+        # Stop every tab that exposes a shutdown() hook.
+        tab_attrs = (
+            "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",
+            "_drop_tab", "_export_tab",
+        )
+        for name in tab_attrs:
+            tab = getattr(self, name, None)
+            if tab is None:
+                continue
+            shutdown = getattr(tab, "shutdown", None)
+            if callable(shutdown):
+                try:
+                    shutdown()
+                except Exception:
+                    logger.exception("Error shutting down %s", name)
+
+        # Stop the monitor thread last — it holds the longest-running
+        # subprocesses (tracert).
+        try:
+            self._monitor.stop()
+        except Exception:
+            logger.exception("Error stopping monitor thread")
+
+        try:
+            self._history.close()
+        except Exception:
+            logger.exception("Error closing history store")

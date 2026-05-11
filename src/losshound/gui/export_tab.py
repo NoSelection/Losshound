@@ -29,6 +29,10 @@ class _IspReportWorker(QObject):
 
 
 class ExportTab(QWidget):
+    def shutdown(self):
+        from losshound.gui._shutdown import stop_qthread
+        stop_qthread(getattr(self, "_thread", None))
+
     def __init__(self, history: HistoryStore, parent=None):
         super().__init__(parent)
         self._history = history

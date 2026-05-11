@@ -227,7 +227,13 @@ class MonitorThread(QThread):
         if self._worker:
             self._worker.stop()
         self.quit()
-        self.wait(5000)
+        # Give the worker a generous window — a tracert in flight can take
+        # 30s+. After that, terminate hard; the Job Object will kill any
+        # straggler subprocess children when the interpreter exits.
+        if not self.wait(3000):
+            logger.warning("MonitorThread did not stop cleanly; terminating")
+            self.terminate()
+            self.wait(1000)
 
     def update_config(self, config: AppConfig):
         self._config = config

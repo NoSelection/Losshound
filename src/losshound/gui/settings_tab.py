@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QCheckBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLineEdit, QMessageBox, QPushButton, QScrollArea,
     QSpinBox, QVBoxLayout, QWidget,
 )
@@ -134,6 +134,20 @@ class SettingsTab(QWidget):
 
         main_layout.addWidget(diag_group)
 
+        # Behavior group
+        behavior_group = QGroupBox("Behavior")
+        behavior_form = QFormLayout(behavior_group)
+
+        self._close_to_tray = QCheckBox("Minimize to tray instead of quitting")
+        self._close_to_tray.setChecked(config.close_to_tray)
+        self._close_to_tray.setToolTip(
+            "When enabled, clicking the X keeps Losshound monitoring "
+            "in the system tray. Right-click the tray icon to quit."
+        )
+        behavior_form.addRow("Close button:", self._close_to_tray)
+
+        main_layout.addWidget(behavior_group)
+
         # Buttons
         btn_row = QHBoxLayout()
         btn_row.addStretch()
@@ -188,6 +202,8 @@ class SettingsTab(QWidget):
             tracert_max_hops=self._config.tracert_max_hops,
             ping_count=self._ping_count.value(),
             ping_timeout_ms=self._ping_timeout.value(),
+            auto_benchmark_interval_minutes=self._config.auto_benchmark_interval_minutes,
+            close_to_tray=self._close_to_tray.isChecked(),
             diagnosis=diag,
         )
 
@@ -209,6 +225,7 @@ class SettingsTab(QWidget):
         self._public_targets.setText(", ".join(default.public_ping_targets))
         self._dns_hostnames.setText(", ".join(default.dns_test_hostnames))
         self._tracert_target.setText(default.tracert_target)
+        self._close_to_tray.setChecked(default.close_to_tray)
 
         dc = default.diagnosis
         self._gw_loss.setValue(dc.gateway_loss_threshold)

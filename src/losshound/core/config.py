@@ -46,6 +46,7 @@ class AppConfig:
     ping_count: int = 4
     ping_timeout_ms: int = 2000
     auto_benchmark_interval_minutes: int = 60
+    close_to_tray: bool = False
     diagnosis: DiagnosisConfig = field(default_factory=DiagnosisConfig)
     log_level: str = "INFO"
 

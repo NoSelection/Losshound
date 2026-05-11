@@ -403,14 +403,17 @@ def run_load_benchmark(
     stop_load = threading.Event()
     stop_ping = threading.Event()
 
-    # Run download and pings concurrently
+    # Run download and pings concurrently. Daemon so a hard shutdown
+    # of the GUI doesn't block on the interpreter waiting for them.
     load_thread = threading.Thread(
         target=_generate_load,
         args=(_DOWNLOAD_URLS, 20, stop_load, dl_result),
+        daemon=True,
     )
     ping_thread = threading.Thread(
         target=_ping_continuous,
         args=(_PING_TARGET, 20, loaded_rtts, stop_ping, 0.5),
+        daemon=True,
     )
 
     load_thread.start()

@@ -44,6 +44,10 @@ class _RemoveWorker(QObject):
 
 
 class QosTab(QWidget):
+    def shutdown(self):
+        from losshound.gui._shutdown import stop_qthreads
+        stop_qthreads(getattr(self, "_threads", []))
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._rules: list[QosRule] = load_saved_rules()

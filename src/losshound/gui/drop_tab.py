@@ -73,6 +73,16 @@ class _DropAnalyzeWorker(QThread):
 class DropTab(QWidget):
     """Connectivity drop analyzer tab."""
 
+    def shutdown(self):
+        from losshound.gui._shutdown import stop_qthread
+        worker = getattr(self, "_worker", None)
+        if worker is not None:
+            try:
+                worker.request_stop()
+            except Exception:
+                pass
+        stop_qthread(worker)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker: _DropAnalyzeWorker | None = None

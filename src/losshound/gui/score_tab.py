@@ -72,6 +72,10 @@ class _TrendsWorker(QThread):
 class ScoreTab(QWidget):
     """Network quality score and historical trends tab."""
 
+    def shutdown(self):
+        from losshound.gui._shutdown import stop_qthread
+        stop_qthread(getattr(self, "_worker", None))
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker = None
