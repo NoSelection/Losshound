@@ -133,6 +133,11 @@ def get_dark_stylesheet() -> str:
         background-color: #313244;
     }
 
+    QPushButton:disabled {
+        background-color: #313244;
+        color: #6c7086;
+    }
+
     QPushButton.primary {
         background-color: #89b4fa;
         color: #1e1e2e;
