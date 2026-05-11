@@ -193,22 +193,6 @@ def _embed_image_section(title: str, png: bytes | None, story, styles,
     story.append(Spacer(1, 12))
 
 
-def _build_latency_section(data, story, styles):
-    from reportlab.platypus import Paragraph, Spacer, Image
-    import io
-
-    h2 = styles["Heading2"]
-    body = styles["BodyText"]
-
-    story.append(Paragraph("Latency", h2))
-    png = _render_latency_chart_png(data.observations)
-    if png is None:
-        story.append(Paragraph("Not enough data to chart.", body))
-    else:
-        story.append(Image(io.BytesIO(png), width=460, height=180))
-    story.append(Spacer(1, 12))
-
-
 def _build_benchmark_table(data, story, styles):
     from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
     from reportlab.lib import colors
@@ -327,28 +311,33 @@ def render_isp_report_pdf(data: IspReportData, output_path: Path) -> Path:
         author="Losshound",
     )
     story = []
-    _build_cover_page(data, story, getSampleStyleSheet())
-    _build_system_info(data, story, getSampleStyleSheet())
-    _build_issue_summary(data, story, getSampleStyleSheet())
-    _build_latency_section(data, story, getSampleStyleSheet())
+    styles = getSampleStyleSheet()
+    _build_cover_page(data, story, styles)
+    _build_system_info(data, story, styles)
+    _build_issue_summary(data, story, styles)
+    _embed_image_section(
+        "Latency",
+        _render_latency_chart_png(data.observations),
+        story, styles, width=460, height=180,
+    )
     _embed_image_section(
         "Packet loss",
         _render_loss_chart_png(data.observations),
-        story, getSampleStyleSheet(), width=460, height=144,
+        story, styles, width=460, height=144,
     )
     _embed_image_section(
         "DNS performance",
         _render_dns_bar_png(data.benchmarks),
-        story, getSampleStyleSheet(), width=460, height=168,
+        story, styles, width=460, height=168,
     )
     _embed_image_section(
         "Before vs after",
         _render_before_after_png(data.benchmarks),
-        story, getSampleStyleSheet(), width=460, height=180,
+        story, styles, width=460, height=180,
     )
-    _build_benchmark_table(data, story, getSampleStyleSheet())
-    _build_diagnosis_log(data, story, getSampleStyleSheet())
-    _build_route_table(data, story, getSampleStyleSheet())
+    _build_benchmark_table(data, story, styles)
+    _build_diagnosis_log(data, story, styles)
+    _build_route_table(data, story, styles)
     doc.build(story)
     return output_path
 
