@@ -87,8 +87,10 @@ class MainWindow(QMainWindow):
         self._countdown_timer.timeout.connect(self._tick_countdown)
         self._countdown_timer.start(1000)
 
-        # System tray icon
-        self._tray = TrayIcon(self)
+        # Alert engine + system tray icon
+        from losshound.core.alerts import AlertEngine
+        self._alert_engine = AlertEngine(config.alerts, self._history)
+        self._tray = TrayIcon(self, engine=self._alert_engine)
         self._tray.show_requested.connect(self._show_from_tray)
         self._tray.quit_requested.connect(self._quit_from_tray)
         self._tray.show()
@@ -123,6 +125,8 @@ class MainWindow(QMainWindow):
     def _on_config_changed(self, config: AppConfig):
         self._config = config
         self._monitor.update_config(config)
+        if hasattr(self, "_alert_engine"):
+            self._alert_engine.update_config(config.alerts)
         self._seconds_until_next = config.ping_interval_seconds
 
     def _tick_countdown(self):
