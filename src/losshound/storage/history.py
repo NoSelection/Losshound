@@ -293,7 +293,7 @@ class HistoryStore:
         total = 0
         for table in ["observations", "diagnoses", "route_snapshots", "benchmark_snapshots"]:
             cursor = self._conn.execute(
-                f"DELETE FROM {table} WHERE timestamp < ?", (cutoff,)
+                f"DELETE FROM {table} WHERE timestamp <= ?", (cutoff,)
             )
             total += cursor.rowcount
         self._conn.commit()
