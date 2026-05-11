@@ -178,6 +178,28 @@ class SettingsTab(QWidget):
         self._alert_debounce.setValue(config.alerts.debounce_seconds)
         alerts_form.addRow("Debounce:", self._alert_debounce)
 
+        self._discord_webhook = QLineEdit()
+        self._discord_webhook.setText(config.alerts.discord_webhook_url or "")
+        self._discord_webhook.setPlaceholderText(
+            "https://discord.com/api/webhooks/..."
+        )
+        self._discord_webhook.setToolTip(
+            "Paste a webhook URL from Discord → Channel Settings → "
+            "Integrations → Webhooks. Empty = disabled."
+        )
+        alerts_form.addRow("Discord webhook URL:", self._discord_webhook)
+
+        self._generic_webhook = QLineEdit()
+        self._generic_webhook.setText(config.alerts.generic_webhook_url or "")
+        self._generic_webhook.setPlaceholderText(
+            "https://example.com/hook  (POSTs JSON)"
+        )
+        self._generic_webhook.setToolTip(
+            "Plain JSON POST to any URL. Fields: source, timestamp, "
+            "category, severity, title, message, is_resolution."
+        )
+        alerts_form.addRow("Generic webhook URL:", self._generic_webhook)
+
         main_layout.addWidget(alerts_group)
 
         # Behavior group
@@ -260,6 +282,8 @@ class SettingsTab(QWidget):
                 min_duration_seconds=self._alert_min_duration.value(),
                 snooze_seconds=self._alert_snooze.value(),
                 debounce_seconds=self._alert_debounce.value(),
+                discord_webhook_url=self._discord_webhook.text().strip() or None,
+                generic_webhook_url=self._generic_webhook.text().strip() or None,
             ),
             diagnosis=diag,
         )
@@ -301,3 +325,5 @@ class SettingsTab(QWidget):
         self._alert_min_duration.setValue(default_alerts.min_duration_seconds)
         self._alert_snooze.setValue(default_alerts.snooze_seconds)
         self._alert_debounce.setValue(default_alerts.debounce_seconds)
+        self._discord_webhook.setText("")
+        self._generic_webhook.setText("")
