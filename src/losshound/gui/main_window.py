@@ -37,8 +37,8 @@ class MainWindow(QMainWindow):
         self._really_quit = False
 
         self.setWindowTitle("Losshound — Network Diagnosis")
-        self.setMinimumSize(800, 550)
-        self.resize(940, 640)
+        self.setMinimumSize(1000, 600)
+        self.resize(1040, 680)
         self.setStyleSheet(get_dark_stylesheet())
 
         # Central widget with tabs
