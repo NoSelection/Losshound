@@ -151,10 +151,9 @@ def test_dispatcher_skips_when_no_urls_configured(monkeypatch):
 
     cfg = AlertsConfig()
     dispatcher = NotificationDispatcher(cfg)
-    dispatcher.dispatch(_event())
-    # Give any spurious threads a chance to run before asserting.
-    import time
-    time.sleep(0.2)
+    threads = dispatcher.dispatch(_event())
+    for t in threads:
+        t.join(timeout=2.0)
 
     assert calls == []
 
@@ -169,9 +168,10 @@ def test_dispatcher_posts_to_discord_only(monkeypatch):
 
     cfg = AlertsConfig(discord_webhook_url="https://discord.example/h")
     dispatcher = NotificationDispatcher(cfg)
-    dispatcher.dispatch(_event())
+    threads = dispatcher.dispatch(_event())
+    for t in threads:
+        t.join(timeout=2.0)
 
-    import time; time.sleep(0.3)
     assert len(captured) == 1
     url, payload = captured[0]
     assert url == "https://discord.example/h"
@@ -191,9 +191,10 @@ def test_dispatcher_posts_to_both_when_both_configured(monkeypatch):
         generic_webhook_url="https://generic.example/h",
     )
     dispatcher = NotificationDispatcher(cfg)
-    dispatcher.dispatch(_event())
+    threads = dispatcher.dispatch(_event())
+    for t in threads:
+        t.join(timeout=2.0)
 
-    import time; time.sleep(0.3)
     urls = sorted(u for u, _ in captured)
     assert urls == ["https://discord.example/h", "https://generic.example/h"]
 
@@ -218,8 +219,9 @@ def test_dispatcher_update_config_swaps_urls(monkeypatch):
     new_cfg = AlertsConfig(discord_webhook_url="https://new.example/h")
     dispatcher.update_config(new_cfg)
 
-    dispatcher.dispatch(_event())
-    import time; time.sleep(0.3)
+    threads = dispatcher.dispatch(_event())
+    for t in threads:
+        t.join(timeout=2.0)
     assert captured == ["https://new.example/h"]
 
 
@@ -237,7 +239,8 @@ def test_dispatcher_treats_blank_urls_as_unconfigured(monkeypatch):
         generic_webhook_url="   ",
     )
     dispatcher = NotificationDispatcher(cfg)
-    dispatcher.dispatch(_event())
-    import time; time.sleep(0.2)
+    threads = dispatcher.dispatch(_event())
+    for t in threads:
+        t.join(timeout=2.0)
 
     assert calls == []

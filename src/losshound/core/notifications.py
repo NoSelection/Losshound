@@ -96,22 +96,39 @@ class NotificationDispatcher:
     def update_config(self, config: AlertsConfig) -> None:
         self._config = config
 
-    def dispatch(self, event: AlertEvent) -> None:
-        discord = _clean_url(self._config.discord_webhook_url)
-        generic = _clean_url(self._config.generic_webhook_url)
+    def dispatch(self, event: AlertEvent) -> list[threading.Thread]:
+        """Dispatch an event to all configured channels.
 
+        Returns the list of threads spawned (empty if nothing was
+        configured). Callers may join() them for deterministic tests;
+        production callers can ignore the return value.
+        """
+        # Snapshot the config locally so a concurrent update_config can't
+        # cause us to read a half-replaced state (e.g. new discord URL
+        # but old generic URL).
+        cfg = self._config
+        discord = _clean_url(cfg.discord_webhook_url)
+        generic = _clean_url(cfg.generic_webhook_url)
+
+        threads: list[threading.Thread] = []
         if discord:
-            self._spawn(discord, format_discord_payload(event), "discord")
+            threads.append(
+                self._spawn(discord, format_discord_payload(event), "discord")
+            )
         if generic:
-            self._spawn(generic, format_generic_payload(event), "generic")
+            threads.append(
+                self._spawn(generic, format_generic_payload(event), "generic")
+            )
+        return threads
 
-    def _spawn(self, url: str, payload: dict, channel: str) -> None:
+    def _spawn(self, url: str, payload: dict, channel: str) -> threading.Thread:
         thread = threading.Thread(
             target=_send,
             args=(url, payload, channel),
             daemon=True,
         )
         thread.start()
+        return thread
 
 
 def _send(url: str, payload: dict, channel: str) -> None:
