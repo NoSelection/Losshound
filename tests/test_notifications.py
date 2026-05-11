@@ -1,5 +1,50 @@
-import losshound.core.notifications  # noqa: F401
+from datetime import datetime
+
+import pytest
+
+from losshound.core.alerts import AlertEvent
+from losshound.core.config import AlertsConfig
+from losshound.core.notifications import (
+    format_discord_payload,
+    format_generic_payload,
+)
 
 
-def test_module_imports():
-    assert True
+def _event(severity: str = "warning", is_resolution: bool = False) -> AlertEvent:
+    return AlertEvent(
+        timestamp=datetime(2026, 5, 11, 18, 42, 13),
+        category="lan_issue",
+        severity=severity,
+        title="Lan Issue",
+        message="Gateway 192.168.1.1 is unreachable.",
+        is_resolution=is_resolution,
+    )
+
+
+# -- Discord payload -----------------------------------------------
+
+def test_format_discord_payload_basic():
+    payload = format_discord_payload(_event(severity="warning"))
+
+    assert "embeds" in payload
+    assert isinstance(payload["embeds"], list)
+    assert len(payload["embeds"]) == 1
+
+    embed = payload["embeds"][0]
+    assert embed["title"] == "Losshound — Lan Issue"
+    assert "Gateway 192.168.1.1 is unreachable." in embed["description"]
+    assert embed["timestamp"] == "2026-05-11T18:42:13"
+    assert embed["color"] == 0xf9e2af  # warning -> yellow
+    assert "warning" in embed["footer"]["text"]
+
+
+def test_format_discord_payload_critical_is_red():
+    payload = format_discord_payload(_event(severity="critical"))
+    assert payload["embeds"][0]["color"] == 0xf38ba8
+
+
+def test_format_discord_payload_resolution_is_blue():
+    payload = format_discord_payload(
+        _event(severity="info", is_resolution=True)
+    )
+    assert payload["embeds"][0]["color"] == 0x89b4fa
