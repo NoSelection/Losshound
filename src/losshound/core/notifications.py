@@ -81,3 +81,51 @@ def post_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
     except Exception:
         logger.exception("Webhook POST raised unexpectedly")
         return False
+
+
+class NotificationDispatcher:
+    """Routes AlertEvents to configured webhook channels.
+
+    Each dispatch fires-and-forgets in daemon threads so the GUI
+    thread is never blocked by network I/O.
+    """
+
+    def __init__(self, config: AlertsConfig):
+        self._config = config
+
+    def update_config(self, config: AlertsConfig) -> None:
+        self._config = config
+
+    def dispatch(self, event: AlertEvent) -> None:
+        discord = _clean_url(self._config.discord_webhook_url)
+        generic = _clean_url(self._config.generic_webhook_url)
+
+        if discord:
+            self._spawn(discord, format_discord_payload(event), "discord")
+        if generic:
+            self._spawn(generic, format_generic_payload(event), "generic")
+
+    def _spawn(self, url: str, payload: dict, channel: str) -> None:
+        thread = threading.Thread(
+            target=_send,
+            args=(url, payload, channel),
+            daemon=True,
+        )
+        thread.start()
+
+
+def _send(url: str, payload: dict, channel: str) -> None:
+    ok = post_webhook(url, payload)
+    if ok:
+        logger.debug("%s webhook delivered", channel)
+    else:
+        logger.warning("%s webhook FAILED for %s", channel, url)
+
+
+def _clean_url(url: Optional[str]) -> Optional[str]:
+    if url is None:
+        return None
+    stripped = url.strip()
+    if not stripped:
+        return None
+    return stripped

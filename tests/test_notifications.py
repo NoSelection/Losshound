@@ -137,3 +137,107 @@ def test_post_webhook_returns_false_on_unexpected_exception(monkeypatch):
 
     ok = post_webhook("https://example.com/h", {})
     assert ok is False
+
+
+# -- NotificationDispatcher ----------------------------------------
+
+def test_dispatcher_skips_when_no_urls_configured(monkeypatch):
+    from losshound.core.notifications import NotificationDispatcher
+    calls = []
+    monkeypatch.setattr(
+        "losshound.core.notifications.post_webhook",
+        lambda *a, **kw: calls.append(a) or True,
+    )
+
+    cfg = AlertsConfig()
+    dispatcher = NotificationDispatcher(cfg)
+    dispatcher.dispatch(_event())
+    # Give any spurious threads a chance to run before asserting.
+    import time
+    time.sleep(0.2)
+
+    assert calls == []
+
+
+def test_dispatcher_posts_to_discord_only(monkeypatch):
+    from losshound.core.notifications import NotificationDispatcher
+    captured = []
+    monkeypatch.setattr(
+        "losshound.core.notifications.post_webhook",
+        lambda url, payload, timeout=10.0: captured.append((url, payload)) or True,
+    )
+
+    cfg = AlertsConfig(discord_webhook_url="https://discord.example/h")
+    dispatcher = NotificationDispatcher(cfg)
+    dispatcher.dispatch(_event())
+
+    import time; time.sleep(0.3)
+    assert len(captured) == 1
+    url, payload = captured[0]
+    assert url == "https://discord.example/h"
+    assert "embeds" in payload  # Discord shape
+
+
+def test_dispatcher_posts_to_both_when_both_configured(monkeypatch):
+    from losshound.core.notifications import NotificationDispatcher
+    captured = []
+    monkeypatch.setattr(
+        "losshound.core.notifications.post_webhook",
+        lambda url, payload, timeout=10.0: captured.append((url, payload)) or True,
+    )
+
+    cfg = AlertsConfig(
+        discord_webhook_url="https://discord.example/h",
+        generic_webhook_url="https://generic.example/h",
+    )
+    dispatcher = NotificationDispatcher(cfg)
+    dispatcher.dispatch(_event())
+
+    import time; time.sleep(0.3)
+    urls = sorted(u for u, _ in captured)
+    assert urls == ["https://discord.example/h", "https://generic.example/h"]
+
+    # Verify each got the right payload shape
+    discord_payload = next(p for u, p in captured if "discord" in u)
+    generic_payload = next(p for u, p in captured if "generic" in u)
+    assert "embeds" in discord_payload
+    assert generic_payload.get("source") == "losshound"
+
+
+def test_dispatcher_update_config_swaps_urls(monkeypatch):
+    from losshound.core.notifications import NotificationDispatcher
+    captured = []
+    monkeypatch.setattr(
+        "losshound.core.notifications.post_webhook",
+        lambda url, payload, timeout=10.0: captured.append(url) or True,
+    )
+
+    cfg = AlertsConfig(discord_webhook_url="https://old.example/h")
+    dispatcher = NotificationDispatcher(cfg)
+
+    new_cfg = AlertsConfig(discord_webhook_url="https://new.example/h")
+    dispatcher.update_config(new_cfg)
+
+    dispatcher.dispatch(_event())
+    import time; time.sleep(0.3)
+    assert captured == ["https://new.example/h"]
+
+
+def test_dispatcher_treats_blank_urls_as_unconfigured(monkeypatch):
+    """Empty string in config should be treated like None."""
+    from losshound.core.notifications import NotificationDispatcher
+    calls = []
+    monkeypatch.setattr(
+        "losshound.core.notifications.post_webhook",
+        lambda *a, **kw: calls.append(a) or True,
+    )
+
+    cfg = AlertsConfig(
+        discord_webhook_url="",
+        generic_webhook_url="   ",
+    )
+    dispatcher = NotificationDispatcher(cfg)
+    dispatcher.dispatch(_event())
+    import time; time.sleep(0.2)
+
+    assert calls == []
