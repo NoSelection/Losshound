@@ -48,3 +48,25 @@ def test_format_discord_payload_resolution_is_blue():
         _event(severity="info", is_resolution=True)
     )
     assert payload["embeds"][0]["color"] == 0x89b4fa
+
+
+# -- Generic payload -----------------------------------------------
+
+def test_format_generic_payload_basic():
+    payload = format_generic_payload(_event(severity="warning"))
+
+    assert payload["source"] == "losshound"
+    assert payload["timestamp"] == "2026-05-11T18:42:13"
+    assert payload["category"] == "lan_issue"
+    assert payload["severity"] == "warning"
+    assert payload["title"] == "Lan Issue"
+    assert payload["message"] == "Gateway 192.168.1.1 is unreachable."
+    assert payload["is_resolution"] is False
+
+
+def test_format_generic_payload_resolution():
+    payload = format_generic_payload(
+        _event(severity="info", is_resolution=True)
+    )
+    assert payload["is_resolution"] is True
+    assert payload["severity"] == "info"
