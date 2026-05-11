@@ -125,8 +125,7 @@ class MainWindow(QMainWindow):
     def _on_config_changed(self, config: AppConfig):
         self._config = config
         self._monitor.update_config(config)
-        if hasattr(self, "_alert_engine"):
-            self._alert_engine.update_config(config.alerts)
+        self._alert_engine.update_config(config.alerts)
         self._seconds_until_next = config.ping_interval_seconds
 
     def _tick_countdown(self):

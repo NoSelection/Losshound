@@ -129,7 +129,12 @@ def test_debounce_silences_within_window(tmp_path: Path):
         store.close()
 
 
-def test_snooze_silences_all_categories(tmp_path: Path):
+def test_snooze_mutes_reemits_but_not_initial_promotion(tmp_path: Path):
+    """Snooze only blocks debounce re-emits while a slot is already ALERTED.
+
+    The first IDLE→PENDING→ALERTED promotion still fires; only subsequent
+    re-emits inside the snooze window are muted.
+    """
     store = _store(tmp_path)
     try:
         cfg = AlertsConfig(min_duration_seconds=1, debounce_seconds=1)
@@ -137,17 +142,12 @@ def test_snooze_silences_all_categories(tmp_path: Path):
         engine.snooze_all(600)
 
         t0 = datetime.now() + timedelta(seconds=10)
-        # PENDING
         engine.feed(_diag(DiagnosisCategory.LAN_ISSUE, t0))
-        # Should promote to ALERTED but snooze blocks
-        # Note: snooze only affects re-emits AFTER first alert.
-        # First alert still goes through.
         first = engine.feed(
             _diag(DiagnosisCategory.LAN_ISSUE, t0 + timedelta(seconds=2))
         )
         assert first is not None  # initial promotion still fires
 
-        # subsequent re-emits muted by snooze
         again = engine.feed(
             _diag(DiagnosisCategory.LAN_ISSUE, t0 + timedelta(seconds=60))
         )

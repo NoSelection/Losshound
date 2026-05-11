@@ -105,9 +105,6 @@ class TrayIcon(QSystemTrayIcon):
         # Double-click to show
         self.activated.connect(self._on_activated)
 
-    def set_engine(self, engine) -> None:
-        self._engine = engine
-
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
             self.show_requested.emit()
@@ -193,13 +190,7 @@ class TrayIcon(QSystemTrayIcon):
 
     def _refresh_recent_alerts(self):
         self._recent_menu.clear()
-        if self._engine is None or not hasattr(self._engine, "_history"):
-            placeholder = QAction("(no alerts)", self._recent_menu)
-            placeholder.setEnabled(False)
-            self._recent_menu.addAction(placeholder)
-            return
-        history = self._engine._history
-        rows = history.recent_alerts(10)
+        rows = self._engine.recent_alerts(10) if self._engine is not None else []
         if not rows:
             placeholder = QAction("(no alerts)", self._recent_menu)
             placeholder.setEnabled(False)
@@ -210,5 +201,5 @@ class TrayIcon(QSystemTrayIcon):
             if r.resolved_at:
                 label += " ✓"
             act = QAction(label, self._recent_menu)
-            act.setEnabled(False)  # display-only in v1
+            act.setEnabled(False)
             self._recent_menu.addAction(act)

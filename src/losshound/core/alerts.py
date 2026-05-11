@@ -53,6 +53,10 @@ class AlertEngine:
     def snooze_all(self, seconds: int) -> None:
         self._snooze_until = datetime.now() + timedelta(seconds=seconds)
 
+    def recent_alerts(self, limit: int = 10):
+        """Return the most recent persisted alerts (delegates to history store)."""
+        return self._history.recent_alerts(limit)
+
     def feed(self, diag: Diagnosis) -> Optional[AlertEvent]:
         if not self._config.enabled:
             return None
