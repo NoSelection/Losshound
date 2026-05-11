@@ -141,6 +141,8 @@ class ExportTab(QWidget):
         self._preview.setText(self._format_report(self._report_data))
 
     def _generate_isp(self):
+        if self._thread is not None and self._thread.isRunning():
+            return
         hours = self._hours.value()
         self._preview.setText("Generating ISP report...")
 
@@ -242,6 +244,8 @@ class ExportTab(QWidget):
             )
 
     def _generate_pdf(self):
+        if self._thread is not None and self._thread.isRunning():
+            return
         from pathlib import Path
         hours = self._hours.value()
         default_dir = ""

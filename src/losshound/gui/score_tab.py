@@ -281,6 +281,8 @@ class ScoreTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_run_score(self):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         self._set_busy(True, "Running score benchmark...")
         self._worker = _ScoreWorker()
         self._worker.progress.connect(
@@ -348,6 +350,8 @@ class ScoreTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_refresh_trends(self):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         self._worker = _TrendsWorker(hours=168)
         self._worker.finished.connect(self._on_trends_done)
         self._worker.start()

@@ -469,6 +469,8 @@ class OptimizerTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_optimize_all(self):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         reply = QMessageBox.question(
             self, "Optimize All",
             "This will modify your network settings to optimize performance.\n"
@@ -505,6 +507,8 @@ class OptimizerTab(QWidget):
         )
 
     def _on_dns_benchmark(self):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         self._set_busy(True, "Benchmarking DNS servers...")
         self._worker = _DnsBenchmarkWorker()
         self._worker.progress.connect(
@@ -523,6 +527,8 @@ class OptimizerTab(QWidget):
         self._populate_dns_table(results)
 
     def _on_restore(self):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         reply = QMessageBox.question(
             self, "Revert All Changes",
             "This will REVERT all optimizations and restore your original\n"
@@ -574,6 +580,8 @@ class OptimizerTab(QWidget):
         QMessageBox.information(self, "Revert Complete", msg)
 
     def _on_check_status(self):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         self._worker = _StatusWorker()
         self._worker.finished.connect(self._on_status_done)
         self._worker.start()
@@ -651,6 +659,8 @@ class OptimizerTab(QWidget):
     # ------------------------------------------------------------------
 
     def _on_benchmark(self, label: str):
+        if self._worker is not None and self._worker.isRunning():
+            return  # already running, ignore the click
         self._set_busy(True, f"Running {label} benchmark (this takes ~60s)...")
         self._worker = _BenchmarkWorker(label=label)
         self._worker.progress.connect(
