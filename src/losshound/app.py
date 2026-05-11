@@ -114,7 +114,11 @@ def main():
     )
     isp_parser.add_argument(
         "--output", type=str, default=None,
-        help="Save report to file instead of printing",
+        help="Save text report to file instead of printing",
+    )
+    isp_parser.add_argument(
+        "--pdf", type=str, default=None,
+        help="Save report as a PDF to the given path (overrides --output)",
     )
 
     args = parser.parse_args()

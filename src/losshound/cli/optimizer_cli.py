@@ -39,7 +39,10 @@ def run_optimizer_command(args):
         elif args.command == "qos-clear":
             _cmd_qos_clear()
         elif args.command == "isp-report":
-            _cmd_isp_report(hours=args.hours, output=args.output)
+            _cmd_isp_report(
+                hours=args.hours, output=args.output,
+                pdf_path=getattr(args, "pdf", None),
+            )
         return
 
     from losshound.core.optimizer import NetworkOptimizer
@@ -500,19 +503,27 @@ def _cmd_qos_clear():
         print(f"  [{status}] {r.rule_name}: {r.message}")
 
 
-def _cmd_isp_report(hours: int, output: str | None):
-    """Generate ISP report."""
+def _cmd_isp_report(hours: int, output: str | None, pdf_path: str | None = None):
+    """Generate ISP report (text or PDF)."""
     from losshound.core.isp_report import format_isp_report, generate_isp_report
     from losshound.storage.history import HistoryStore
 
-    print(f"Generating ISP report (last {hours} hours)...\n")
+    print(f"Generating ISP report (last {hours} hours)...")
 
     store = HistoryStore()
-    report = generate_isp_report(store, hours)
-    store.close()
+    try:
+        report = generate_isp_report(store, hours)
+    finally:
+        store.close()
+
+    if pdf_path:
+        from pathlib import Path
+        from losshound.core.isp_report_pdf import render_isp_report_pdf
+        out = render_isp_report_pdf(report, Path(pdf_path))
+        print(f"PDF report saved to: {out}")
+        return
 
     text = format_isp_report(report)
-
     if output:
         from pathlib import Path
         Path(output).write_text(text, encoding="utf-8")
