@@ -44,6 +44,8 @@ class AlertsConfig:
     min_duration_seconds: int = 30
     snooze_seconds: int = 600
     debounce_seconds: int = 60
+    discord_webhook_url: Optional[str] = None
+    generic_webhook_url: Optional[str] = None
 
 
 @dataclass
