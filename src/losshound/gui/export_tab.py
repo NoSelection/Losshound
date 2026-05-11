@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QThread, Signal
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QHBoxLayout, QLabel,
+    QApplication, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -26,6 +26,28 @@ class _IspReportWorker(QObject):
         report = generate_isp_report(self._history, self._hours)
         text = format_isp_report(report)
         self.finished.emit(text)
+
+
+class _IspPdfWorker(QObject):
+    finished = Signal(object)  # tuple[Path | None, str]  (path, error_msg)
+
+    def __init__(self, history, hours: int, output_path):
+        super().__init__()
+        self._history = history
+        self._hours = hours
+        self._output_path = output_path
+
+    def run(self):
+        try:
+            from losshound.core.isp_report import generate_isp_report
+            from losshound.core.isp_report_pdf import render_isp_report_pdf
+            report = generate_isp_report(self._history, self._hours)
+            render_isp_report_pdf(report, self._output_path)
+            self.finished.emit((self._output_path, ""))
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).exception("PDF generation failed")
+            self.finished.emit((None, str(exc)))
 
 
 class ExportTab(QWidget):
@@ -69,6 +91,16 @@ class ExportTab(QWidget):
         )
         isp_btn.clicked.connect(self._generate_isp)
         controls.addWidget(isp_btn)
+
+        pdf_btn = QPushButton("Save as PDF…")
+        pdf_btn.setStyleSheet(
+            "background-color: #f9e2af; color: #1e1e2e; font-weight: bold;"
+        )
+        pdf_btn.setToolTip(
+            "Generate the ISP report as a polished PDF with charts."
+        )
+        pdf_btn.clicked.connect(self._generate_pdf)
+        controls.addWidget(pdf_btn)
 
         controls.addStretch()
         layout.addLayout(controls)
@@ -208,6 +240,55 @@ class ExportTab(QWidget):
             Path(path).write_text(
                 json.dumps(self._report_data, indent=2), encoding="utf-8"
             )
+
+    def _generate_pdf(self):
+        from pathlib import Path
+        hours = self._hours.value()
+        default_dir = ""
+        try:
+            from losshound.core.config import load_config
+            cfg = load_config()
+            if cfg.pdf_default_dir:
+                default_dir = cfg.pdf_default_dir
+        except Exception:
+            pass
+
+        suggested = str(
+            Path(default_dir or str(Path.home() / "Documents")) /
+            f"Losshound-ISP-Report-{hours}h.pdf"
+        )
+        path, _filter = QFileDialog.getSaveFileName(
+            self, "Save ISP report as PDF", suggested,
+            "PDF Files (*.pdf)",
+        )
+        if not path:
+            return
+
+        self._preview.setText(f"Generating PDF report to:\n{path}\n\nPlease wait...")
+
+        thread = QThread()
+        worker = _IspPdfWorker(self._history, hours, Path(path))
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda res: self._on_pdf_done(res, thread))
+        thread.start()
+        self._thread = thread
+
+    def _on_pdf_done(self, result, thread: QThread):
+        thread.quit()
+        thread.wait(3000)
+        out_path, error = result
+        if out_path is None:
+            self._preview.setText(f"PDF generation failed:\n{error}")
+            QMessageBox.warning(self, "PDF failed", error)
+            return
+
+        self._preview.setText(f"PDF saved to:\n{out_path}")
+        try:
+            import os
+            os.startfile(str(out_path))  # type: ignore[attr-defined]
+        except OSError:
+            pass
 
 
 def _ts() -> str:
