@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from losshound.gui.theme import button_style
 from losshound.core.qos import (
     PRESET_DESCRIPTIONS, PRIORITY_PRESETS,
     QosResult, QosRule,
@@ -43,6 +44,14 @@ class _RemoveWorker(QObject):
         self.finished.emit(result)
 
 
+class _RemoveAllWorker(QObject):
+    finished = Signal(object)
+
+    def run(self):
+        results = remove_all_losshound_policies()
+        self.finished.emit(results)
+
+
 class QosTab(QWidget):
     def shutdown(self):
         from losshound.gui._shutdown import stop_qthreads
@@ -59,14 +68,14 @@ class QosTab(QWidget):
 
         # Header
         header = QLabel("Per-App Network Priority (QoS)")
-        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #cdd6f4;")
+        header.setStyleSheet("font-size: 16px; font-weight: bold; color: #d8dee9;")
         layout.addWidget(header)
 
         admin_note = QLabel(
             "Requires Administrator privileges. "
             "Rules use DSCP markings to prioritize traffic at the OS level."
         )
-        admin_note.setStyleSheet("color: #6c7086; font-size: 11px;")
+        admin_note.setStyleSheet("color: #788596; font-size: 11px;")
         admin_note.setWordWrap(True)
         layout.addWidget(admin_note)
 
@@ -90,10 +99,7 @@ class QosTab(QWidget):
         add_row.addWidget(self._priority_combo)
 
         add_btn = QPushButton("Add Rule")
-        add_btn.setStyleSheet(
-            "QPushButton { background-color: #a6e3a1; color: #1e1e2e; font-weight: bold; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
+        add_btn.setStyleSheet(button_style("success"))
         add_btn.clicked.connect(self._add_rule)
         add_row.addWidget(add_btn)
 
@@ -101,7 +107,7 @@ class QosTab(QWidget):
 
         # Preset description
         self._desc_label = QLabel("")
-        self._desc_label.setStyleSheet("color: #6c7086; font-size: 11px; padding-left: 4px;")
+        self._desc_label.setStyleSheet("color: #788596; font-size: 11px; padding-left: 4px;")
         layout.addWidget(self._desc_label)
         self._update_desc(self._priority_combo.currentText())
 
@@ -126,22 +132,19 @@ class QosTab(QWidget):
         bottom = QHBoxLayout()
 
         apply_all_btn = QPushButton("Apply All Rules")
-        apply_all_btn.setStyleSheet(
-            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
+        apply_all_btn.setStyleSheet(button_style("primary"))
         apply_all_btn.clicked.connect(self._apply_all)
         bottom.addWidget(apply_all_btn)
 
         remove_all_btn = QPushButton("Remove All Policies")
-        remove_all_btn.setStyleSheet("color: #f38ba8;")
+        remove_all_btn.setStyleSheet(button_style("danger"))
         remove_all_btn.clicked.connect(self._remove_all)
         bottom.addWidget(remove_all_btn)
 
         bottom.addStretch()
 
         self._status_label = QLabel("")
-        self._status_label.setStyleSheet("color: #6c7086;")
+        self._status_label.setStyleSheet("color: #788596;")
         bottom.addWidget(self._status_label)
 
         layout.addLayout(bottom)
@@ -166,6 +169,8 @@ class QosTab(QWidget):
     def _add_rule(self):
         app_path = self._app_input.text().strip()
         if not app_path:
+            self._status_label.setText("Enter an app name or browse for an .exe first")
+            self._status_label.setStyleSheet("color: #d9b65f;")
             return
 
         preset = self._priority_combo.currentText()
@@ -215,7 +220,7 @@ class QosTab(QWidget):
 
             del_btn = QPushButton("Delete")
             del_btn.setFixedWidth(60)
-            del_btn.setStyleSheet("color: #f38ba8;")
+            del_btn.setStyleSheet("color: #e06363;")
             del_btn.clicked.connect(lambda checked, r=rule: self._delete_rule(r))
             actions_layout.addWidget(del_btn)
 
@@ -239,19 +244,42 @@ class QosTab(QWidget):
 
         if result.success:
             self._status_label.setText(f"{result.rule_name}: {result.action}")
-            self._status_label.setStyleSheet("color: #a6e3a1;")
+            self._status_label.setStyleSheet("color: #75c884;")
         else:
             self._status_label.setText(f"{result.rule_name}: {result.message[:60]}")
-            self._status_label.setStyleSheet("color: #f38ba8;")
+            self._status_label.setStyleSheet("color: #e06363;")
 
     def _delete_rule(self, rule: QosRule):
         self._rules = [r for r in self._rules if r.name != rule.name]
         save_rules(self._rules)
-        # Also remove the Windows policy
-        remove_rule(rule.name)
         self._refresh_table()
-        self._status_label.setText(f"Deleted rule: {rule.name}")
-        self._status_label.setStyleSheet("color: #6c7086;")
+        self._status_label.setText(f"Deleted saved rule: {rule.name}; removing policy...")
+        self._status_label.setStyleSheet("color: #788596;")
+
+        thread = QThread()
+        worker = _RemoveWorker(rule.name)
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(
+            lambda res, name=rule.name: self._on_delete_policy_done(res, thread, name)
+        )
+        thread.start()
+        self._threads.append(thread)
+
+    def _on_delete_policy_done(self, result: QosResult, thread: QThread, name: str):
+        thread.quit()
+        thread.wait(3000)
+        if thread in self._threads:
+            self._threads.remove(thread)
+
+        if result.success:
+            self._status_label.setText(f"Removed Windows policy: {name}")
+            self._status_label.setStyleSheet("color: #75c884;")
+        else:
+            self._status_label.setText(
+                f"Saved rule deleted. Policy removal skipped/failed: {result.message[:70]}"
+            )
+            self._status_label.setStyleSheet("color: #d9b65f;")
 
     def _apply_all(self):
         if not self._rules:
@@ -266,12 +294,28 @@ class QosTab(QWidget):
         reply = QMessageBox.question(
             self, "Remove All QoS Policies",
             "Remove all Losshound QoS policies from Windows?\n"
-            "(Saved rules will be kept but deactivated)",
+            "(Saved rules will be kept.)",
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        results = remove_all_losshound_policies()
+        self._status_label.setText("Removing Losshound QoS policies...")
+        self._status_label.setStyleSheet("color: #d9b65f;")
+
+        thread = QThread()
+        worker = _RemoveAllWorker()
+        worker.moveToThread(thread)
+        thread.started.connect(worker.run)
+        worker.finished.connect(lambda res: self._on_remove_all_done(res, thread))
+        thread.start()
+        self._threads.append(thread)
+
+    def _on_remove_all_done(self, results: list[QosResult], thread: QThread):
+        thread.quit()
+        thread.wait(3000)
+        if thread in self._threads:
+            self._threads.remove(thread)
+
         removed = sum(1 for r in results if r.success)
         self._status_label.setText(f"Removed {removed} policies")
-        self._status_label.setStyleSheet("color: #f9e2af;")
+        self._status_label.setStyleSheet("color: #d9b65f;")

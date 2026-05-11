@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
     QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
 )
 
+from losshound.gui.theme import button_style
 from losshound.storage.history import HistoryStore
 
 
@@ -75,18 +76,12 @@ class ExportTab(QWidget):
         controls.addWidget(self._hours)
 
         gen_btn = QPushButton("Quick Report")
-        gen_btn.setStyleSheet(
-            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
+        gen_btn.setStyleSheet(button_style("primary"))
         gen_btn.clicked.connect(self._generate)
         controls.addWidget(gen_btn)
 
         isp_btn = QPushButton("ISP Report")
-        isp_btn.setStyleSheet(
-            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
+        isp_btn.setStyleSheet(button_style("primary"))
         isp_btn.setToolTip(
             "Generate a comprehensive report with benchmarks, scores, and diagnostics "
             "suitable for sharing with your ISP support team."
@@ -95,10 +90,7 @@ class ExportTab(QWidget):
         controls.addWidget(isp_btn)
 
         pdf_btn = QPushButton("Save as PDF…")
-        pdf_btn.setStyleSheet(
-            "QPushButton { background-color: #f9e2af; color: #1e1e2e; font-weight: bold; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
+        pdf_btn.setStyleSheet(button_style("warning"))
         pdf_btn.setToolTip(
             "Generate the ISP report as a polished PDF with charts."
         )
@@ -220,12 +212,21 @@ class ExportTab(QWidget):
 
     def _copy(self):
         text = self._preview.toPlainText()
-        if text:
-            QApplication.clipboard().setText(text)
+        if not text:
+            QMessageBox.information(
+                self, "Nothing to copy",
+                "Generate a report first, then copy it to the clipboard.",
+            )
+            return
+        QApplication.clipboard().setText(text)
 
     def _save_txt(self):
         text = self._preview.toPlainText()
         if not text:
+            QMessageBox.information(
+                self, "Nothing to save",
+                "Generate a report first, then save it as a text file.",
+            )
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Report", f"losshound_report_{_ts()}.txt",
@@ -236,6 +237,10 @@ class ExportTab(QWidget):
 
     def _save_json(self):
         if not self._report_data:
+            QMessageBox.information(
+                self, "No JSON report",
+                "Generate a Quick Report first. ISP reports are text/PDF only.",
+            )
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Report", f"losshound_report_{_ts()}.json",

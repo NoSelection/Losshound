@@ -23,7 +23,9 @@ from losshound.gui.score_tab import ScoreTab
 from losshound.gui.settings_tab import SettingsTab
 from losshound.gui.tray import TrayIcon
 from losshound.gui.wifi_tab import WifiTab
+from losshound.gui.branding import app_icon
 from losshound.gui.theme import get_dark_stylesheet
+from losshound.gui.widgets import BrandHeader
 from losshound.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -37,6 +39,7 @@ class MainWindow(QMainWindow):
         self._really_quit = False
 
         self.setWindowTitle("Losshound — Network Diagnosis")
+        self.setWindowIcon(app_icon())
         self.setMinimumSize(1000, 600)
         self.resize(1040, 680)
         self.setStyleSheet(get_dark_stylesheet())
@@ -46,6 +49,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self._brand_header = BrandHeader()
+        layout.addWidget(self._brand_header)
 
         self._tabs = QTabWidget()
         layout.addWidget(self._tabs)

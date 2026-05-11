@@ -6,7 +6,7 @@ import logging
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -18,6 +18,8 @@ from losshound.core.load_benchmark import (
     LoadBenchmarkSnapshot, run_load_benchmark, save_load_snapshot,
     format_load_snapshot, get_latest_load_snapshot,
 )
+from losshound.gui.theme import button_style
+from losshound.gui.widgets import TelemetryHeader
 
 logger = logging.getLogger(__name__)
 
@@ -83,35 +85,13 @@ class WifiTab(QWidget):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # --- Header ---
-        header = QFrame()
-        header.setStyleSheet("""
-            QFrame {
-                background-color: #2a1e3a;
-                border: 1px solid #4a2d6a;
-                border-radius: 8px;
-            }
-        """)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-
-        title = QLabel("WiFi Diagnostics & Bufferbloat")
-        title.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #cba6f7; background: transparent;"
-        )
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Scan your WiFi environment for interference, check signal quality, "
-            "and test for bufferbloat — the #1 cause of lag under load."
-        )
-        subtitle.setStyleSheet("font-size: 12px; color: #a07ed0; background: transparent;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setWordWrap(True)
-        header_layout.addWidget(subtitle)
-
-        main_layout.addWidget(header)
+        main_layout.addWidget(TelemetryHeader(
+            "WiFi Diagnostics & Bufferbloat",
+            "Scan nearby radios, inspect signal quality, and measure latency under load.",
+            "WIFI",
+            "SCAN READY",
+            "#62c7d8",
+        ))
 
         # --- Action buttons ---
         btn_group = QGroupBox("Actions")
@@ -119,22 +99,14 @@ class WifiTab(QWidget):
         btn_layout.setSpacing(8)
 
         self._wifi_scan_btn = QPushButton("Scan WiFi")
-        self._wifi_scan_btn.setStyleSheet(
-            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._wifi_scan_btn.setMinimumHeight(48)
+        self._wifi_scan_btn.setStyleSheet(button_style("primary"))
+        self._wifi_scan_btn.setMinimumHeight(42)
         self._wifi_scan_btn.clicked.connect(self._on_wifi_scan)
         btn_layout.addWidget(self._wifi_scan_btn)
 
         self._bufferbloat_btn = QPushButton("Test Bufferbloat")
-        self._bufferbloat_btn.setStyleSheet(
-            "QPushButton { background-color: #f9e2af; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._bufferbloat_btn.setMinimumHeight(48)
+        self._bufferbloat_btn.setStyleSheet(button_style("warning"))
+        self._bufferbloat_btn.setMinimumHeight(42)
         self._bufferbloat_btn.setToolTip(
             "Tests if your latency spikes under load (~60s). "
             "This is the most important test for gaming quality."
@@ -152,16 +124,16 @@ class WifiTab(QWidget):
         self._progress_bar.setFormat("Idle")
         self._progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
+                background-color: #1d222b;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 text-align: center;
-                color: #cdd6f4;
+                color: #d8dee9;
                 height: 24px;
             }
             QProgressBar::chunk {
-                background-color: #cba6f7;
-                border-radius: 3px;
+                background-color: #62c7d8;
+                border-radius: 0;
             }
         """)
         main_layout.addWidget(self._progress_bar)
@@ -195,7 +167,7 @@ class WifiTab(QWidget):
         self._bb_grade_label = QLabel("--")
         self._bb_grade_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._bb_grade_label.setStyleSheet(
-            "font-size: 48px; font-weight: bold; color: #585b70; padding: 4px;"
+            "font-size: 48px; font-weight: bold; color: #4a5565; padding: 4px;"
         )
         bb_layout.addWidget(self._bb_grade_label)
 
@@ -205,7 +177,7 @@ class WifiTab(QWidget):
         )
         self._bb_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._bb_detail_label.setWordWrap(True)
-        self._bb_detail_label.setStyleSheet("color: #a6adc8; padding: 8px; font-size: 13px;")
+        self._bb_detail_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
         bb_layout.addWidget(self._bb_detail_label)
 
         main_layout.addWidget(bb_group)
@@ -254,7 +226,7 @@ class WifiTab(QWidget):
 
         self._advice_label = QLabel("Run a WiFi scan to check for issues.")
         self._advice_label.setWordWrap(True)
-        self._advice_label.setStyleSheet("color: #a6adc8; padding: 8px; font-size: 13px;")
+        self._advice_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
         advice_layout.addWidget(self._advice_label)
 
         main_layout.addWidget(advice_group)
@@ -277,25 +249,25 @@ class WifiTab(QWidget):
         card = QLabel(f"{label}\n--")
         card.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card.setStyleSheet("""
-            background-color: #2a2a3d;
-            border: 1px solid #45475a;
-            border-radius: 8px;
+            background-color: #1b2028;
+            border: 1px solid #3a4350;
+            border-radius: 2px;
             padding: 12px;
             font-size: 12px;
-            color: #cdd6f4;
+            color: #d8dee9;
         """)
         card.setMinimumHeight(70)
         card.setWordWrap(True)
         return card
 
-    def _update_card(self, key: str, title: str, value: str, color: str = "#cdd6f4"):
+    def _update_card(self, key: str, title: str, value: str, color: str = "#d8dee9"):
         card = self._wifi_cards.get(key)
         if card:
             card.setText(f"{title}\n{value}")
             card.setStyleSheet(f"""
-                background-color: #2a2a3d;
-                border: 1px solid #45475a;
-                border-radius: 8px;
+                background-color: #1b2028;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 padding: 12px;
                 font-size: 12px;
                 color: {color};
@@ -314,23 +286,23 @@ class WifiTab(QWidget):
 
     def _signal_color(self, pct: int) -> str:
         if pct >= 80:
-            return "#a6e3a1"
+            return "#75c884"
         if pct >= 60:
-            return "#89b4fa"
+            return "#62c7d8"
         if pct >= 40:
-            return "#f9e2af"
+            return "#d9b65f"
         if pct >= 20:
-            return "#fab387"
-        return "#f38ba8"
+            return "#c98652"
+        return "#e06363"
 
     def _grade_color(self, grade: str) -> str:
         return {
-            "A": "#a6e3a1",
-            "B": "#89b4fa",
-            "C": "#f9e2af",
-            "D": "#fab387",
-            "F": "#f38ba8",
-        }.get(grade.upper(), "#cdd6f4")
+            "A": "#75c884",
+            "B": "#62c7d8",
+            "C": "#d9b65f",
+            "D": "#c98652",
+            "F": "#e06363",
+        }.get(grade.upper(), "#d8dee9")
 
     # ------------------------------------------------------------------
     # WiFi scan
@@ -420,7 +392,7 @@ class WifiTab(QWidget):
                     font = item.font()
                     font.setBold(True)
                     item.setFont(font)
-                    item.setForeground(QColor("#cba6f7"))
+                    item.setForeground(QColor("#62c7d8"))
 
             for col, item in enumerate(items):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -434,8 +406,8 @@ class WifiTab(QWidget):
             lines.append("")
         lines.append(f"\u2192  {report.recommendation}")
 
-        color = "#a6e3a1" if not report.issues else (
-            "#f38ba8" if len(report.issues) >= 3 else "#f9e2af"
+        color = "#75c884" if not report.issues else (
+            "#e06363" if len(report.issues) >= 3 else "#d9b65f"
         )
         self._advice_label.setText("\n".join(lines))
         self._advice_label.setStyleSheet(

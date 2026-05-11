@@ -89,15 +89,15 @@ class HistoryTab(QWidget):
 
             cat_item = QTableWidgetItem(entry["category"].replace("_", " ").title())
             color_map = {
-                "healthy": "#a6e3a1",
-                "lan_issue": "#f38ba8",
-                "isp_wan_issue": "#f38ba8",
-                "dns_issue": "#f9e2af",
-                "upstream_route_issue": "#f9e2af",
-                "intermittent": "#f9e2af",
-                "unknown": "#6c7086",
+                "healthy": "#75c884",
+                "lan_issue": "#e06363",
+                "isp_wan_issue": "#e06363",
+                "dns_issue": "#d9b65f",
+                "upstream_route_issue": "#d9b65f",
+                "intermittent": "#d9b65f",
+                "unknown": "#788596",
             }
-            cat_item.setForeground(QColor(color_map.get(entry["category"], "#cdd6f4")))
+            cat_item.setForeground(QColor(color_map.get(entry["category"], "#d8dee9")))
             self._table.setItem(row, 1, cat_item)
 
             self._table.setItem(row, 2, QTableWidgetItem(entry["summary"]))

@@ -16,6 +16,8 @@ from losshound.core.drop_analyzer import (
     DropAnalysisReport, run_drop_analysis, format_drop_report,
 )
 from losshound.core.gateway import detect_gateway
+from losshound.gui.theme import button_style
+from losshound.gui.widgets import TelemetryHeader
 
 logger = logging.getLogger(__name__)
 
@@ -95,36 +97,13 @@ class DropTab(QWidget):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # --- Header ---
-        header = QFrame()
-        header.setStyleSheet("""
-            QFrame {
-                background-color: #1e2a3a;
-                border: 1px solid #2d4a6a;
-                border-radius: 8px;
-            }
-        """)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-
-        title = QLabel("Connectivity Drop Analyzer")
-        title.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #89b4fa; background: transparent;"
-        )
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Rapidly polls your gateway, WAN, and link state to catch and classify "
-            "connectivity drops. Works on both Ethernet and WiFi. Identifies cable "
-            "issues, router problems, ISP outages, and more."
-        )
-        subtitle.setStyleSheet("font-size: 12px; color: #7096c8; background: transparent;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setWordWrap(True)
-        header_layout.addWidget(subtitle)
-
-        main_layout.addWidget(header)
+        main_layout.addWidget(TelemetryHeader(
+            "Connectivity Drop Analyzer",
+            "Poll gateway, WAN, DNS, and link state to classify outages as they happen.",
+            "DROPS",
+            "ARMED",
+            "#62c7d8",
+        ))
 
         # --- Controls ---
         ctrl_group = QGroupBox("Scan Settings")
@@ -154,22 +133,14 @@ class DropTab(QWidget):
 
         # Start / Stop buttons
         self._start_btn = QPushButton("Start Monitoring")
-        self._start_btn.setStyleSheet(
-            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 28px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._start_btn.setMinimumHeight(48)
+        self._start_btn.setStyleSheet(button_style("primary"))
+        self._start_btn.setMinimumHeight(42)
         self._start_btn.clicked.connect(self._on_start)
         ctrl_layout.addWidget(self._start_btn)
 
         self._stop_btn = QPushButton("Stop")
-        self._stop_btn.setStyleSheet(
-            "QPushButton { background-color: #f38ba8; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 20px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._stop_btn.setMinimumHeight(48)
+        self._stop_btn.setStyleSheet(button_style("danger"))
+        self._stop_btn.setMinimumHeight(42)
         self._stop_btn.setEnabled(False)
         self._stop_btn.clicked.connect(self._on_stop)
         ctrl_layout.addWidget(self._stop_btn)
@@ -184,44 +155,50 @@ class DropTab(QWidget):
         self._progress_bar.setFormat("Idle — press Start to begin monitoring")
         self._progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
+                background-color: #1d222b;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 text-align: center;
-                color: #cdd6f4;
+                color: #d8dee9;
                 height: 24px;
             }
             QProgressBar::chunk {
-                background-color: #89b4fa;
-                border-radius: 3px;
+                background-color: #62c7d8;
+                border-radius: 0;
             }
         """)
         main_layout.addWidget(self._progress_bar)
 
         # --- Verdict banner ---
         self._verdict_frame = QFrame()
+        self._verdict_frame.setObjectName("drop-verdict")
         self._verdict_frame.setStyleSheet("""
-            QFrame {
-                background-color: #2a2a3d;
-                border: 1px solid #45475a;
-                border-radius: 8px;
+            QFrame#drop-verdict {
+                background-color: #1b2028;
+                border: 1px solid #3a4350;
+                border-left: 4px solid #3a4350;
+                border-radius: 2px;
             }
         """)
         verdict_layout = QVBoxLayout(self._verdict_frame)
-        verdict_layout.setContentsMargins(16, 12, 16, 12)
+        verdict_layout.setContentsMargins(18, 12, 18, 12)
+        verdict_layout.setSpacing(4)
 
         self._verdict_label = QLabel("--")
-        self._verdict_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._verdict_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._verdict_label.setStyleSheet(
-            "font-size: 20px; font-weight: bold; color: #585b70; background: transparent;"
+            "font-size: 20px; font-weight: bold; color: #4a5565; "
+            "background: transparent; border: none; padding: 0;"
         )
         self._verdict_label.setWordWrap(True)
         verdict_layout.addWidget(self._verdict_label)
 
         self._confidence_label = QLabel("")
-        self._confidence_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._confidence_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._confidence_label.setStyleSheet(
-            "font-size: 12px; color: #6c7086; background: transparent;"
+            "font-family: 'Cascadia Mono', 'Consolas', monospace; "
+            "font-size: 11px; color: #788596; background: transparent; "
+            "border: none; padding: 0;"
         )
         verdict_layout.addWidget(self._confidence_label)
 
@@ -311,7 +288,7 @@ class DropTab(QWidget):
 
         self._recs_label = QLabel("Start a scan to analyze your connection.")
         self._recs_label.setWordWrap(True)
-        self._recs_label.setStyleSheet("color: #a6adc8; padding: 8px; font-size: 13px;")
+        self._recs_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
         recs_layout.addWidget(self._recs_label)
 
         main_layout.addWidget(recs_group)
@@ -331,25 +308,25 @@ class DropTab(QWidget):
         card = QLabel(f"{label}\n--")
         card.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card.setStyleSheet("""
-            background-color: #2a2a3d;
-            border: 1px solid #45475a;
-            border-radius: 8px;
+            background-color: #1b2028;
+            border: 1px solid #3a4350;
+            border-radius: 2px;
             padding: 12px;
             font-size: 12px;
-            color: #cdd6f4;
+            color: #d8dee9;
         """)
         card.setMinimumHeight(70)
         card.setWordWrap(True)
         return card
 
-    def _update_card(self, key: str, title: str, value: str, color: str = "#cdd6f4"):
+    def _update_card(self, key: str, title: str, value: str, color: str = "#d8dee9"):
         card = self._cards.get(key)
         if card:
             card.setText(f"{title}\n{value}")
             card.setStyleSheet(f"""
-                background-color: #2a2a3d;
-                border: 1px solid #45475a;
-                border-radius: 8px;
+                background-color: #1b2028;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 padding: 12px;
                 font-size: 12px;
                 color: {color};
@@ -371,7 +348,7 @@ class DropTab(QWidget):
             self._progress_bar.setFormat(message or "Monitoring...")
         else:
             self._progress_bar.setRange(0, 1)
-            self._progress_bar.setValue(1)
+            self._progress_bar.setValue(0)
             self._progress_bar.setFormat(message or "Done")
 
     # ------------------------------------------------------------------
@@ -383,8 +360,10 @@ class DropTab(QWidget):
         if not gw:
             self._verdict_label.setText("Could not detect gateway")
             self._verdict_label.setStyleSheet(
-                "font-size: 20px; font-weight: bold; color: #f38ba8; background: transparent;"
+                "font-size: 20px; font-weight: bold; color: #e06363; "
+                "background: transparent; border: none; padding: 0;"
             )
+            self._style_verdict("#e06363", "#2d1b1d", "#73353a")
             return
 
         duration = self._duration_seconds()
@@ -409,11 +388,22 @@ class DropTab(QWidget):
     def _on_progress(self, msg: str):
         self._progress_bar.setFormat(msg)
 
+    def _style_verdict(self, text_color: str, bg: str, border: str):
+        self._verdict_frame.setStyleSheet(f"""
+            QFrame#drop-verdict {{
+                background-color: {bg};
+                border: 1px solid {border};
+                border-left: 4px solid {text_color};
+                border-radius: 2px;
+            }}
+        """)
+
     def _on_finished(self, report: DropAnalysisReport | None):
         self._worker = None
         if report is None:
             self._set_busy(False, "Analysis failed")
             self._verdict_label.setText("Analysis failed — check logs")
+            self._style_verdict("#e06363", "#2d1b1d", "#73353a")
             return
 
         drop_count = len(report.drops)
@@ -430,21 +420,22 @@ class DropTab(QWidget):
     def _display_report(self, report: DropAnalysisReport):
         # --- Verdict banner ---
         verdict_colors = {
-            "high": ("#f38ba8", "#3a1e2e", "#5a2d45"),
-            "medium": ("#f9e2af", "#3a351e", "#5a4d2d"),
-            "low": ("#89b4fa", "#1e2a3a", "#2d4a6a"),
+            "high": ("#e06363", "#2d1b1d", "#73353a"),
+            "medium": ("#d9b65f", "#2b2518", "#6d5623"),
+            "low": ("#62c7d8", "#17212b", "#315469"),
         }
         text_color, bg, border = verdict_colors.get(
-            report.confidence, ("#cdd6f4", "#2a2a3d", "#45475a")
+            report.confidence, ("#d8dee9", "#1b2028", "#3a4350")
         )
 
         # If no drops, use green
         if not report.drops:
-            text_color, bg, border = "#a6e3a1", "#1e3a2f", "#2d5a45"
+            text_color, bg, border = "#75c884", "#111a14", "#315a3c"
 
         self._verdict_label.setText(report.verdict)
         self._verdict_label.setStyleSheet(
-            f"font-size: 20px; font-weight: bold; color: {text_color}; background: transparent;"
+            f"font-size: 20px; font-weight: bold; color: {text_color}; "
+            "background: transparent; border: none; padding: 0;"
         )
         self._confidence_label.setText(
             f"Confidence: {report.confidence}  |  "
@@ -452,13 +443,7 @@ class DropTab(QWidget):
             f"Duration: {report.scan_duration_seconds:.0f}s"
             + (f"  |  Pattern: {report.drop_regularity}" if report.drop_regularity else "")
         )
-        self._verdict_frame.setStyleSheet(f"""
-            QFrame {{
-                background-color: {bg};
-                border: 1px solid {border};
-                border-radius: 8px;
-            }}
-        """)
+        self._style_verdict(text_color, bg, border)
 
         # --- Status cards ---
         total = report.total_samples
@@ -470,39 +455,39 @@ class DropTab(QWidget):
         self._update_card(
             "conn_type", "Connection",
             report.connection_type.upper(),
-            "#89b4fa",
+            "#62c7d8",
         )
         self._update_card(
             "link", "Link State",
             f"UP ({total - link_fails}/{total})" if link_fails == 0
             else f"FLAPPED ({link_fails} drops)",
-            "#a6e3a1" if link_fails == 0 else "#f38ba8",
+            "#75c884" if link_fails == 0 else "#e06363",
         )
         self._update_card(
             "gateway", "Gateway",
             f"OK ({total - gw_fails}/{total})" if gw_fails == 0
             else f"FAILED {gw_fails}x",
-            "#a6e3a1" if gw_fails == 0 else "#f38ba8",
+            "#75c884" if gw_fails == 0 else "#e06363",
         )
         self._update_card(
             "wan", "WAN / Internet",
             f"OK ({total - wan_fails}/{total})" if wan_fails == 0
             else f"FAILED {wan_fails}x",
-            "#a6e3a1" if wan_fails == 0 else (
-                "#f9e2af" if wan_fails < total * 0.1 else "#f38ba8"
+            "#75c884" if wan_fails == 0 else (
+                "#d9b65f" if wan_fails < total * 0.1 else "#e06363"
             ),
         )
         self._update_card(
             "dns", "DNS",
             f"OK ({total - dns_fails}/{total})" if dns_fails == 0
             else f"FAILED {dns_fails}x",
-            "#a6e3a1" if dns_fails == 0 else "#f9e2af",
+            "#75c884" if dns_fails == 0 else "#d9b65f",
         )
         self._update_card(
             "drops", "Drop Episodes",
             str(len(report.drops)),
-            "#a6e3a1" if len(report.drops) == 0 else (
-                "#f9e2af" if len(report.drops) <= 2 else "#f38ba8"
+            "#75c884" if len(report.drops) == 0 else (
+                "#d9b65f" if len(report.drops) <= 2 else "#e06363"
             ),
         )
 
@@ -517,13 +502,13 @@ class DropTab(QWidget):
             "unknown": "UNKNOWN",
         }
         pattern_colors = {
-            "link_flap": "#f38ba8",
-            "full_outage": "#f38ba8",
-            "isp_wan_issue": "#fab387",
-            "gateway_issue": "#fab387",
-            "rf_interference": "#cba6f7",
-            "dns_issue": "#f9e2af",
-            "unknown": "#6c7086",
+            "link_flap": "#e06363",
+            "full_outage": "#e06363",
+            "isp_wan_issue": "#c98652",
+            "gateway_issue": "#c98652",
+            "rf_interference": "#62c7d8",
+            "dns_issue": "#d9b65f",
+            "unknown": "#788596",
         }
 
         self._drops_table.setRowCount(len(report.drops))
@@ -535,7 +520,7 @@ class DropTab(QWidget):
             wan = "LOST" if drop.wan_lost else "ok"
             dns = "FAIL" if drop.dns_lost else "ok"
             pat = pattern_labels.get(drop.pattern, drop.pattern)
-            pat_color = pattern_colors.get(drop.pattern, "#cdd6f4")
+            pat_color = pattern_colors.get(drop.pattern, "#d8dee9")
 
             items = [
                 QTableWidgetItem(t),
@@ -552,9 +537,9 @@ class DropTab(QWidget):
                 [None, None, link, gw, wan, dns, None], items
             )):
                 if val in ("DOWN", "LOST", "FAIL"):
-                    item.setForeground(QColor("#f38ba8"))
+                    item.setForeground(QColor("#e06363"))
                 elif val == "ok":
-                    item.setForeground(QColor("#a6e3a1"))
+                    item.setForeground(QColor("#75c884"))
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # Color the classification
@@ -593,9 +578,9 @@ class DropTab(QWidget):
             ]
 
             # Colors
-            items[1].setForeground(QColor("#a6e3a1" if link_ok else "#f38ba8"))
-            items[2].setForeground(QColor("#a6e3a1" if gw_ok else "#f38ba8"))
-            items[4].setForeground(QColor("#a6e3a1" if wan_ok else "#f38ba8"))
+            items[1].setForeground(QColor("#75c884" if link_ok else "#e06363"))
+            items[2].setForeground(QColor("#75c884" if gw_ok else "#e06363"))
+            items[4].setForeground(QColor("#75c884" if wan_ok else "#e06363"))
 
             for col, item in enumerate(items):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -621,7 +606,7 @@ class DropTab(QWidget):
             recs_text = "\n".join(
                 f"{i}. {r}" for i, r in enumerate(report.recommendations, 1)
             )
-            rec_color = "#f38ba8" if report.drops else "#a6e3a1"
+            rec_color = "#e06363" if report.drops else "#75c884"
             self._recs_label.setText(recs_text)
             self._recs_label.setStyleSheet(
                 f"color: {rec_color}; padding: 8px; font-size: 13px;"
@@ -629,5 +614,5 @@ class DropTab(QWidget):
         else:
             self._recs_label.setText("No issues found.")
             self._recs_label.setStyleSheet(
-                "color: #a6e3a1; padding: 8px; font-size: 13px;"
+                "color: #75c884; padding: 8px; font-size: 13px;"
             )

@@ -145,6 +145,7 @@ def main():
 def _run_gui(config):
     from PySide6.QtWidgets import QApplication
     from losshound.core.job_object import install_kill_on_close_job
+    from losshound.gui.branding import app_icon
     from losshound.gui.main_window import MainWindow
 
     # Tie ping/tracert/netsh children to this process so they die with us.
@@ -153,6 +154,7 @@ def _run_gui(config):
     app = QApplication(sys.argv)
     app.setApplicationName("Losshound")
     app.setApplicationVersion("0.1.0")
+    app.setWindowIcon(app_icon())
 
     window = MainWindow(config)
     app.aboutToQuit.connect(window.shutdown_all)

@@ -42,3 +42,6 @@ htmlcov/
 .coverage
 coverage.xml
 about.txt
+
+# Local design references
+.design-reference/

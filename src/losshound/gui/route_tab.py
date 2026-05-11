@@ -22,11 +22,11 @@ class RouteTab(QWidget):
 
         # Current route header
         header_label = QLabel("CURRENT ROUTE")
-        header_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        header_label.setStyleSheet("font-size: 11px; color: #788596; font-weight: bold;")
         layout.addWidget(header_label)
 
         self._route_info = QLabel("Waiting for tracert data...")
-        self._route_info.setStyleSheet("color: #a6adc8; font-size: 12px;")
+        self._route_info.setStyleSheet("color: #8f9aaa; font-size: 12px;")
         layout.addWidget(self._route_info)
 
         # Route hops table
@@ -43,7 +43,7 @@ class RouteTab(QWidget):
 
         # Route changes section
         changes_label = QLabel("ROUTE CHANGES")
-        changes_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        changes_label.setStyleSheet("font-size: 11px; color: #788596; font-weight: bold;")
         layout.addWidget(changes_label)
 
         self._changes_table = QTableWidget(0, 3)

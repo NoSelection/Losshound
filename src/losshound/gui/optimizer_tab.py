@@ -8,7 +8,7 @@ from functools import partial
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -25,6 +25,8 @@ from losshound.core.dns_bench import DnsBenchmarkResult
 from losshound.core.optimizer import (
     NetworkOptimizer, OptimizeReport, OptimizeResult,
 )
+from losshound.gui.theme import button_style
+from losshound.gui.widgets import TelemetryHeader
 
 logger = logging.getLogger(__name__)
 
@@ -153,35 +155,13 @@ class OptimizerTab(QWidget):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # --- Header banner ---
-        header = QFrame()
-        header.setStyleSheet("""
-            QFrame {
-                background-color: #1e3a2f;
-                border: 1px solid #2d5a45;
-                border-radius: 8px;
-            }
-        """)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-
-        title = QLabel("Network Performance Optimizer")
-        title.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #a6e3a1; background: transparent;"
-        )
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Tune your TCP/IP stack, find the fastest DNS, optimize MTU, "
-            "and disable Windows network throttling — all with one click."
-        )
-        subtitle.setStyleSheet("font-size: 12px; color: #7ec9a0; background: transparent;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setWordWrap(True)
-        header_layout.addWidget(subtitle)
-
-        main_layout.addWidget(header)
+        main_layout.addWidget(TelemetryHeader(
+            "Network Performance Optimizer",
+            "Tune TCP/IP, benchmark DNS, optimize MTU, and manage Windows throttling from one console.",
+            "OPTIMIZER",
+            "ADMIN READY" if NetworkOptimizer.check_admin() else "LIMITED",
+            "#75c884",
+        ))
 
         # --- Admin status ---
         self._admin_label = QLabel()
@@ -195,32 +175,20 @@ class OptimizerTab(QWidget):
         btn_layout.setSpacing(8)
 
         self._optimize_btn = QPushButton("Optimize All")
-        self._optimize_btn.setStyleSheet(
-            "QPushButton { background-color: #a6e3a1; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._optimize_btn.setMinimumHeight(48)
+        self._optimize_btn.setStyleSheet(button_style("success"))
+        self._optimize_btn.setMinimumHeight(42)
         self._optimize_btn.clicked.connect(self._on_optimize_all)
         btn_layout.addWidget(self._optimize_btn, 0, 0)
 
         self._dns_bench_btn = QPushButton("Benchmark DNS")
-        self._dns_bench_btn.setStyleSheet(
-            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._dns_bench_btn.setMinimumHeight(48)
+        self._dns_bench_btn.setStyleSheet(button_style("primary"))
+        self._dns_bench_btn.setMinimumHeight(42)
         self._dns_bench_btn.clicked.connect(self._on_dns_benchmark)
         btn_layout.addWidget(self._dns_bench_btn, 0, 1)
 
         self._restore_btn = QPushButton("Revert All Changes")
-        self._restore_btn.setStyleSheet(
-            "QPushButton { background-color: #f38ba8; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; font-size: 14px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._restore_btn.setMinimumHeight(48)
+        self._restore_btn.setStyleSheet(button_style("danger"))
+        self._restore_btn.setMinimumHeight(42)
         self._restore_btn.setToolTip(
             "Undo ALL optimizations and restore your original network settings"
         )
@@ -228,18 +196,14 @@ class OptimizerTab(QWidget):
         btn_layout.addWidget(self._restore_btn, 0, 2)
 
         self._status_btn = QPushButton("Check Status")
-        self._status_btn.setMinimumHeight(48)
+        self._status_btn.setMinimumHeight(42)
         self._status_btn.clicked.connect(self._on_check_status)
         btn_layout.addWidget(self._status_btn, 0, 3)
 
         # Row 2: Benchmark buttons
         self._bench_before_btn = QPushButton("Benchmark BEFORE")
-        self._bench_before_btn.setStyleSheet(
-            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._bench_before_btn.setMinimumHeight(48)
+        self._bench_before_btn.setStyleSheet(button_style("primary"))
+        self._bench_before_btn.setMinimumHeight(42)
         self._bench_before_btn.setToolTip(
             "Run a full network benchmark BEFORE optimization to measure baseline"
         )
@@ -247,12 +211,8 @@ class OptimizerTab(QWidget):
         btn_layout.addWidget(self._bench_before_btn, 1, 0)
 
         self._bench_after_btn = QPushButton("Benchmark AFTER")
-        self._bench_after_btn.setStyleSheet(
-            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._bench_after_btn.setMinimumHeight(48)
+        self._bench_after_btn.setStyleSheet(button_style("primary"))
+        self._bench_after_btn.setMinimumHeight(42)
         self._bench_after_btn.setToolTip(
             "Run a full network benchmark AFTER optimization to measure improvement"
         )
@@ -260,12 +220,8 @@ class OptimizerTab(QWidget):
         btn_layout.addWidget(self._bench_after_btn, 1, 1)
 
         self._compare_btn = QPushButton("Compare Before vs After")
-        self._compare_btn.setStyleSheet(
-            "QPushButton { background-color: #f5c2e7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._compare_btn.setMinimumHeight(48)
+        self._compare_btn.setStyleSheet(button_style("warning"))
+        self._compare_btn.setMinimumHeight(42)
         self._compare_btn.setToolTip("Compare your before and after benchmarks")
         self._compare_btn.clicked.connect(self._on_compare)
         btn_layout.addWidget(self._compare_btn, 1, 2, 1, 2)  # span 2 columns
@@ -279,16 +235,16 @@ class OptimizerTab(QWidget):
         self._progress_bar.setFormat("Idle")
         self._progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
+                background-color: #1d222b;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 text-align: center;
-                color: #cdd6f4;
+                color: #d8dee9;
                 height: 24px;
             }
             QProgressBar::chunk {
-                background-color: #89b4fa;
-                border-radius: 3px;
+                background-color: #62c7d8;
+                border-radius: 0;
             }
         """)
         self._progress_bar.setRange(0, 1)
@@ -378,7 +334,7 @@ class OptimizerTab(QWidget):
         self._bench_summary_label = QLabel("")
         self._bench_summary_label.setWordWrap(True)
         self._bench_summary_label.setStyleSheet(
-            "padding: 8px; font-size: 13px; color: #cdd6f4;"
+            "padding: 8px; font-size: 13px; color: #d8dee9;"
         )
         bench_layout.addWidget(self._bench_summary_label)
 
@@ -403,12 +359,12 @@ class OptimizerTab(QWidget):
         card = QLabel(f"{label}\n--")
         card.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card.setStyleSheet("""
-            background-color: #2a2a3d;
-            border: 1px solid #45475a;
-            border-radius: 8px;
+            background-color: #1b2028;
+            border: 1px solid #3a4350;
+            border-radius: 2px;
             padding: 12px;
             font-size: 12px;
-            color: #cdd6f4;
+            color: #d8dee9;
         """)
         card.setMinimumHeight(70)
         card.setWordWrap(True)
@@ -419,7 +375,7 @@ class OptimizerTab(QWidget):
         if is_admin:
             self._admin_label.setText("Running as Administrator — all optimizations available")
             self._admin_label.setStyleSheet(
-                "color: #a6e3a1; font-weight: bold; padding: 4px;"
+                "color: #75c884; font-weight: bold; padding: 4px;"
             )
         else:
             self._admin_label.setText(
@@ -427,7 +383,7 @@ class OptimizerTab(QWidget):
                 "Re-launch as Admin for full optimization."
             )
             self._admin_label.setStyleSheet(
-                "color: #f9e2af; font-weight: bold; padding: 4px;"
+                "color: #d9b65f; font-weight: bold; padding: 4px;"
             )
 
     def _set_busy(self, busy: bool, message: str = ""):
@@ -454,17 +410,17 @@ class OptimizerTab(QWidget):
             return
 
         colors = {
-            "healthy": "#a6e3a1",
-            "warning": "#f9e2af",
-            "error": "#f38ba8",
-            "neutral": "#cdd6f4",
+            "healthy": "#75c884",
+            "warning": "#d9b65f",
+            "error": "#e06363",
+            "neutral": "#d8dee9",
         }
-        color = colors.get(status, "#cdd6f4")
+        color = colors.get(status, "#d8dee9")
         card.setText(f"{title}\n{value}")
         card.setStyleSheet(f"""
-            background-color: #2a2a3d;
-            border: 1px solid #45475a;
-            border-radius: 8px;
+            background-color: #1b2028;
+            border: 1px solid #3a4350;
+            border-radius: 2px;
             padding: 12px;
             font-size: 12px;
             color: {color};

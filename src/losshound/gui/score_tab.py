@@ -6,7 +6,7 @@ import logging
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -14,6 +14,8 @@ from PySide6.QtWidgets import (
 from losshound.core.benchmark import BenchmarkSnapshot, run_benchmark, save_snapshot
 from losshound.core.scoring import NetworkScore, SubScore, format_score, score_snapshot
 from losshound.core.trending import TrendSummary, analyze_trends, format_trends
+from losshound.gui.theme import button_style
+from losshound.gui.widgets import TelemetryHeader
 from losshound.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -87,35 +89,13 @@ class ScoreTab(QWidget):
         main_layout.setContentsMargins(16, 16, 16, 16)
         main_layout.setSpacing(12)
 
-        # --- Header ---
-        header = QFrame()
-        header.setStyleSheet("""
-            QFrame {
-                background-color: #1e2a3a;
-                border: 1px solid #2d4a6a;
-                border-radius: 8px;
-            }
-        """)
-        header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(16, 12, 16, 12)
-
-        title = QLabel("Network Score & Trends")
-        title.setStyleSheet(
-            "font-size: 18px; font-weight: bold; color: #89b4fa; background: transparent;"
-        )
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        header_layout.addWidget(title)
-
-        subtitle = QLabel(
-            "Score your network 0–100 for gaming and real-time use. "
-            "Track performance over time and detect degradation patterns."
-        )
-        subtitle.setStyleSheet("font-size: 12px; color: #7ea9d0; background: transparent;")
-        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setWordWrap(True)
-        header_layout.addWidget(subtitle)
-
-        main_layout.addWidget(header)
+        main_layout.addWidget(TelemetryHeader(
+            "Network Score & Trends",
+            "Score network quality for gaming and real-time use, then track degradation over time.",
+            "SCORE",
+            "HISTORY",
+            "#62c7d8",
+        ))
 
         # --- Action buttons ---
         btn_group = QGroupBox("Actions")
@@ -123,22 +103,14 @@ class ScoreTab(QWidget):
         btn_layout.setSpacing(8)
 
         self._score_btn = QPushButton("Run Score Benchmark")
-        self._score_btn.setStyleSheet(
-            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._score_btn.setMinimumHeight(48)
+        self._score_btn.setStyleSheet(button_style("primary"))
+        self._score_btn.setMinimumHeight(42)
         self._score_btn.clicked.connect(self._on_run_score)
         btn_layout.addWidget(self._score_btn)
 
         self._trends_btn = QPushButton("Refresh Trends")
-        self._trends_btn.setStyleSheet(
-            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; }"
-            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
-        )
-        self._trends_btn.setMinimumHeight(48)
+        self._trends_btn.setStyleSheet(button_style("default"))
+        self._trends_btn.setMinimumHeight(42)
         self._trends_btn.clicked.connect(self._on_refresh_trends)
         btn_layout.addWidget(self._trends_btn)
 
@@ -152,16 +124,16 @@ class ScoreTab(QWidget):
         self._progress_bar.setFormat("Idle")
         self._progress_bar.setStyleSheet("""
             QProgressBar {
-                background-color: #313244;
-                border: 1px solid #45475a;
-                border-radius: 4px;
+                background-color: #1d222b;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 text-align: center;
-                color: #cdd6f4;
+                color: #d8dee9;
                 height: 24px;
             }
             QProgressBar::chunk {
-                background-color: #89b4fa;
-                border-radius: 3px;
+                background-color: #62c7d8;
+                border-radius: 0;
             }
         """)
         main_layout.addWidget(self._progress_bar)
@@ -174,13 +146,13 @@ class ScoreTab(QWidget):
         self._score_label = QLabel("--")
         self._score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._score_label.setStyleSheet(
-            "font-size: 64px; font-weight: bold; color: #585b70; padding: 8px;"
+            "font-size: 64px; font-weight: bold; color: #4a5565; padding: 8px;"
         )
         score_layout.addWidget(self._score_label)
 
         self._grade_label = QLabel("Run a benchmark to see your network score")
         self._grade_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._grade_label.setStyleSheet("font-size: 14px; color: #a6adc8; padding: 4px;")
+        self._grade_label.setStyleSheet("font-size: 14px; color: #8f9aaa; padding: 4px;")
         self._grade_label.setWordWrap(True)
         score_layout.addWidget(self._grade_label)
 
@@ -217,7 +189,7 @@ class ScoreTab(QWidget):
 
         self._patterns_label = QLabel("Run a few benchmarks over time to detect patterns.")
         self._patterns_label.setWordWrap(True)
-        self._patterns_label.setStyleSheet("color: #a6adc8; padding: 8px; font-size: 13px;")
+        self._patterns_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
         patterns_layout.addWidget(self._patterns_label)
 
         main_layout.addWidget(patterns_group)
@@ -269,14 +241,14 @@ class ScoreTab(QWidget):
     def _score_color(self, score: float) -> str:
         """Return a hex color for a score value."""
         if score >= 90:
-            return "#a6e3a1"  # green
+            return "#75c884"  # green
         if score >= 75:
-            return "#89b4fa"  # blue
+            return "#62c7d8"  # blue
         if score >= 60:
-            return "#f9e2af"  # yellow
+            return "#d9b65f"  # yellow
         if score >= 40:
-            return "#fab387"  # orange
-        return "#f38ba8"      # red
+            return "#c98652"  # orange
+        return "#e06363"      # red
 
     # ------------------------------------------------------------------
     # Score actions
@@ -334,9 +306,9 @@ class ScoreTab(QWidget):
             card.setAlignment(Qt.AlignmentFlag.AlignCenter)
             sub_color = self._score_color(sub.value)
             card.setStyleSheet(f"""
-                background-color: #2a2a3d;
-                border: 1px solid #45475a;
-                border-radius: 8px;
+                background-color: #1b2028;
+                border: 1px solid #3a4350;
+                border-radius: 2px;
                 padding: 10px;
                 font-size: 11px;
                 color: {sub_color};
@@ -462,7 +434,7 @@ class ScoreTab(QWidget):
                     "No concerning patterns detected. Your network is stable."
                 )
                 self._patterns_label.setStyleSheet(
-                    "color: #a6e3a1; padding: 8px; font-size: 13px;"
+                    "color: #75c884; padding: 8px; font-size: 13px;"
                 )
             else:
                 count_needed = 5 - summary.snapshot_count
@@ -471,7 +443,7 @@ class ScoreTab(QWidget):
                     f"Run 'Run Score Benchmark' a few more times."
                 )
                 self._patterns_label.setStyleSheet(
-                    "color: #a6adc8; padding: 8px; font-size: 13px;"
+                    "color: #8f9aaa; padding: 8px; font-size: 13px;"
                 )
             return
 
@@ -483,10 +455,10 @@ class ScoreTab(QWidget):
             "stable": "\u2022",        # bullet
         }
         _COLORS = {
-            "degradation": "#f38ba8",
-            "time_of_day": "#f9e2af",
-            "improving": "#a6e3a1",
-            "volatile": "#fab387",
+            "degradation": "#e06363",
+            "time_of_day": "#d9b65f",
+            "improving": "#75c884",
+            "volatile": "#c98652",
         }
 
         lines = []
@@ -494,10 +466,10 @@ class ScoreTab(QWidget):
             icon = _ICONS.get(p.pattern_type, "\u2022")
             lines.append(f"{icon}  {p.description}")
 
-        color = "#f9e2af"  # default to warning yellow
+        color = "#d9b65f"  # default to warning yellow
         for p in summary.patterns:
             if p.pattern_type == "degradation":
-                color = "#f38ba8"
+                color = "#e06363"
                 break
 
         self._patterns_label.setText("\n".join(lines))

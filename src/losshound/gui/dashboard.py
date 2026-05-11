@@ -43,12 +43,12 @@ class DashboardTab(QWidget):
 
         # Route status one-liner
         self._route_label = QLabel("Route: waiting for data...")
-        self._route_label.setStyleSheet("color: #6c7086; font-size: 12px; padding: 4px;")
+        self._route_label.setStyleSheet("color: #788596; font-size: 12px; padding: 4px;")
         layout.addWidget(self._route_label)
 
         # Rolling observation history
         obs_label = QLabel("LIVE READINGS")
-        obs_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        obs_label.setStyleSheet("font-size: 11px; color: #788596; font-weight: bold;")
         layout.addWidget(obs_label)
 
         self._obs_table = QTableWidget(0, 6)
@@ -69,7 +69,7 @@ class DashboardTab(QWidget):
 
         # Recent events table
         events_label = QLabel("RECENT EVENTS")
-        events_label.setStyleSheet("font-size: 11px; color: #6c7086; font-weight: bold;")
+        events_label.setStyleSheet("font-size: 11px; color: #788596; font-weight: bold;")
         layout.addWidget(events_label)
 
         self._events_table = QTableWidget(0, 3)
@@ -190,16 +190,16 @@ class DashboardTab(QWidget):
 
         cat_item = QTableWidgetItem(diag.category.display_name)
         color_map = {
-            DiagnosisCategory.HEALTHY: "#a6e3a1",
-            DiagnosisCategory.LAN_ISSUE: "#f38ba8",
-            DiagnosisCategory.ISP_WAN_ISSUE: "#f38ba8",
-            DiagnosisCategory.DNS_ISSUE: "#f9e2af",
-            DiagnosisCategory.UPSTREAM_ROUTE_ISSUE: "#f9e2af",
-            DiagnosisCategory.INTERMITTENT: "#f9e2af",
-            DiagnosisCategory.UNKNOWN: "#6c7086",
+            DiagnosisCategory.HEALTHY: "#75c884",
+            DiagnosisCategory.LAN_ISSUE: "#e06363",
+            DiagnosisCategory.ISP_WAN_ISSUE: "#e06363",
+            DiagnosisCategory.DNS_ISSUE: "#d9b65f",
+            DiagnosisCategory.UPSTREAM_ROUTE_ISSUE: "#d9b65f",
+            DiagnosisCategory.INTERMITTENT: "#d9b65f",
+            DiagnosisCategory.UNKNOWN: "#788596",
         }
         from PySide6.QtGui import QColor
-        cat_item.setForeground(QColor(color_map.get(diag.category, "#cdd6f4")))
+        cat_item.setForeground(QColor(color_map.get(diag.category, "#d8dee9")))
         self._events_table.setItem(row, 1, cat_item)
         self._events_table.setItem(row, 2, QTableWidgetItem(diag.summary))
 
@@ -255,9 +255,9 @@ class DashboardTab(QWidget):
             if col == 3 and all_losses:
                 avg_loss = sum(all_losses) / len(all_losses)
                 if avg_loss > 10:
-                    item.setForeground(QColor("#f38ba8"))
+                    item.setForeground(QColor("#e06363"))
                 elif avg_loss > 2:
-                    item.setForeground(QColor("#f9e2af"))
+                    item.setForeground(QColor("#d9b65f"))
             self._obs_table.setItem(row, col, item)
 
         # Keep max 30 rows

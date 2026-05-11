@@ -6,25 +6,25 @@ import logging
 from typing import Optional
 
 from PySide6.QtCore import Signal
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QAction, QColor, QIcon, QPainter
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
 from losshound.core.models import Diagnosis, DiagnosisCategory, Observation
+from losshound.gui.branding import losshound_pixmap
 
 logger = logging.getLogger(__name__)
 
 
 def _create_status_icon(color: str, size: int = 64) -> QIcon:
-    """Create a simple colored circle icon for the tray."""
-    pixmap = QPixmap(size, size)
-    pixmap.fill(QColor(0, 0, 0, 0))  # transparent
+    """Create a branded tray icon with a small status bar."""
+    pixmap = losshound_pixmap(size)
 
     painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
     painter.setBrush(QColor(color))
-    painter.setPen(QColor(color).darker(130))
-    margin = size // 8
-    painter.drawEllipse(margin, margin, size - 2 * margin, size - 2 * margin)
+    painter.setPen(QColor(color))
+    margin = max(3, size // 10)
+    height = max(4, size // 10)
+    painter.drawRect(margin, size - margin - height, size - 2 * margin, height)
     painter.end()
 
     return QIcon(pixmap)
@@ -32,10 +32,10 @@ def _create_status_icon(color: str, size: int = 64) -> QIcon:
 
 # Pre-built icons for each status
 _ICONS = {
-    "healthy":  "#a6e3a1",  # green
-    "warning":  "#f9e2af",  # yellow
-    "error":    "#f38ba8",  # red
-    "unknown":  "#6c7086",  # grey
+    "healthy":  "#75c884",  # green
+    "warning":  "#d9b65f",  # yellow
+    "error":    "#e06363",  # red
+    "unknown":  "#788596",  # grey
 }
 
 
