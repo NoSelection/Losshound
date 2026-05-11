@@ -55,6 +55,144 @@ def _render_latency_chart_png(observations: list[dict]) -> bytes | None:
         return None
 
 
+def _render_loss_chart_png(observations: list[dict]) -> bytes | None:
+    if not observations:
+        return None
+    try:
+        import io
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from datetime import datetime as _dt
+
+        timestamps, losses = [], []
+        for o in observations:
+            try:
+                t = _dt.fromisoformat(o["timestamp"])
+            except (TypeError, ValueError):
+                continue
+            timestamps.append(t)
+            losses.append((o.get("public_loss") or 0.0))
+
+        if not timestamps:
+            return None
+
+        fig, ax = plt.subplots(figsize=(7.5, 2.4), dpi=110)
+        ax.fill_between(timestamps, 0, losses, color="#f38ba8", alpha=0.6)
+        ax.set_ylabel("Packet loss (%)")
+        ax.set_title("Packet loss over time")
+        ax.set_ylim(bottom=0)
+        ax.grid(True, alpha=0.3)
+        fig.autofmt_xdate()
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=110)
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Failed to render loss chart")
+        return None
+
+
+def _render_dns_bar_png(benchmarks: list[dict]) -> bytes | None:
+    if not benchmarks:
+        return None
+    try:
+        import io
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        labels, values = [], []
+        for b in benchmarks[-8:]:
+            label = b.get("label") or b.get("timestamp", "")[:10]
+            dns = b.get("avg_dns_ms")
+            if dns is None:
+                continue
+            labels.append(label)
+            values.append(dns)
+
+        if not values:
+            return None
+
+        fig, ax = plt.subplots(figsize=(7.5, 2.8), dpi=110)
+        ax.bar(labels, values, color="#a6e3a1")
+        ax.set_ylabel("DNS resolution time (ms)")
+        ax.set_title("DNS performance (recent benchmarks)")
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.autofmt_xdate()
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=110)
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Failed to render DNS bar chart")
+        return None
+
+
+def _render_before_after_png(benchmarks: list[dict]) -> bytes | None:
+    before = next((b for b in benchmarks if b.get("label") == "before"), None)
+    after = next((b for b in benchmarks if b.get("label") == "after"), None)
+    if not before or not after:
+        return None
+    try:
+        import io
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        metrics = [
+            ("Latency (ms)", "avg_latency_ms"),
+            ("Jitter (ms)",  "avg_jitter_ms"),
+            ("Loss (%)",     "avg_loss_pct"),
+            ("DNS (ms)",     "avg_dns_ms"),
+        ]
+        labels = [m[0] for m in metrics]
+        before_vals = [before.get(k) or 0 for _, k in metrics]
+        after_vals  = [after.get(k)  or 0 for _, k in metrics]
+
+        import numpy as np
+        x = np.arange(len(labels))
+        width = 0.35
+
+        fig, ax = plt.subplots(figsize=(7.5, 3.0), dpi=110)
+        ax.bar(x - width / 2, before_vals, width, label="Before", color="#f9e2af")
+        ax.bar(x + width / 2, after_vals,  width, label="After",  color="#a6e3a1")
+        ax.set_xticks(x)
+        ax.set_xticklabels(labels)
+        ax.set_title("Before vs after optimization")
+        ax.legend()
+        ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=110)
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Failed to render before/after chart")
+        return None
+
+
+def _embed_image_section(title: str, png: bytes | None, story, styles,
+                         width: int = 460, height: int = 180):
+    import io
+    from reportlab.platypus import Paragraph, Spacer, Image
+
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+
+    story.append(Paragraph(title, h2))
+    if png is None:
+        story.append(Paragraph("Not enough data.", body))
+    else:
+        story.append(Image(io.BytesIO(png), width=width, height=height))
+    story.append(Spacer(1, 12))
+
+
 def _build_latency_section(data, story, styles):
     from reportlab.platypus import Paragraph, Spacer, Image
     import io
@@ -100,6 +238,21 @@ def render_isp_report_pdf(data: IspReportData, output_path: Path) -> Path:
     _build_system_info(data, story, getSampleStyleSheet())
     _build_issue_summary(data, story, getSampleStyleSheet())
     _build_latency_section(data, story, getSampleStyleSheet())
+    _embed_image_section(
+        "Packet loss",
+        _render_loss_chart_png(data.observations),
+        story, getSampleStyleSheet(), width=460, height=144,
+    )
+    _embed_image_section(
+        "DNS performance",
+        _render_dns_bar_png(data.benchmarks),
+        story, getSampleStyleSheet(), width=460, height=168,
+    )
+    _embed_image_section(
+        "Before vs after",
+        _render_before_after_png(data.benchmarks),
+        story, getSampleStyleSheet(), width=460, height=180,
+    )
     doc.build(story)
     return output_path
 
