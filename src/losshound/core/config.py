@@ -34,6 +34,19 @@ class DiagnosisConfig:
 
 
 @dataclass
+class AlertsConfig:
+    """Tray-alert engine configuration."""
+    enabled: bool = True
+    categories: list[str] = field(default_factory=lambda: [
+        "lan_issue", "isp_wan_issue", "dns_issue",
+        "intermittent", "upstream_route_issue",
+    ])
+    min_duration_seconds: int = 30
+    snooze_seconds: int = 600
+    debounce_seconds: int = 60
+
+
+@dataclass
 class AppConfig:
     ping_interval_seconds: int = 30
     dns_interval_seconds: int = 60
@@ -47,6 +60,8 @@ class AppConfig:
     ping_timeout_ms: int = 2000
     auto_benchmark_interval_minutes: int = 60
     close_to_tray: bool = False
+    pdf_default_dir: Optional[str] = None
+    alerts: AlertsConfig = field(default_factory=AlertsConfig)
     diagnosis: DiagnosisConfig = field(default_factory=DiagnosisConfig)
     log_level: str = "INFO"
 
@@ -93,10 +108,17 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
         if k in DiagnosisConfig.__dataclass_fields__
     })
 
+    alerts_data = data.pop("alerts", {})
+    alerts = AlertsConfig(**{
+        k: v for k, v in alerts_data.items()
+        if k in AlertsConfig.__dataclass_fields__
+    })
+
     config = AppConfig(**{
         k: v for k, v in data.items()
         if k in AppConfig.__dataclass_fields__ and k != "diagnosis"
     })
+    config.alerts = alerts
     config.diagnosis = diag
     return config
 

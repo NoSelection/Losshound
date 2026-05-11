@@ -70,6 +70,19 @@ CREATE INDEX IF NOT EXISTS idx_diag_ts ON diagnoses(timestamp);
 CREATE INDEX IF NOT EXISTS idx_route_ts ON route_snapshots(timestamp);
 CREATE INDEX IF NOT EXISTS idx_bench_ts ON benchmark_snapshots(timestamp);
 CREATE INDEX IF NOT EXISTS idx_bench_label ON benchmark_snapshots(label);
+
+CREATE TABLE IF NOT EXISTS alerts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp   TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    severity    TEXT NOT NULL,
+    title       TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    resolved_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_alerts_category ON alerts(category);
 """
 
 
@@ -287,6 +300,54 @@ class HistoryStore:
             logger.info("Pruned %d old records", total)
         return total
 
+    def save_alert(
+        self, timestamp: datetime, category: str, severity: str,
+        title: str, message: str,
+    ) -> int:
+        cursor = self._conn.execute(
+            """INSERT INTO alerts (timestamp, category, severity, title, message)
+               VALUES (?, ?, ?, ?, ?)""",
+            (timestamp.isoformat(), category, severity, title, message),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def resolve_alert(self, category: str, resolved_at: datetime) -> int:
+        """Mark the most recent unresolved alert for *category* as resolved.
+
+        Returns the row id of the resolved alert, or -1 if none was found.
+        """
+        row = self._conn.execute(
+            """SELECT id FROM alerts
+               WHERE category = ? AND resolved_at IS NULL
+               ORDER BY timestamp DESC LIMIT 1""",
+            (category,),
+        ).fetchone()
+        if not row:
+            return -1
+        alert_id = row[0]
+        self._conn.execute(
+            "UPDATE alerts SET resolved_at = ? WHERE id = ?",
+            (resolved_at.isoformat(), alert_id),
+        )
+        self._conn.commit()
+        return alert_id
+
+    def recent_alerts(self, limit: int = 10) -> list[AlertRow]:
+        rows = self._conn.execute(
+            """SELECT id, timestamp, category, severity, title, message, resolved_at
+               FROM alerts ORDER BY timestamp DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            AlertRow(
+                id=r[0], timestamp=r[1], category=r[2],
+                severity=r[3], title=r[4], message=r[5],
+                resolved_at=r[6],
+            )
+            for r in rows
+        ]
+
     def export_report(self, hours: int = 1) -> dict:
         cutoff = (datetime.now() - timedelta(hours=hours)).isoformat()
 
@@ -414,3 +475,17 @@ def _deserialize_observation(raw_json: str) -> Observation:
         dns_results=dns_results,
         route_snapshot=route_snapshot,
     )
+
+
+from dataclasses import dataclass
+
+
+@dataclass
+class AlertRow:
+    id: int
+    timestamp: str
+    category: str
+    severity: str
+    title: str
+    message: str
+    resolved_at: Optional[str] = None
