@@ -27,3 +27,33 @@ def test_healthy_diagnosis_returns_none(tmp_path: Path):
         assert result is None
     finally:
         store.close()
+
+
+from datetime import timedelta
+
+
+def test_idle_then_pending_then_alerted(tmp_path: Path):
+    store = _store(tmp_path)
+    try:
+        cfg = AlertsConfig(min_duration_seconds=10)
+        engine = AlertEngine(cfg, store)
+
+        t0 = datetime(2026, 5, 11, 18, 0, 0)
+        # First unhealthy: IDLE → PENDING, no event
+        assert engine.feed(_diag(DiagnosisCategory.LAN_ISSUE, t0)) is None
+
+        # Inside min_duration: still PENDING, no event
+        assert engine.feed(
+            _diag(DiagnosisCategory.LAN_ISSUE, t0 + timedelta(seconds=5))
+        ) is None
+
+        # Past min_duration: ALERTED, event fires
+        event = engine.feed(
+            _diag(DiagnosisCategory.LAN_ISSUE, t0 + timedelta(seconds=11))
+        )
+        assert event is not None
+        assert event.category == "lan_issue"
+        assert event.severity == "warning"
+        assert event.is_resolution is False
+    finally:
+        store.close()
