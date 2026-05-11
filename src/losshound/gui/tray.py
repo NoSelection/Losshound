@@ -53,10 +53,12 @@ class TrayIcon(QSystemTrayIcon):
     show_requested = Signal()
     quit_requested = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, parent: Optional[QWidget] = None,
+                 engine: "Optional[object]" = None):
         super().__init__(parent)
         self._last_status = "unknown"
         self._notifications_enabled = True
+        self._engine = engine
 
         # Build icons
         self._status_icons = {
@@ -84,6 +86,14 @@ class TrayIcon(QSystemTrayIcon):
         self._notif_action.triggered.connect(self._toggle_notifications)
         menu.addAction(self._notif_action)
 
+        snooze_action = QAction("Snooze alerts (10 min)", menu)
+        snooze_action.triggered.connect(self._snooze_clicked)
+        menu.addAction(snooze_action)
+
+        self._recent_menu = QMenu("Recent Alerts", menu)
+        self._recent_menu.aboutToShow.connect(self._refresh_recent_alerts)
+        menu.addMenu(self._recent_menu)
+
         menu.addSeparator()
 
         quit_action = QAction("Quit", menu)
@@ -94,6 +104,9 @@ class TrayIcon(QSystemTrayIcon):
 
         # Double-click to show
         self.activated.connect(self._on_activated)
+
+    def set_engine(self, engine) -> None:
+        self._engine = engine
 
     def _on_activated(self, reason: QSystemTrayIcon.ActivationReason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -146,26 +159,56 @@ class TrayIcon(QSystemTrayIcon):
         self._status_action.setText(f"Loss: {loss_str} | Latency: {rtt_str}")
 
     def update_diagnosis(self, diag: Diagnosis):
-        """Show a notification if network issues are detected."""
+        """Route the diagnosis through the AlertEngine (if set)."""
         if not self._notifications_enabled:
             return
+        if self._engine is None:
+            return
 
-        # Only notify on transitions to bad states
-        if diag.category in (
-            DiagnosisCategory.LAN_ISSUE,
-            DiagnosisCategory.ISP_WAN_ISSUE,
-            DiagnosisCategory.DNS_ISSUE,
-        ):
+        event = self._engine.feed(diag)
+        if event is None:
+            return
+
+        if event.is_resolution:
+            icon = QSystemTrayIcon.MessageIcon.Information
+        elif event.severity == "critical":
+            icon = QSystemTrayIcon.MessageIcon.Critical
+        else:
+            icon = QSystemTrayIcon.MessageIcon.Warning
+
+        self.showMessage(
+            f"Losshound — {event.title}",
+            event.message,
+            icon,
+            5000,
+        )
+
+    def _snooze_clicked(self):
+        if self._engine is not None:
+            self._engine.snooze_all(600)
             self.showMessage(
-                f"Losshound — {diag.category.display_name}",
-                diag.summary,
-                QSystemTrayIcon.MessageIcon.Warning,
-                5000,
+                "Losshound", "Alerts snoozed for 10 minutes.",
+                QSystemTrayIcon.MessageIcon.Information, 2500,
             )
-        elif diag.category == DiagnosisCategory.INTERMITTENT:
-            self.showMessage(
-                "Losshound — Intermittent Issues",
-                diag.summary,
-                QSystemTrayIcon.MessageIcon.Information,
-                3000,
-            )
+
+    def _refresh_recent_alerts(self):
+        self._recent_menu.clear()
+        if self._engine is None or not hasattr(self._engine, "_history"):
+            placeholder = QAction("(no alerts)", self._recent_menu)
+            placeholder.setEnabled(False)
+            self._recent_menu.addAction(placeholder)
+            return
+        history = self._engine._history
+        rows = history.recent_alerts(10)
+        if not rows:
+            placeholder = QAction("(no alerts)", self._recent_menu)
+            placeholder.setEnabled(False)
+            self._recent_menu.addAction(placeholder)
+            return
+        for r in rows:
+            label = f"{r.timestamp[:19]} — {r.title}"
+            if r.resolved_at:
+                label += " ✓"
+            act = QAction(label, self._recent_menu)
+            act.setEnabled(False)  # display-only in v1
+            self._recent_menu.addAction(act)
