@@ -53,6 +53,15 @@ class AlertEngine:
     def snooze_all(self, seconds: int) -> None:
         self._snooze_until = datetime.now() + timedelta(seconds=seconds)
 
+    def snooze(self) -> int:
+        """Snooze for the duration configured in AlertsConfig.snooze_seconds.
+
+        Returns the seconds applied — useful for displaying a confirmation.
+        """
+        seconds = self._config.snooze_seconds
+        self.snooze_all(seconds)
+        return seconds
+
     def recent_alerts(self, limit: int = 10):
         """Return the most recent persisted alerts (delegates to history store)."""
         return self._history.recent_alerts(limit)

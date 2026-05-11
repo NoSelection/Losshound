@@ -86,7 +86,7 @@ class TrayIcon(QSystemTrayIcon):
         self._notif_action.triggered.connect(self._toggle_notifications)
         menu.addAction(self._notif_action)
 
-        snooze_action = QAction("Snooze alerts (10 min)", menu)
+        snooze_action = QAction("Snooze alerts", menu)
         snooze_action.triggered.connect(self._snooze_clicked)
         menu.addAction(snooze_action)
 
@@ -181,12 +181,15 @@ class TrayIcon(QSystemTrayIcon):
         )
 
     def _snooze_clicked(self):
-        if self._engine is not None:
-            self._engine.snooze_all(600)
-            self.showMessage(
-                "Losshound", "Alerts snoozed for 10 minutes.",
-                QSystemTrayIcon.MessageIcon.Information, 2500,
-            )
+        if self._engine is None:
+            return
+        seconds = self._engine.snooze()
+        minutes = max(1, round(seconds / 60))
+        self.showMessage(
+            "Losshound",
+            f"Alerts snoozed for {minutes} minute{'s' if minutes != 1 else ''}.",
+            QSystemTrayIcon.MessageIcon.Information, 2500,
+        )
 
     def _refresh_recent_alerts(self):
         self._recent_menu.clear()

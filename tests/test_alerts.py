@@ -230,3 +230,18 @@ def test_alert_persisted_to_history(tmp_path: Path):
         assert rows2[0].resolved_at is not None
     finally:
         store.close()
+
+
+def test_snooze_uses_configured_duration(tmp_path: Path):
+    store = _store(tmp_path)
+    try:
+        cfg = AlertsConfig(snooze_seconds=120)
+        engine = AlertEngine(cfg, store)
+
+        applied = engine.snooze()
+        assert applied == 120
+        # _snooze_until should be ~120s in the future (within 5s slack)
+        gap = (engine._snooze_until - datetime.now()).total_seconds()
+        assert 115 <= gap <= 121
+    finally:
+        store.close()
