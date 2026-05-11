@@ -87,9 +87,11 @@ class MainWindow(QMainWindow):
         self._countdown_timer.timeout.connect(self._tick_countdown)
         self._countdown_timer.start(1000)
 
-        # Alert engine + system tray icon
+        # Alert engine + notification dispatcher + system tray icon
         from losshound.core.alerts import AlertEngine
+        from losshound.core.notifications import NotificationDispatcher
         self._alert_engine = AlertEngine(config.alerts, self._history)
+        self._notification_dispatcher = NotificationDispatcher(config.alerts)
         self._tray = TrayIcon(self, engine=self._alert_engine)
         self._tray.show_requested.connect(self._show_from_tray)
         self._tray.quit_requested.connect(self._quit_from_tray)
@@ -116,7 +118,11 @@ class MainWindow(QMainWindow):
 
     def _on_diagnosis(self, diag: Diagnosis):
         self._dashboard.update_diagnosis(diag)
-        self._tray.update_diagnosis(diag)
+        event = self._alert_engine.feed(diag)
+        if event is None:
+            return
+        self._tray.show_event(event)
+        self._notification_dispatcher.dispatch(event)
 
     def _on_error(self, msg: str):
         logger.error("Monitor error: %s", msg)
@@ -126,6 +132,7 @@ class MainWindow(QMainWindow):
         self._config = config
         self._monitor.update_config(config)
         self._alert_engine.update_config(config.alerts)
+        self._notification_dispatcher.update_config(config.alerts)
         self._seconds_until_next = config.ping_interval_seconds
 
     def _tick_countdown(self):
