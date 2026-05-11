@@ -206,3 +206,27 @@ def test_alerts_disabled_master_returns_none(tmp_path: Path):
         assert result is None
     finally:
         store.close()
+
+
+def test_alert_persisted_to_history(tmp_path: Path):
+    store = _store(tmp_path)
+    try:
+        cfg = AlertsConfig(min_duration_seconds=1)
+        engine = AlertEngine(cfg, store)
+
+        t0 = datetime(2026, 5, 11, 18, 0, 0)
+        engine.feed(_diag(DiagnosisCategory.DNS_ISSUE, t0))
+        engine.feed(_diag(DiagnosisCategory.DNS_ISSUE, t0 + timedelta(seconds=5)))
+
+        rows = store.recent_alerts()
+        assert len(rows) == 1
+        assert rows[0].category == "dns_issue"
+        assert rows[0].severity == "warning"
+        assert rows[0].resolved_at is None
+
+        # Recovery resolves the row
+        engine.feed(_diag(DiagnosisCategory.HEALTHY, t0 + timedelta(seconds=30)))
+        rows2 = store.recent_alerts()
+        assert rows2[0].resolved_at is not None
+    finally:
+        store.close()
