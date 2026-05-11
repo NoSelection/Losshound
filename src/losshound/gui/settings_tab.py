@@ -290,6 +290,21 @@ class SettingsTab(QWidget):
 
     def _save(self):
         config = self._build_config()
+        errors = []
+        if not config.public_ping_targets:
+            errors.append("Public ping targets cannot be empty.")
+        if not config.dns_test_hostnames:
+            errors.append("DNS test hostnames cannot be empty.")
+        if not config.tracert_target:
+            errors.append("Tracert target cannot be empty.")
+        if errors:
+            QMessageBox.warning(
+                self, "Settings — invalid",
+                "Please fix the following before saving:\n\n• " +
+                "\n• ".join(errors),
+            )
+            return
+
         save_config(config)
         self._config = config
         self.config_changed.emit(config)
