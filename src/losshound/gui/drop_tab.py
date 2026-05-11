@@ -155,8 +155,9 @@ class DropTab(QWidget):
         # Start / Stop buttons
         self._start_btn = QPushButton("Start Monitoring")
         self._start_btn.setStyleSheet(
-            "background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 28px;"
+            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
+            "font-size: 14px; padding: 12px 28px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._start_btn.setMinimumHeight(48)
         self._start_btn.clicked.connect(self._on_start)
@@ -164,8 +165,9 @@ class DropTab(QWidget):
 
         self._stop_btn = QPushButton("Stop")
         self._stop_btn.setStyleSheet(
-            "background-color: #f38ba8; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 20px;"
+            "QPushButton { background-color: #f38ba8; color: #1e1e2e; font-weight: bold; "
+            "font-size: 14px; padding: 12px 20px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._stop_btn.setMinimumHeight(48)
         self._stop_btn.setEnabled(False)

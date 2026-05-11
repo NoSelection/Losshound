@@ -124,8 +124,9 @@ class ScoreTab(QWidget):
 
         self._score_btn = QPushButton("Run Score Benchmark")
         self._score_btn.setStyleSheet(
-            "background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px;"
+            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
+            "font-size: 14px; padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._score_btn.setMinimumHeight(48)
         self._score_btn.clicked.connect(self._on_run_score)
@@ -133,8 +134,9 @@ class ScoreTab(QWidget):
 
         self._trends_btn = QPushButton("Refresh Trends")
         self._trends_btn.setStyleSheet(
-            "background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px;"
+            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
+            "padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._trends_btn.setMinimumHeight(48)
         self._trends_btn.clicked.connect(self._on_refresh_trends)

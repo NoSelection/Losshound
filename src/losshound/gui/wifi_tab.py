@@ -120,8 +120,9 @@ class WifiTab(QWidget):
 
         self._wifi_scan_btn = QPushButton("Scan WiFi")
         self._wifi_scan_btn.setStyleSheet(
-            "background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px;"
+            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
+            "font-size: 14px; padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._wifi_scan_btn.setMinimumHeight(48)
         self._wifi_scan_btn.clicked.connect(self._on_wifi_scan)
@@ -129,8 +130,9 @@ class WifiTab(QWidget):
 
         self._bufferbloat_btn = QPushButton("Test Bufferbloat")
         self._bufferbloat_btn.setStyleSheet(
-            "background-color: #f9e2af; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px;"
+            "QPushButton { background-color: #f9e2af; color: #1e1e2e; font-weight: bold; "
+            "font-size: 14px; padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._bufferbloat_btn.setMinimumHeight(48)
         self._bufferbloat_btn.setToolTip(

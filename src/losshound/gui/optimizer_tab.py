@@ -196,8 +196,9 @@ class OptimizerTab(QWidget):
 
         self._optimize_btn = QPushButton("Optimize All")
         self._optimize_btn.setStyleSheet(
-            "background-color: #a6e3a1; color: #1e1e2e; font-weight: bold; "
-            "font-size: 14px; padding: 12px 24px;"
+            "QPushButton { background-color: #a6e3a1; color: #1e1e2e; font-weight: bold; "
+            "font-size: 14px; padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._optimize_btn.setMinimumHeight(48)
         self._optimize_btn.clicked.connect(self._on_optimize_all)
@@ -205,8 +206,9 @@ class OptimizerTab(QWidget):
 
         self._dns_bench_btn = QPushButton("Benchmark DNS")
         self._dns_bench_btn.setStyleSheet(
-            "background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px;"
+            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; "
+            "padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._dns_bench_btn.setMinimumHeight(48)
         self._dns_bench_btn.clicked.connect(self._on_dns_benchmark)
@@ -214,8 +216,9 @@ class OptimizerTab(QWidget):
 
         self._restore_btn = QPushButton("Revert All Changes")
         self._restore_btn.setStyleSheet(
-            "background-color: #f38ba8; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px; font-size: 14px;"
+            "QPushButton { background-color: #f38ba8; color: #1e1e2e; font-weight: bold; "
+            "padding: 12px 24px; font-size: 14px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._restore_btn.setMinimumHeight(48)
         self._restore_btn.setToolTip(
@@ -232,8 +235,9 @@ class OptimizerTab(QWidget):
         # Row 2: Benchmark buttons
         self._bench_before_btn = QPushButton("Benchmark BEFORE")
         self._bench_before_btn.setStyleSheet(
-            "background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px;"
+            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
+            "padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._bench_before_btn.setMinimumHeight(48)
         self._bench_before_btn.setToolTip(
@@ -244,8 +248,9 @@ class OptimizerTab(QWidget):
 
         self._bench_after_btn = QPushButton("Benchmark AFTER")
         self._bench_after_btn.setStyleSheet(
-            "background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px;"
+            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; "
+            "padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._bench_after_btn.setMinimumHeight(48)
         self._bench_after_btn.setToolTip(
@@ -256,8 +261,9 @@ class OptimizerTab(QWidget):
 
         self._compare_btn = QPushButton("Compare Before vs After")
         self._compare_btn.setStyleSheet(
-            "background-color: #f5c2e7; color: #1e1e2e; font-weight: bold; "
-            "padding: 12px 24px;"
+            "QPushButton { background-color: #f5c2e7; color: #1e1e2e; font-weight: bold; "
+            "padding: 12px 24px; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         self._compare_btn.setMinimumHeight(48)
         self._compare_btn.setToolTip("Compare your before and after benchmarks")

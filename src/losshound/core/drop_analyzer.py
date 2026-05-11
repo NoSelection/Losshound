@@ -465,10 +465,12 @@ def run_drop_analysis(
                 f"({remaining:.0f}s left)"
             )
 
-        # Sleep until next poll
+        # Sleep until next poll, but break out promptly on stop request.
         target_time = (sample_num * poll_interval)
         while (time.monotonic() - start_time) < target_time:
             if time.monotonic() >= end_time:
+                break
+            if stop_check is not None and stop_check():
                 break
             time.sleep(0.2)
 

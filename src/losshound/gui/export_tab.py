@@ -76,14 +76,16 @@ class ExportTab(QWidget):
 
         gen_btn = QPushButton("Quick Report")
         gen_btn.setStyleSheet(
-            "background-color: #89b4fa; color: #1e1e2e; font-weight: bold;"
+            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         gen_btn.clicked.connect(self._generate)
         controls.addWidget(gen_btn)
 
         isp_btn = QPushButton("ISP Report")
         isp_btn.setStyleSheet(
-            "background-color: #cba6f7; color: #1e1e2e; font-weight: bold;"
+            "QPushButton { background-color: #cba6f7; color: #1e1e2e; font-weight: bold; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         isp_btn.setToolTip(
             "Generate a comprehensive report with benchmarks, scores, and diagnostics "
@@ -94,7 +96,8 @@ class ExportTab(QWidget):
 
         pdf_btn = QPushButton("Save as PDF…")
         pdf_btn.setStyleSheet(
-            "background-color: #f9e2af; color: #1e1e2e; font-weight: bold;"
+            "QPushButton { background-color: #f9e2af; color: #1e1e2e; font-weight: bold; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         pdf_btn.setToolTip(
             "Generate the ISP report as a polished PDF with charts."

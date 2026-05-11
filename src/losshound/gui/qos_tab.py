@@ -91,7 +91,8 @@ class QosTab(QWidget):
 
         add_btn = QPushButton("Add Rule")
         add_btn.setStyleSheet(
-            "background-color: #a6e3a1; color: #1e1e2e; font-weight: bold;"
+            "QPushButton { background-color: #a6e3a1; color: #1e1e2e; font-weight: bold; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         add_btn.clicked.connect(self._add_rule)
         add_row.addWidget(add_btn)
@@ -126,7 +127,8 @@ class QosTab(QWidget):
 
         apply_all_btn = QPushButton("Apply All Rules")
         apply_all_btn.setStyleSheet(
-            "background-color: #89b4fa; color: #1e1e2e; font-weight: bold;"
+            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         apply_all_btn.clicked.connect(self._apply_all)
         bottom.addWidget(apply_all_btn)

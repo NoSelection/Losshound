@@ -227,7 +227,8 @@ class SettingsTab(QWidget):
         save_btn = QPushButton("Save")
         save_btn.setProperty("class", "primary")
         save_btn.setStyleSheet(
-            "background-color: #89b4fa; color: #1e1e2e; font-weight: bold;"
+            "QPushButton { background-color: #89b4fa; color: #1e1e2e; font-weight: bold; }"
+            "QPushButton:disabled { background-color: #313244; color: #6c7086; }"
         )
         save_btn.clicked.connect(self._save)
         btn_row.addWidget(save_btn)
