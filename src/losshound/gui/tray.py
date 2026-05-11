@@ -155,15 +155,9 @@ class TrayIcon(QSystemTrayIcon):
         self.setToolTip(tip)
         self._status_action.setText(f"Loss: {loss_str} | Latency: {rtt_str}")
 
-    def update_diagnosis(self, diag: Diagnosis):
-        """Route the diagnosis through the AlertEngine (if set)."""
+    def show_event(self, event):
+        """Render an AlertEvent as a Windows toast notification."""
         if not self._notifications_enabled:
-            return
-        if self._engine is None:
-            return
-
-        event = self._engine.feed(diag)
-        if event is None:
             return
 
         if event.is_resolution:
