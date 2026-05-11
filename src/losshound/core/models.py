@@ -114,6 +114,17 @@ class Diagnosis:
     evidence: dict = field(default_factory=dict)
 
 
+@dataclass
+class AlertRow:
+    id: int
+    timestamp: str
+    category: str
+    severity: str
+    title: str
+    message: str
+    resolved_at: Optional[str] = None
+
+
 def _serialize_datetime(obj):
     if isinstance(obj, datetime):
         return obj.isoformat()

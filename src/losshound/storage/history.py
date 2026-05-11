@@ -9,6 +9,7 @@ from typing import Optional
 
 from losshound.core.config import _app_data_dir
 from losshound.core.models import (
+    AlertRow,
     Diagnosis,
     DiagnosisCategory,
     Observation,
@@ -475,17 +476,3 @@ def _deserialize_observation(raw_json: str) -> Observation:
         dns_results=dns_results,
         route_snapshot=route_snapshot,
     )
-
-
-from dataclasses import dataclass
-
-
-@dataclass
-class AlertRow:
-    id: int
-    timestamp: str
-    category: str
-    severity: str
-    title: str
-    message: str
-    resolved_at: Optional[str] = None

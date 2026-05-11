@@ -116,7 +116,7 @@ def load_config(config_path: Optional[str] = None) -> AppConfig:
 
     config = AppConfig(**{
         k: v for k, v in data.items()
-        if k in AppConfig.__dataclass_fields__ and k != "diagnosis"
+        if k in AppConfig.__dataclass_fields__ and k not in ("diagnosis", "alerts")
     })
     config.alerts = alerts
     config.diagnosis = diag
