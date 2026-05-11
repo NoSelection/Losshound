@@ -45,3 +45,15 @@ def test_renders_pdf_to_path(tmp_path: Path):
     with out.open("rb") as f:
         head = f.read(5)
     assert head == b"%PDF-", f"PDF magic header missing, got {head!r}"
+
+
+def test_pdf_includes_hostname_and_score(tmp_path: Path):
+    pdfminer = pytest.importorskip("pdfminer.high_level")
+    data = _minimal_data()
+    out = tmp_path / "report.pdf"
+    render_isp_report_pdf(data, out)
+
+    text = pdfminer.extract_text(str(out))
+    assert "TEST" in text  # hostname
+    assert "87" in text    # score
+    assert "lan_issue" in text or "LAN" in text
