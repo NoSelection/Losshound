@@ -57,3 +57,26 @@ def test_pdf_includes_hostname_and_score(tmp_path: Path):
     assert "TEST" in text  # hostname
     assert "87" in text    # score
     assert "lan_issue" in text or "LAN" in text
+
+
+def test_pdf_embeds_latency_chart_when_observations_present(tmp_path: Path):
+    data = _minimal_data()
+    data.observations = [
+        {"timestamp": f"2026-05-11T17:{m:02d}:00", "gateway_ip": "192.168.1.1",
+         "gateway_loss": 0.0, "gateway_rtt": 1.5,
+         "public_loss": 0.0, "public_rtt": 15.0 + m,
+         "dns_failures": 0, "dns_total": 2}
+        for m in range(0, 30, 2)
+    ]
+    out = tmp_path / "report.pdf"
+    render_isp_report_pdf(data, out)
+
+    # Quick sanity: PDF grows when a chart is embedded (vs. text-only cover).
+    text_only_size = tmp_path / "small.pdf"
+    data2 = _minimal_data()
+    data2.observations = []
+    render_isp_report_pdf(data2, text_only_size)
+
+    assert out.stat().st_size > text_only_size.stat().st_size + 5000, (
+        f"Chart not embedded: {out.stat().st_size} vs {text_only_size.stat().st_size}"
+    )

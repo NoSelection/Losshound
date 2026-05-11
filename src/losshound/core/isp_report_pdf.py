@@ -10,6 +10,67 @@ from losshound.core.isp_report import IspReportData
 logger = logging.getLogger(__name__)
 
 
+def _render_latency_chart_png(observations: list[dict]) -> bytes | None:
+    """Render a latency-over-time chart and return PNG bytes, or None."""
+    if not observations:
+        return None
+    try:
+        import io
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend, no GUI dependency
+        import matplotlib.pyplot as plt
+        from datetime import datetime as _dt
+
+        timestamps, public_rtt, gateway_rtt = [], [], []
+        for o in observations:
+            try:
+                t = _dt.fromisoformat(o["timestamp"])
+            except (TypeError, ValueError):
+                continue
+            timestamps.append(t)
+            public_rtt.append(o.get("public_rtt"))
+            gateway_rtt.append(o.get("gateway_rtt"))
+
+        if not timestamps:
+            return None
+
+        fig, ax = plt.subplots(figsize=(7.5, 3.0), dpi=110)
+        ax.plot(timestamps, public_rtt, label="Public (avg)",
+                color="#cba6f7", linewidth=1.5)
+        ax.plot(timestamps, gateway_rtt, label="Gateway",
+                color="#89b4fa", linewidth=1.0, linestyle="--")
+        ax.set_ylabel("Latency (ms)")
+        ax.set_title("Latency over time")
+        ax.legend(loc="upper right", fontsize=8)
+        ax.grid(True, alpha=0.3)
+        fig.autofmt_xdate()
+        fig.tight_layout()
+
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=110)
+        plt.close(fig)
+        return buf.getvalue()
+    except Exception:
+        logger.exception("Failed to render latency chart")
+        return None
+
+
+def _build_latency_section(data, story, styles):
+    from reportlab.platypus import Paragraph, Spacer, Image
+    import io
+
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+
+    story.append(Paragraph("Latency", h2))
+    png = _render_latency_chart_png(data.observations)
+    if png is None:
+        story.append(Paragraph("Not enough data to chart.", body))
+    else:
+        story.append(Image(io.BytesIO(png), width=460, height=180))
+    story.append(Spacer(1, 12))
+
+
 def render_isp_report_pdf(data: IspReportData, output_path: Path) -> Path:
     """Render ``data`` as a styled PDF written to ``output_path``.
 
@@ -38,6 +99,7 @@ def render_isp_report_pdf(data: IspReportData, output_path: Path) -> Path:
     _build_cover_page(data, story, getSampleStyleSheet())
     _build_system_info(data, story, getSampleStyleSheet())
     _build_issue_summary(data, story, getSampleStyleSheet())
+    _build_latency_section(data, story, getSampleStyleSheet())
     doc.build(story)
     return output_path
 
