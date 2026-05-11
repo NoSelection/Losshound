@@ -80,3 +80,34 @@ def test_pdf_embeds_latency_chart_when_observations_present(tmp_path: Path):
     assert out.stat().st_size > text_only_size.stat().st_size + 5000, (
         f"Chart not embedded: {out.stat().st_size} vs {text_only_size.stat().st_size}"
     )
+
+
+def test_pdf_includes_benchmark_and_diagnosis_data(tmp_path: Path):
+    pdfminer = pytest.importorskip("pdfminer.high_level")
+    data = _minimal_data()
+    data.benchmarks = [
+        {"timestamp": "2026-05-11T17:00:00", "label": "before",
+         "avg_latency_ms": 25.0, "avg_jitter_ms": 4.0, "avg_loss_pct": 1.0,
+         "avg_dns_ms": 14.0, "avg_tcp_ms": 30.0, "overall_score": 72,
+         "grade": "C"},
+        {"timestamp": "2026-05-11T17:30:00", "label": "after",
+         "avg_latency_ms": 17.0, "avg_jitter_ms": 1.8, "avg_loss_pct": 0.2,
+         "avg_dns_ms": 9.0, "avg_tcp_ms": 22.0, "overall_score": 89,
+         "grade": "B"},
+    ]
+    data.diagnoses = [
+        {"timestamp": "2026-05-11T16:00:00", "category": "dns_issue",
+         "summary": "DNS resolution slow", "explanation": "",
+         "confidence": "high"},
+    ]
+    data.latest_route = [
+        {"hop": 1, "ip": "192.168.1.1", "rtt": [1.2, 1.4, 1.1]},
+        {"hop": 2, "ip": "10.0.0.1",   "rtt": [8.0, 8.2, 7.9]},
+    ]
+    out = tmp_path / "full.pdf"
+    render_isp_report_pdf(data, out)
+
+    text = pdfminer.extract_text(str(out))
+    assert "before" in text and "after" in text
+    assert "DNS resolution slow" in text
+    assert "192.168.1.1" in text

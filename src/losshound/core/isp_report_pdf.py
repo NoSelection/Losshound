@@ -209,6 +209,99 @@ def _build_latency_section(data, story, styles):
     story.append(Spacer(1, 12))
 
 
+def _build_benchmark_table(data, story, styles):
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+
+    story.append(Paragraph("Recent benchmarks", h2))
+    if not data.benchmarks:
+        story.append(Paragraph("No benchmarks recorded.", body))
+        story.append(Spacer(1, 12))
+        return
+
+    rows = [["When", "Label", "Latency", "Jitter", "Loss", "DNS", "Score"]]
+    for b in data.benchmarks[-10:]:
+        rows.append([
+            (b.get("timestamp", "") or "")[:19],
+            b.get("label", "") or "",
+            f"{b.get('avg_latency_ms') or 0:.1f} ms",
+            f"{b.get('avg_jitter_ms') or 0:.1f} ms",
+            f"{b.get('avg_loss_pct') or 0:.1f}%",
+            f"{b.get('avg_dns_ms') or 0:.1f} ms",
+            f"{b.get('overall_score') or 0:.0f}",
+        ])
+
+    table = Table(rows, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#313244")),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTSIZE",   (0, 0), (-1, -1), 8),
+        ("GRID",       (0, 0), (-1, -1), 0.25, colors.HexColor("#6c7086")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1),
+         [colors.HexColor("#f5f5f7"), colors.white]),
+    ]))
+    story.append(table)
+    story.append(Spacer(1, 12))
+
+
+def _build_diagnosis_log(data, story, styles):
+    from reportlab.platypus import Paragraph, Spacer
+
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+
+    story.append(Paragraph("Recent diagnoses", h2))
+    if not data.diagnoses:
+        story.append(Paragraph("No diagnoses recorded.", body))
+        story.append(Spacer(1, 12))
+        return
+
+    lines = []
+    for d in data.diagnoses[:15]:
+        ts = (d.get("timestamp", "") or "")[:19]
+        cat = d.get("category", "")
+        summary = (d.get("summary", "") or "").replace("&", "&amp;")
+        lines.append(f"<b>{ts}</b> [{cat}] — {summary}")
+    story.append(Paragraph("<br/>".join(lines), body))
+    story.append(Spacer(1, 12))
+
+
+def _build_route_table(data, story, styles):
+    from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors
+
+    h2 = styles["Heading2"]
+    body = styles["BodyText"]
+
+    story.append(Paragraph("Latest route", h2))
+    route = data.latest_route or []
+    if not route:
+        story.append(Paragraph("No route data available.", body))
+        story.append(Spacer(1, 12))
+        return
+
+    rows = [["Hop", "IP", "RTT samples"]]
+    for h in route[:20]:
+        rtt = h.get("rtt", [])
+        rtt_str = ", ".join(
+            f"{x:.0f}ms" if isinstance(x, (int, float)) else "—"
+            for x in rtt
+        )
+        rows.append([str(h.get("hop", "")), h.get("ip") or "—", rtt_str])
+
+    table = Table(rows, hAlign="LEFT")
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#313244")),
+        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTSIZE",   (0, 0), (-1, -1), 8),
+        ("GRID",       (0, 0), (-1, -1), 0.25, colors.HexColor("#6c7086")),
+    ]))
+    story.append(table)
+
+
 def render_isp_report_pdf(data: IspReportData, output_path: Path) -> Path:
     """Render ``data`` as a styled PDF written to ``output_path``.
 
@@ -253,6 +346,9 @@ def render_isp_report_pdf(data: IspReportData, output_path: Path) -> Path:
         _render_before_after_png(data.benchmarks),
         story, getSampleStyleSheet(), width=460, height=180,
     )
+    _build_benchmark_table(data, story, getSampleStyleSheet())
+    _build_diagnosis_log(data, story, getSampleStyleSheet())
+    _build_route_table(data, story, getSampleStyleSheet())
     doc.build(story)
     return output_path
 
