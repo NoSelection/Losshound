@@ -71,6 +71,15 @@ class LANTab(QWidget):
         devices_layout.setContentsMargins(12, 16, 12, 12)
         devices_layout.setSpacing(10)
 
+        info_label = QLabel(
+            "Tip: double-click a hostname to set a custom name. If devices show as "
+            "generic \"Vendor Device\" labels, your router likely has AP/client "
+            "isolation enabled — disable it in the router's wireless settings."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #788596; font-size: 11px; padding: 2px 0;")
+        devices_layout.addWidget(info_label)
+
         # Controls Row
         controls_layout = QHBoxLayout()
         self._scan_btn = QPushButton("Scan Now")
@@ -102,8 +111,13 @@ class LANTab(QWidget):
         ])
         self._devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._devices_table.verticalHeader().setVisible(False)
-        self._devices_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        # Only the Hostname column is editable (per-cell flag controls actual edit permission)
+        self._devices_table.setEditTriggers(
+            QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
+        )
         self._devices_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._devices_table.itemChanged.connect(self._on_hostname_edited)
+        self._suppress_item_changed = False
         devices_layout.addWidget(self._devices_table)
         
         splitter.addWidget(devices_box)
@@ -210,63 +224,97 @@ class LANTab(QWidget):
             self._status_label.setText("Device list cleared. Click Scan Now to discover active devices.")
 
     def _refresh_devices_table(self):
-        self._devices_table.setRowCount(0)
-        devices = self._history.get_devices()
+        # Suppress itemChanged signals while we repopulate so they're not mistaken for user edits
+        self._suppress_item_changed = True
+        try:
+            self._devices_table.setRowCount(0)
+            devices = self._history.get_devices()
 
-        color_map = {
-            "authorized": "#75c884",   # Soft green
-            "suspicious": "#e06363",   # Soft red
-            "unknown": "#788596",      # Grey
-        }
+            color_map = {
+                "authorized": "#75c884",   # Soft green
+                "suspicious": "#e06363",   # Soft red
+                "unknown": "#788596",      # Grey
+            }
 
-        for dev in devices:
-            row = self._devices_table.rowCount()
-            self._devices_table.insertRow(row)
-
-            # Columns: Hostname, IP Address, MAC Address, Vendor, Status, Authorization
-            hostname_item = QTableWidgetItem(dev["hostname"] or "Unknown")
-            if not dev["is_active"]:
-                # Fade out inactive/offline devices
-                hostname_item.setForeground(QColor("#4f5b66"))
-                
-            self._devices_table.setItem(row, 0, hostname_item)
-            
-            ip_item = QTableWidgetItem(dev["ip_address"])
-            if not dev["is_active"]:
-                ip_item.setForeground(QColor("#4f5b66"))
-            self._devices_table.setItem(row, 1, ip_item)
-            
-            mac_item = QTableWidgetItem(dev["mac_address"])
-            if not dev["is_active"]:
-                mac_item.setForeground(QColor("#4f5b66"))
-            self._devices_table.setItem(row, 2, mac_item)
-            
-            vendor_item = QTableWidgetItem(dev["vendor"] or "Unknown")
-            if not dev["is_active"]:
-                vendor_item.setForeground(QColor("#4f5b66"))
-            self._devices_table.setItem(row, 3, vendor_item)
-
-            status_text = dev["status"].upper()
-            if not dev["is_active"]:
-                status_text += " (OFFLINE)"
-            status_item = QTableWidgetItem(status_text)
-            status_item.setForeground(QColor(color_map.get(dev["status"], "#d8dee9")))
-            self._devices_table.setItem(row, 4, status_item)
-
-            # Dropdown for Authorization Action
-            auth_combo = QComboBox()
-            auth_combo.addItems(["Unknown", "Authorized", "Suspicious"])
-            
-            # Match current status
-            index_map = {"unknown": 0, "authorized": 1, "suspicious": 2}
-            auth_combo.setCurrentIndex(index_map.get(dev["status"], 0))
-            
-            # Avoid using cell lambda variables directly in slot to prevent closure issues
-            mac_addr = dev["mac_address"]
-            auth_combo.currentIndexChanged.connect(
-                lambda idx, m=mac_addr: self._on_auth_changed(m, idx)
+            editable_flags = (
+                Qt.ItemFlag.ItemIsSelectable
+                | Qt.ItemFlag.ItemIsEnabled
+                | Qt.ItemFlag.ItemIsEditable
             )
-            self._devices_table.setCellWidget(row, 5, auth_combo)
+            readonly_flags = Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled
+
+            for dev in devices:
+                row = self._devices_table.rowCount()
+                self._devices_table.insertRow(row)
+
+                # Columns: Hostname, IP Address, MAC Address, Vendor, Status, Authorization
+                display_name = dev.get("custom_name") or dev["hostname"] or "Unknown"
+                hostname_item = QTableWidgetItem(display_name)
+                hostname_item.setFlags(editable_flags)
+                # Stash the MAC so the edit handler knows which device this row belongs to
+                hostname_item.setData(Qt.ItemDataRole.UserRole, dev["mac_address"])
+                if not dev["is_active"]:
+                    hostname_item.setForeground(QColor("#4f5b66"))
+                hostname_item.setToolTip("Double-click to set a custom name. Clear the text to revert to auto-detected hostname.")
+                self._devices_table.setItem(row, 0, hostname_item)
+
+                ip_item = QTableWidgetItem(dev["ip_address"])
+                ip_item.setFlags(readonly_flags)
+                if not dev["is_active"]:
+                    ip_item.setForeground(QColor("#4f5b66"))
+                self._devices_table.setItem(row, 1, ip_item)
+
+                mac_item = QTableWidgetItem(dev["mac_address"])
+                mac_item.setFlags(readonly_flags)
+                if not dev["is_active"]:
+                    mac_item.setForeground(QColor("#4f5b66"))
+                self._devices_table.setItem(row, 2, mac_item)
+
+                vendor_item = QTableWidgetItem(dev["vendor"] or "Unknown")
+                vendor_item.setFlags(readonly_flags)
+                if not dev["is_active"]:
+                    vendor_item.setForeground(QColor("#4f5b66"))
+                self._devices_table.setItem(row, 3, vendor_item)
+
+                status_text = dev["status"].upper()
+                if not dev["is_active"]:
+                    status_text += " (OFFLINE)"
+                status_item = QTableWidgetItem(status_text)
+                status_item.setFlags(readonly_flags)
+                status_item.setForeground(QColor(color_map.get(dev["status"], "#d8dee9")))
+                self._devices_table.setItem(row, 4, status_item)
+
+                # Dropdown for Authorization Action
+                auth_combo = QComboBox()
+                auth_combo.addItems(["Unknown", "Authorized", "Suspicious"])
+
+                # Match current status
+                index_map = {"unknown": 0, "authorized": 1, "suspicious": 2}
+                auth_combo.setCurrentIndex(index_map.get(dev["status"], 0))
+
+                # Avoid using cell lambda variables directly in slot to prevent closure issues
+                mac_addr = dev["mac_address"]
+                auth_combo.currentIndexChanged.connect(
+                    lambda idx, m=mac_addr: self._on_auth_changed(m, idx)
+                )
+                self._devices_table.setCellWidget(row, 5, auth_combo)
+        finally:
+            self._suppress_item_changed = False
+
+    @Slot(QTableWidgetItem)
+    def _on_hostname_edited(self, item):
+        if self._suppress_item_changed:
+            return
+        if item.column() != 0:
+            return
+        mac = item.data(Qt.ItemDataRole.UserRole)
+        if not mac:
+            return
+        new_text = item.text().strip()
+        # Empty input clears the custom name (revert to auto-detected hostname)
+        self._history.set_device_custom_name(mac, new_text or None)
+        logger.info("Custom name for %s set to %r", mac, new_text or None)
+        self._refresh_devices_table()
 
     def _on_auth_changed(self, mac: str, index: int):
         status_map = {0: "unknown", 1: "authorized", 2: "suspicious"}

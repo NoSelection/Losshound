@@ -156,6 +156,79 @@ def test_discovered_devices():
     store.clear_discovered_devices()
     devices = store.get_devices()
     assert len(devices) == 0
-    
+
+    store.close()
+
+
+def test_device_custom_name():
+    store = _make_store()
+    mac = "00-11-22-33-44-55"
+
+    store.save_device(mac, "192.168.1.50", "auto-detected-host", "Intel")
+    assert store.get_devices()[0]["custom_name"] is None
+
+    # Setting a custom name persists it without affecting the auto-detected hostname
+    store.set_device_custom_name(mac, "Mom's Laptop")
+    dev = store.get_devices()[0]
+    assert dev["custom_name"] == "Mom's Laptop"
+    assert dev["hostname"] == "auto-detected-host"
+
+    # A subsequent scan saving the same device with a new auto-resolved hostname
+    # must not overwrite the user's custom name.
+    store.save_device(mac, "192.168.1.50", "different-auto-name", "Intel")
+    dev = store.get_devices()[0]
+    assert dev["custom_name"] == "Mom's Laptop"
+    assert dev["hostname"] == "different-auto-name"
+
+    # Whitespace-only input is treated as a clear (revert to auto-detected)
+    store.set_device_custom_name(mac, "   ")
+    assert store.get_devices()[0]["custom_name"] is None
+
+    # Explicit None also clears
+    store.set_device_custom_name(mac, "Something")
+    store.set_device_custom_name(mac, None)
+    assert store.get_devices()[0]["custom_name"] is None
+
+    store.close()
+
+
+def test_device_custom_name_migration():
+    """Databases created before the custom_name column was added should auto-migrate."""
+    import sqlite3
+    tmp = tempfile.mktemp(suffix=".db")
+
+    # Build a legacy schema (no custom_name column) by hand
+    conn = sqlite3.connect(tmp)
+    conn.execute(
+        """CREATE TABLE discovered_devices (
+            mac_address TEXT PRIMARY KEY,
+            ip_address TEXT NOT NULL,
+            hostname TEXT,
+            vendor TEXT,
+            status TEXT NOT NULL DEFAULT 'unknown',
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            is_active INTEGER DEFAULT 1
+        )"""
+    )
+    conn.execute(
+        """INSERT INTO discovered_devices
+           (mac_address, ip_address, hostname, vendor, status, first_seen, last_seen, is_active)
+           VALUES ('aa-bb-cc-dd-ee-ff', '192.168.1.10', 'legacy', 'HP', 'unknown',
+                   '2026-01-01', '2026-01-01', 1)"""
+    )
+    conn.commit()
+    conn.close()
+
+    # Opening through HistoryStore must migrate without losing the legacy row
+    store = HistoryStore(Path(tmp))
+    devices = store.get_devices()
+    assert len(devices) == 1
+    assert devices[0]["hostname"] == "legacy"
+    assert devices[0]["custom_name"] is None
+
+    store.set_device_custom_name("aa-bb-cc-dd-ee-ff", "Migrated Device")
+    assert store.get_devices()[0]["custom_name"] == "Migrated Device"
+
     store.close()
 

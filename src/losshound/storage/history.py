@@ -93,10 +93,19 @@ CREATE TABLE IF NOT EXISTS discovered_devices (
     status TEXT NOT NULL DEFAULT 'unknown',
     first_seen TEXT NOT NULL,
     last_seen TEXT NOT NULL,
-    is_active INTEGER DEFAULT 1
+    is_active INTEGER DEFAULT 1,
+    custom_name TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_devices_active ON discovered_devices(is_active);
 """
+
+
+def _migrate_discovered_devices(conn: sqlite3.Connection) -> None:
+    """Add custom_name column to pre-existing databases that predate manual naming."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(discovered_devices)").fetchall()}
+    if "custom_name" not in cols:
+        conn.execute("ALTER TABLE discovered_devices ADD COLUMN custom_name TEXT")
+        conn.commit()
 
 
 class HistoryStore:
@@ -111,6 +120,7 @@ class HistoryStore:
         )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
+        _migrate_discovered_devices(self._conn)
         self._conn.commit()
         logger.info("History store opened at %s", db_path)
 
@@ -441,7 +451,8 @@ class HistoryStore:
     def get_devices(self) -> list[dict]:
         """Retrieve all discovered LAN devices."""
         rows = self._conn.execute(
-            """SELECT mac_address, ip_address, hostname, vendor, status, first_seen, last_seen, is_active
+            """SELECT mac_address, ip_address, hostname, vendor, status,
+                      first_seen, last_seen, is_active, custom_name
                FROM discovered_devices ORDER BY ip_address"""
         ).fetchall()
         return [
@@ -454,9 +465,22 @@ class HistoryStore:
                 "first_seen": r[5],
                 "last_seen": r[6],
                 "is_active": bool(r[7]),
+                "custom_name": r[8],
             }
             for r in rows
         ]
+
+    def set_device_custom_name(self, mac: str, name: Optional[str]) -> None:
+        """Set or clear the user-assigned custom name for a device.
+
+        Passing None or empty string clears it (falls back to auto-resolved hostname).
+        """
+        clean = (name or "").strip() or None
+        self._conn.execute(
+            "UPDATE discovered_devices SET custom_name = ? WHERE mac_address = ?",
+            (clean, mac),
+        )
+        self._conn.commit()
 
     def update_device_status(self, mac: str, status: str) -> None:
         """Update authorization status of a device."""
