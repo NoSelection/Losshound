@@ -197,6 +197,7 @@ def get_dark_stylesheet() -> str:
 
     QTableWidget {
         background-color: #10141c;
+        alternate-background-color: #141923;
         border: 1px solid #1a2230;
         border-radius: 0px;
         gridline-color: #18202d;
@@ -339,5 +340,21 @@ def get_dark_stylesheet() -> str:
         background-color: #131720;
         color: #e6edf6;
         selection-background-color: #1a2d3e;
+    }
+
+    QProgressBar {
+        background-color: #1d222b;
+        border: 1px solid #3a4350;
+        border-radius: 0px;
+        text-align: center;
+        color: #d8dee9;
+        height: 24px;
+        font-weight: bold;
+    }
+
+    QProgressBar::chunk {
+        background-color: #1d343e;
+        border-right: 1px solid #62c7d8;
+        border-radius: 0px;
     }
     """

@@ -233,20 +233,6 @@ class OptimizerTab(QWidget):
         self._progress_bar.setRange(0, 0)  # indeterminate
         self._progress_bar.setTextVisible(True)
         self._progress_bar.setFormat("Idle")
-        self._progress_bar.setStyleSheet("""
-            QProgressBar {
-                background-color: #1d222b;
-                border: 1px solid #3a4350;
-                border-radius: 2px;
-                text-align: center;
-                color: #d8dee9;
-                height: 24px;
-            }
-            QProgressBar::chunk {
-                background-color: #62c7d8;
-                border-radius: 0;
-            }
-        """)
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
         main_layout.addWidget(self._progress_bar)
@@ -278,19 +264,20 @@ class OptimizerTab(QWidget):
         # --- DNS Benchmark results table ---
         dns_group = QGroupBox("DNS Benchmark Results")
         dns_layout = QVBoxLayout(dns_group)
-
         self._dns_table = QTableWidget(0, 6)
         self._dns_table.setHorizontalHeaderLabels([
             "Rank", "Server", "Provider", "Avg (ms)", "Min (ms)", "Success %",
         ])
-        self._dns_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch,
-        )
+        self._dns_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._dns_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._dns_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._dns_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._dns_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._dns_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._dns_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self._dns_table.verticalHeader().setVisible(False)
         self._dns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._dns_table.setAlternatingRowColors(True)
-        self._dns_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #252538; }
-        """)
+        self._dns_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         dns_layout.addWidget(self._dns_table)
         main_layout.addWidget(dns_group)
 
@@ -302,14 +289,15 @@ class OptimizerTab(QWidget):
         self._results_table.setHorizontalHeaderLabels([
             "Optimization", "Status", "Before", "After", "Note",
         ])
-        self._results_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch,
-        )
+        self._results_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._results_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._results_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._results_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._results_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._results_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self._results_table.verticalHeader().setVisible(False)
         self._results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._results_table.setAlternatingRowColors(True)
-        self._results_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #252538; }
-        """)
+        self._results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         results_layout.addWidget(self._results_table)
         main_layout.addWidget(results_group)
 
@@ -321,14 +309,14 @@ class OptimizerTab(QWidget):
         self._bench_table.setHorizontalHeaderLabels([
             "Metric", "Before", "After", "Change",
         ])
-        self._bench_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Stretch,
-        )
+        self._bench_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._bench_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self._bench_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._bench_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._bench_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._bench_table.verticalHeader().setVisible(False)
         self._bench_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._bench_table.setAlternatingRowColors(True)
-        self._bench_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #252538; }
-        """)
+        self._bench_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         bench_layout.addWidget(self._bench_table)
 
         self._bench_summary_label = QLabel("")
@@ -349,6 +337,8 @@ class OptimizerTab(QWidget):
 
         # Initial status check
         self._on_check_status()
+        self._update_bench_display()
+        self._load_saved_optimization_results()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -359,14 +349,14 @@ class OptimizerTab(QWidget):
         card = QLabel(f"{label}\n--")
         card.setAlignment(Qt.AlignmentFlag.AlignCenter)
         card.setStyleSheet("""
-            background-color: #1b2028;
-            border: 1px solid #3a4350;
-            border-radius: 2px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
+            border: 1px solid #20293a;
+            border-radius: 0px;
             padding: 12px;
             font-size: 12px;
             color: #d8dee9;
         """)
-        card.setMinimumHeight(70)
+        card.setMinimumHeight(76)
         card.setWordWrap(True)
         return card
 
@@ -418,9 +408,9 @@ class OptimizerTab(QWidget):
         color = colors.get(status, "#d8dee9")
         card.setText(f"{title}\n{value}")
         card.setStyleSheet(f"""
-            background-color: #1b2028;
-            border: 1px solid #3a4350;
-            border-radius: 2px;
+            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
+            border: 1px solid #20293a;
+            border-radius: 0px;
             padding: 12px;
             font-size: 12px;
             color: {color};
@@ -460,6 +450,7 @@ class OptimizerTab(QWidget):
 
         self._set_busy(False, report.summary)
         self._populate_results_table(report.results)
+        self._save_optimization_results(report.results)
         self._on_check_status()  # refresh status cards
 
         QMessageBox.information(
@@ -534,6 +525,7 @@ class OptimizerTab(QWidget):
         )
         self._set_busy(False, f"Reverted {succeeded}/{len(results)} settings")
         self._populate_results_table(results)
+        self._save_optimization_results(results)
         self._on_check_status()
 
         msg = f"Reverted {succeeded}/{len(results)} settings to their original values."
@@ -649,6 +641,8 @@ class OptimizerTab(QWidget):
             else f"{label.upper()} benchmark complete",
         )
 
+        self._update_bench_display()
+
         msg = (
             f"Benchmark '{label}' saved!\n\n"
             f"  Avg latency:  {snapshot.avg_latency_ms:.1f} ms\n"
@@ -689,14 +683,17 @@ class OptimizerTab(QWidget):
             )
             return
 
-        report = compare_snapshots(before, after)
-        self._populate_bench_table(report)
+        self._update_bench_display()
 
-    def _populate_bench_table(self, report: BenchmarkReport):
-        """Fill the benchmark comparison table."""
-        b = report.before
-        a = report.after
-        d = report.delta
+    def _update_bench_display(self):
+        """Load latest snapshots and update comparison table."""
+        before = get_latest_snapshot("before")
+        after = get_latest_snapshot("after")
+
+        if not before and not after:
+            self._bench_table.setRowCount(0)
+            self._bench_summary_label.setText("No benchmark data available. Run Benchmark BEFORE/AFTER to begin.")
+            return
 
         def _fmt(val, suffix="ms"):
             return f"{val:.1f}{suffix}" if val is not None else "N/A"
@@ -712,35 +709,77 @@ class OptimizerTab(QWidget):
                 return text, "error"
             return text, "neutral"
 
-        rows = [
-            ("Avg Latency", _fmt(b.avg_latency_ms), _fmt(a.avg_latency_ms),
-             *_change(d.latency_delta_ms, d.latency_pct_change)),
-            ("Avg Jitter", _fmt(b.avg_jitter_ms), _fmt(a.avg_jitter_ms),
-             *_change(d.jitter_delta_ms, d.jitter_pct_change)),
-            ("Avg Packet Loss", _fmt(b.avg_loss_pct, "%"), _fmt(a.avg_loss_pct, "%"),
-             *(lambda: (
-                 f"{'+' if d.loss_delta_pct > 0 else ''}{d.loss_delta_pct:.1f}pp",
-                 "healthy" if d.loss_delta_pct < -0.5 else ("error" if d.loss_delta_pct > 0.5 else "neutral"),
-             ) if d.loss_delta_pct is not None else ("N/A", "neutral"))()),
-            ("Avg DNS Resolve", _fmt(b.avg_dns_ms), _fmt(a.avg_dns_ms),
-             *_change(d.dns_delta_ms, d.dns_pct_change)),
-            ("Avg TCP Connect", _fmt(b.avg_tcp_ms), _fmt(a.avg_tcp_ms),
-             *_change(d.tcp_delta_ms, d.tcp_pct_change)),
-        ]
+        rows = []
 
-        # Add per-target ping rows
-        after_map = {p.target: p for p in a.ping_results}
-        for bp in b.ping_results:
-            ap = after_map.get(bp.target)
-            b_ms = _fmt(bp.avg_ms)
-            a_ms = _fmt(ap.avg_ms) if ap else "N/A"
-            if bp.avg_ms is not None and ap and ap.avg_ms is not None:
-                diff = ap.avg_ms - bp.avg_ms
-                pct = (diff / bp.avg_ms * 100.0) if bp.avg_ms else 0
-                change_text, change_status = _change(diff, pct)
-            else:
-                change_text, change_status = "N/A", "neutral"
-            rows.append((f"  Ping {bp.target}", b_ms, a_ms, change_text, change_status))
+        if before and after:
+            report = compare_snapshots(before, after)
+            b = report.before
+            a = report.after
+            d = report.delta
+
+            rows = [
+                ("Avg Latency", _fmt(b.avg_latency_ms), _fmt(a.avg_latency_ms),
+                 *_change(d.latency_delta_ms, d.latency_pct_change)),
+                ("Avg Jitter", _fmt(b.avg_jitter_ms), _fmt(a.avg_jitter_ms),
+                 *_change(d.jitter_delta_ms, d.jitter_pct_change)),
+                ("Avg Packet Loss", _fmt(b.avg_loss_pct, "%"), _fmt(a.avg_loss_pct, "%"),
+                 *(lambda: (
+                     f"{'+' if d.loss_delta_pct > 0 else ''}{d.loss_delta_pct:.1f}pp",
+                     "healthy" if d.loss_delta_pct < -0.5 else ("error" if d.loss_delta_pct > 0.5 else "neutral"),
+                 ) if d.loss_delta_pct is not None else ("N/A", "neutral"))()),
+                ("Avg DNS Resolve", _fmt(b.avg_dns_ms), _fmt(a.avg_dns_ms),
+                 *_change(d.dns_delta_ms, d.dns_pct_change)),
+                ("Avg TCP Connect", _fmt(b.avg_tcp_ms), _fmt(a.avg_tcp_ms),
+                 *_change(d.tcp_delta_ms, d.tcp_pct_change)),
+            ]
+
+            # Add per-target ping rows
+            after_map = {p.target: p for p in a.ping_results}
+            for bp in b.ping_results:
+                ap = after_map.get(bp.target)
+                b_ms = _fmt(bp.avg_ms)
+                a_ms = _fmt(ap.avg_ms) if ap else "N/A"
+                if bp.avg_ms is not None and ap and ap.avg_ms is not None:
+                    diff = ap.avg_ms - bp.avg_ms
+                    pct = (diff / bp.avg_ms * 100.0) if bp.avg_ms else 0
+                    change_text, change_status = _change(diff, pct)
+                else:
+                    change_text, change_status = "N/A", "neutral"
+                rows.append((f"  Ping {bp.target}", b_ms, a_ms, change_text, change_status))
+
+            self._bench_summary_label.setText(f"Result: {report.summary}")
+        else:
+            # We have either only before or only after
+            snap = before or after
+            is_before = before is not None
+
+            # Helper for individual values
+            def get_val(metric_name):
+                return getattr(snap, metric_name, None)
+
+            rows = [
+                ("Avg Latency", _fmt(get_val("avg_latency_ms")) if is_before else "N/A", "N/A" if is_before else _fmt(get_val("avg_latency_ms")), "", "neutral"),
+                ("Avg Jitter", _fmt(get_val("avg_jitter_ms")) if is_before else "N/A", "N/A" if is_before else _fmt(get_val("avg_jitter_ms")), "", "neutral"),
+                ("Avg Packet Loss", _fmt(get_val("avg_loss_pct"), "%") if is_before else "N/A", "N/A" if is_before else _fmt(get_val("avg_loss_pct"), "%"), "", "neutral"),
+                ("Avg DNS Resolve", _fmt(get_val("avg_dns_ms")) if is_before else "N/A", "N/A" if is_before else _fmt(get_val("avg_dns_ms")), "", "neutral"),
+                ("Avg TCP Connect", _fmt(get_val("avg_tcp_ms")) if is_before else "N/A", "N/A" if is_before else _fmt(get_val("avg_tcp_ms")), "", "neutral"),
+            ]
+
+            for p in snap.ping_results:
+                p_val = _fmt(p.avg_ms)
+                rows.append((
+                    f"  Ping {p.target}",
+                    p_val if is_before else "N/A",
+                    "N/A" if is_before else p_val,
+                    "",
+                    "neutral"
+                ))
+
+            label_name = "BEFORE" if is_before else "AFTER"
+            self._bench_summary_label.setText(
+                f"Showing {label_name} benchmark from {snap.timestamp[:19].replace('T', ' ')}. "
+                f"Run the other benchmark to see comparison."
+            )
 
         colors = {
             "healthy": Qt.GlobalColor.green,
@@ -769,8 +808,6 @@ class OptimizerTab(QWidget):
                 if col > 0:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._bench_table.setItem(row_idx, col, item)
-
-        self._bench_summary_label.setText(f"Result: {report.summary}")
 
     # ------------------------------------------------------------------
     # Table population
@@ -842,9 +879,12 @@ class OptimizerTab(QWidget):
             color = _STATUS_COLORS.get(status_text, Qt.GlobalColor.white)
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(color)
+            status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
 
             before_item = QTableWidgetItem(r.before or "--")
+            before_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             after_item = QTableWidgetItem(r.after or "--")
+            after_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             note_item = QTableWidgetItem(r.note or r.error or "")
 
             self._results_table.setItem(row, 0, name_item)
@@ -852,3 +892,28 @@ class OptimizerTab(QWidget):
             self._results_table.setItem(row, 2, before_item)
             self._results_table.setItem(row, 3, after_item)
             self._results_table.setItem(row, 4, note_item)
+
+    def _save_optimization_results(self, results: list[OptimizeResult]) -> None:
+        try:
+            import json
+            from losshound.core.optimizer import _BACKUP_DIR
+            _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+            file_path = _BACKUP_DIR / "optimizer_results.json"
+            data = [asdict(r) for r in results]
+            with open(file_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+        except Exception as exc:
+            logger.warning("Failed to save optimization results: %s", exc)
+
+    def _load_saved_optimization_results(self):
+        try:
+            import json
+            from losshound.core.optimizer import _BACKUP_DIR, OptimizeResult
+            file_path = _BACKUP_DIR / "optimizer_results.json"
+            if file_path.is_file():
+                with open(file_path, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+                results = [OptimizeResult(**r) for r in data]
+                self._populate_results_table(results)
+        except Exception as exc:
+            logger.warning("Failed to load optimization results: %s", exc)

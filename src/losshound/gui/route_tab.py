@@ -79,6 +79,8 @@ class RouteTab(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
+        
+        self._load_changes()
 
     def update_route(self, obs: Observation):
         if obs.route_snapshot:

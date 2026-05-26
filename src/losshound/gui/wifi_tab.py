@@ -122,20 +122,6 @@ class WifiTab(QWidget):
         self._progress_bar.setValue(0)
         self._progress_bar.setTextVisible(True)
         self._progress_bar.setFormat("Idle")
-        self._progress_bar.setStyleSheet("""
-            QProgressBar {
-                background-color: #1d222b;
-                border: 1px solid #3a4350;
-                border-radius: 2px;
-                text-align: center;
-                color: #d8dee9;
-                height: 24px;
-            }
-            QProgressBar::chunk {
-                background-color: #62c7d8;
-                border-radius: 0;
-            }
-        """)
         main_layout.addWidget(self._progress_bar)
 
         # --- WiFi status cards ---
@@ -251,7 +237,7 @@ class WifiTab(QWidget):
         card.setStyleSheet("""
             background-color: #1b2028;
             border: 1px solid #3a4350;
-            border-radius: 2px;
+            border-radius: 0px;
             padding: 12px;
             font-size: 12px;
             color: #d8dee9;
@@ -267,7 +253,7 @@ class WifiTab(QWidget):
             card.setStyleSheet(f"""
                 background-color: #1b2028;
                 border: 1px solid #3a4350;
-                border-radius: 2px;
+                border-radius: 0px;
                 padding: 12px;
                 font-size: 12px;
                 color: {color};
