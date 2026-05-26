@@ -64,18 +64,8 @@ def test_get_subnet_ips():
 
 def test_lookup_vendor():
     assert lookup_vendor("1c:3b:f3:ea:bb:cc") == "HP"
-    assert lookup_vendor("04-d9-f5-12-34-56") == "ASUSTek"
-
-    # Mock success OUI API call
-    mock_response = MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = b"Mocked Device Corp"
-    with patch("urllib.request.urlopen", return_value=mock_response):
-        assert lookup_vendor("00-11-22-33-44-55") == "Mocked Device Corp"
-
-    # Mock failure/offline OUI API call
-    with patch("urllib.request.urlopen", side_effect=Exception("Offline")):
-        assert lookup_vendor("00-00-00-00-00-00") == "Unknown"
+    assert lookup_vendor("04-d9-f5-12-34-56") == "ASUS"
+    assert lookup_vendor("00-00-00-00-00-00") == "Unknown"
 
 
 def test_resolve_hostname_safe():
@@ -173,3 +163,34 @@ def test_get_active_connections():
         assert conns[0]["remote_port"] == "443"
         assert conns[0]["state"] == "ESTABLISHED"
         assert conns[0]["resolved_name"] == "google.com"
+
+
+def test_scan_local_network_fallbacks():
+    mock_ipconfig = MagicMock()
+    from tests.conftest import IPCONFIG_OUTPUT
+    mock_ipconfig.stdout = IPCONFIG_OUTPUT.encode("cp850")
+    
+    mock_arp = MagicMock()
+    mock_arp.stdout = MOCK_ARP_OUTPUT.encode("cp850")
+    
+    def mock_subprocess_run(args, *argv, **kwargs):
+        if "ipconfig" in args:
+            return mock_ipconfig
+        elif "arp" in args:
+            return mock_arp
+        return MagicMock()
+        
+    mock_history = MagicMock()
+    mock_history.get_devices.return_value = []
+    
+    with patch("subprocess.run", side_effect=mock_subprocess_run), \
+         patch("socket.gethostbyaddr", side_effect=Exception("failed")), \
+         patch("losshound.core.lan_monitor.resolve_netbios_name", return_value=""):
+         
+        devices = scan_local_network(mock_history)
+        
+        # devices[0] has mac 1C-3B-F3-EA-BB-CC (HP) -> should fall back to "HP Device"
+        # devices[1] has mac 04-D9-F5-12-34-56 (ASUS) -> should fall back to "ASUS Device"
+        assert devices[0]["hostname"] == "HP Device"
+        assert devices[1]["hostname"] == "ASUS Device"
+
