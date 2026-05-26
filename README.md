@@ -277,19 +277,6 @@ All data is stored locally:
 - **Optimizer backup**: `%LOCALAPPDATA%\Losshound\optimizer_backup.json`
 - **Benchmark history**: `%LOCALAPPDATA%\Losshound\benchmark_history.json`
 
-## Roadmap
-
-- [x] Network performance optimizer
-- [x] DNS benchmarking
-- [x] Before/after performance benchmarking
-- [x] Load benchmarking (bufferbloat, throughput)
-- [ ] System tray support with minimize-to-tray
-- [ ] Alerts when diagnosis status changes
-- [ ] Dark/light theme toggle
-- [ ] CSV export
-- [ ] Route diff viewer (side-by-side comparison)
-- [ ] Multi-language ping output parsing
-
 ## Known limitations
 
 - Windows only (uses Windows-specific tools: ping, tracert, ipconfig, netstat, tasklist)
