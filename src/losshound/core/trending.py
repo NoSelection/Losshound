@@ -85,8 +85,18 @@ def _extract(benchmarks: list[dict], key: str) -> list[tuple[str, float]]:
 
 
 # ---------------------------------------------------------------------------
-# Pattern detection
+# Pattern detection & Noise thresholds
 # ---------------------------------------------------------------------------
+
+_NOISE_THRESHOLDS = {
+    "latency": {"min_diff": 5.0, "min_val": 25.0, "min_stdev": 3.0},
+    "jitter": {"min_diff": 1.0, "min_val": 3.0, "min_stdev": 0.8},
+    "loss": {"min_diff": 0.5, "min_val": 1.0, "min_stdev": 0.3},
+    "dns": {"min_diff": 10.0, "min_val": 25.0, "min_stdev": 5.0},
+    "tcp": {"min_diff": 20.0, "min_val": 50.0, "min_stdev": 10.0},
+    "score": {"min_diff": 5.0, "min_val": 0.0, "min_stdev": 3.0},
+}
+
 
 def detect_time_patterns(
     benchmarks: list[dict], metric: str,
@@ -134,8 +144,25 @@ def detect_time_patterns(
 
         # If this window is >30% worse than overall
         is_worse = pct_diff > 30 if lower_better else pct_diff < -30
-        if is_worse:
+        
+        # Apply absolute noise threshold
+        abs_diff = abs(window_avg - overall_avg)
+        thresholds = _NOISE_THRESHOLDS.get(metric, {"min_diff": 0.0, "min_val": 0.0})
+        min_diff = thresholds.get("min_diff", 0.0)
+        min_val = thresholds.get("min_val", 0.0)
+
+        if lower_better:
+            meets_threshold = (window_avg >= min_val or overall_avg >= min_val) and abs_diff >= min_diff
+        else:
+            meets_threshold = abs_diff >= min_diff
+
+        if is_worse and meets_threshold:
             end_hour = (start_hour + 3) % 24
+            
+            base_conf = min(0.7, len(window_vals) / 12)
+            effect_boost = min(0.2, (abs(pct_diff) - 30) / 200)
+            confidence = round(base_conf + effect_boost, 2)
+
             patterns.append(TrendPattern(
                 pattern_type="time_of_day",
                 metric=metric,
@@ -144,7 +171,7 @@ def detect_time_patterns(
                     f"between {start_hour:02d}:00–{end_hour:02d}:59 "
                     f"(avg {window_avg:.1f} vs overall {overall_avg:.1f})"
                 ),
-                confidence=min(0.9, len(window_vals) / 10),
+                confidence=confidence,
                 data={
                     "start_hour": start_hour,
                     "end_hour": end_hour,
@@ -187,7 +214,23 @@ def detect_degradation(
     is_degraded = pct_change > 15 if lower_better else pct_change < -15
     is_improved = pct_change < -15 if lower_better else pct_change > 15
 
-    if is_degraded:
+    abs_diff = abs(new_avg - old_avg)
+    thresholds = _NOISE_THRESHOLDS.get(metric, {"min_diff": 0.0, "min_val": 0.0})
+    min_diff = thresholds.get("min_diff", 0.0)
+    min_val = thresholds.get("min_val", 0.0)
+
+    if lower_better:
+        meets_degrade_threshold = (new_avg >= min_val) and abs_diff >= min_diff
+        meets_improve_threshold = (old_avg >= min_val) and abs_diff >= min_diff
+    else:
+        meets_degrade_threshold = abs_diff >= min_diff
+        meets_improve_threshold = abs_diff >= min_diff
+
+    base_conf = min(0.7, len(pairs) / 25)
+
+    if is_degraded and meets_degrade_threshold:
+        effect_boost = min(0.2, (abs(pct_change) - 15) / 100)
+        confidence = round(base_conf + effect_boost, 2)
         return TrendPattern(
             pattern_type="degradation",
             metric=metric,
@@ -195,14 +238,16 @@ def detect_degradation(
                 f"{metric.capitalize()} has degraded {abs(pct_change):.0f}% "
                 f"(was {old_avg:.1f}, now {new_avg:.1f})"
             ),
-            confidence=min(0.9, len(pairs) / 20),
+            confidence=confidence,
             data={
                 "old_avg": round(old_avg, 2),
                 "new_avg": round(new_avg, 2),
                 "pct_change": round(pct_change, 1),
             },
         )
-    if is_improved:
+    if is_improved and meets_improve_threshold:
+        effect_boost = min(0.2, (abs(pct_change) - 15) / 100)
+        confidence = round(base_conf + effect_boost, 2)
         return TrendPattern(
             pattern_type="improving",
             metric=metric,
@@ -210,7 +255,7 @@ def detect_degradation(
                 f"{metric.capitalize()} has improved {abs(pct_change):.0f}% "
                 f"(was {old_avg:.1f}, now {new_avg:.1f})"
             ),
-            confidence=min(0.9, len(pairs) / 20),
+            confidence=confidence,
             data={
                 "old_avg": round(old_avg, 2),
                 "new_avg": round(new_avg, 2),
@@ -239,7 +284,14 @@ def detect_volatility(
     stdev = statistics.stdev(vals)
     cv = stdev / mean
 
-    if cv > 0.3:
+    thresholds = _NOISE_THRESHOLDS.get(metric, {"min_stdev": 0.0})
+    min_stdev = thresholds.get("min_stdev", 0.0)
+
+    if cv > 0.3 and stdev >= min_stdev:
+        base_conf = min(0.7, len(vals) / 12)
+        effect_boost = min(0.2, (cv - 0.3) / 1.0)
+        confidence = round(base_conf + effect_boost, 2)
+
         return TrendPattern(
             pattern_type="volatile",
             metric=metric,
@@ -247,13 +299,111 @@ def detect_volatility(
                 f"{metric.capitalize()} is highly variable "
                 f"(CV={cv:.2f}, mean={mean:.1f}, stdev={stdev:.1f})"
             ),
-            confidence=min(0.9, len(vals) / 10),
+            confidence=confidence,
             data={
                 "cv": round(cv, 3),
                 "mean": round(mean, 2),
                 "stdev": round(stdev, 2),
             },
         )
+    return None
+
+
+def detect_weekday_weekend_patterns(
+    benchmarks: list[dict], metric: str,
+) -> Optional[TrendPattern]:
+    """Compare weekday (Mon-Fri) vs weekend (Sat-Sun) average performance."""
+    key = _METRIC_KEYS.get(metric)
+    if not key:
+        return None
+
+    pairs = _extract(benchmarks, key)
+    
+    # Group by weekday vs weekend
+    weekday_vals = []
+    weekend_vals = []
+    
+    for ts_str, val in pairs:
+        try:
+            dt = datetime.fromisoformat(ts_str)
+            if dt.weekday() < 5:
+                weekday_vals.append(val)
+            else:
+                weekend_vals.append(val)
+        except (ValueError, TypeError):
+            continue
+
+    if len(weekday_vals) < 3 or len(weekend_vals) < 3:
+        return None
+
+    weekday_avg = statistics.mean(weekday_vals)
+    weekend_avg = statistics.mean(weekend_vals)
+    
+    if weekday_avg == 0 or weekend_avg == 0:
+        return None
+
+    lower_better = metric in _LOWER_IS_BETTER
+
+    pct_diff = ((weekend_avg - weekday_avg) / weekday_avg) * 100
+    
+    thresholds = _NOISE_THRESHOLDS.get(metric, {"min_diff": 0.0, "min_val": 0.0})
+    min_diff = thresholds.get("min_diff", 0.0)
+    min_val = thresholds.get("min_val", 0.0)
+    
+    abs_diff = abs(weekend_avg - weekday_avg)
+    
+    is_weekend_worse = pct_diff > 30 if lower_better else pct_diff < -30
+    is_weekday_worse = pct_diff < -30 if lower_better else pct_diff > 30
+    
+    if lower_better:
+        meets_weekend_worse = (weekend_avg >= min_val) and abs_diff >= min_diff
+        meets_weekday_worse = (weekday_avg >= min_val) and abs_diff >= min_diff
+    else:
+        meets_weekend_worse = abs_diff >= min_diff
+        meets_weekday_worse = abs_diff >= min_diff
+        
+    base_conf = min(0.7, (len(weekday_vals) + len(weekend_vals)) / 25)
+    
+    if is_weekend_worse and meets_weekend_worse:
+        effect_boost = min(0.2, (abs(pct_diff) - 30) / 200)
+        confidence = round(base_conf + effect_boost, 2)
+        desc = (
+            f"{metric.capitalize()} is {abs(pct_diff):.0f}% worse on weekends "
+            f"(avg {weekend_avg:.1f} vs weekday {weekday_avg:.1f})"
+        )
+        return TrendPattern(
+            pattern_type="weekday_vs_weekend",
+            metric=metric,
+            description=desc,
+            confidence=confidence,
+            data={
+                "weekday_avg": round(weekday_avg, 2),
+                "weekend_avg": round(weekend_avg, 2),
+                "pct_diff": round(pct_diff, 1),
+                "worse_on": "weekend",
+            }
+        )
+    elif is_weekday_worse and meets_weekday_worse:
+        pct_diff_relative_to_weekend = ((weekday_avg - weekend_avg) / weekend_avg) * 100
+        effect_boost = min(0.2, (abs(pct_diff_relative_to_weekend) - 30) / 200)
+        confidence = round(base_conf + effect_boost, 2)
+        desc = (
+            f"{metric.capitalize()} is {abs(pct_diff_relative_to_weekend):.0f}% worse on weekdays "
+            f"(avg {weekday_avg:.1f} vs weekend {weekend_avg:.1f})"
+        )
+        return TrendPattern(
+            pattern_type="weekday_vs_weekend",
+            metric=metric,
+            description=desc,
+            confidence=confidence,
+            data={
+                "weekday_avg": round(weekday_avg, 2),
+                "weekend_avg": round(weekend_avg, 2),
+                "pct_diff": round(pct_diff_relative_to_weekend, 1),
+                "worse_on": "weekday",
+            }
+        )
+
     return None
 
 
@@ -372,7 +522,7 @@ def analyze_trends(benchmarks: list[dict], hours: int = 168) -> TrendSummary:
 
     # Detect patterns
     patterns: list[TrendPattern] = []
-    for metric in ("latency", "jitter", "loss", "dns", "score"):
+    for metric in ("latency", "jitter", "loss", "dns", "tcp", "score"):
         patterns.extend(detect_time_patterns(benchmarks, metric))
         deg = detect_degradation(benchmarks, metric)
         if deg:
@@ -380,6 +530,9 @@ def analyze_trends(benchmarks: list[dict], hours: int = 168) -> TrendSummary:
         vol = detect_volatility(benchmarks, metric)
         if vol:
             patterns.append(vol)
+        wday = detect_weekday_weekend_patterns(benchmarks, metric)
+        if wday:
+            patterns.append(wday)
 
     return TrendSummary(
         period_hours=hours,
@@ -434,6 +587,7 @@ def format_trends(summary: TrendSummary) -> str:
                 "time_of_day": "[T]",
                 "improving": "[+]",
                 "volatile": "[~]",
+                "weekday_vs_weekend": "[W]",
                 "stable": "[ ]",
             }.get(p.pattern_type, "[ ]")
             lines.append(f"  {icon} {p.description}")
@@ -443,3 +597,4 @@ def format_trends(summary: TrendSummary) -> str:
 
     lines.append("")
     return "\n".join(lines)
+
