@@ -34,6 +34,19 @@ class LanScanWorker(QThread):
             self.scan_complete.emit([])
 
 
+class ConnectionRefreshWorker(QThread):
+    """Background worker to fetch local network connections to prevent main thread blocking."""
+    connections_ready = Signal(list)
+
+    def run(self):
+        try:
+            conns = get_active_connections()
+            self.connections_ready.emit(conns)
+        except Exception as exc:
+            logger.warning("Background connection refresh failed: %s", exc)
+            self.connections_ready.emit([])
+
+
 class LANTab(QWidget):
     def __init__(self, history: HistoryStore, parent=None):
         super().__init__(parent)
@@ -129,23 +142,31 @@ class LANTab(QWidget):
         # Timers & Workers Initialization
         # -------------------------------------------------------------
         self._scan_worker = None
-
+        self._conn_worker = None
+        self._conn_refresh_in_progress = False
+ 
         # Refresh local connections table every 5 seconds (performance optimization)
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_connections)
         self._refresh_timer.start(5000)
-
+ 
         # Initial loads
         self._refresh_devices_table()
         self._refresh_connections()
 
     def shutdown(self):
-        """Cleanly terminate the scan worker on app shutdown."""
+        """Cleanly terminate the scan and connection workers on app shutdown."""
         if self._scan_worker and self._scan_worker.isRunning():
             self._scan_worker.quit()
             self._scan_worker.wait(1000)
             if self._scan_worker.isRunning():
                 self._scan_worker.terminate()
+                
+        if self._conn_worker and self._conn_worker.isRunning():
+            self._conn_worker.quit()
+            self._conn_worker.wait(1000)
+            if self._conn_worker.isRunning():
+                self._conn_worker.terminate()
 
     # -----------------------------------------------------------------
     # LAN Scan Logic
@@ -245,13 +266,20 @@ class LANTab(QWidget):
     # Local Connections Tracking Logic
     # -----------------------------------------------------------------
     def _refresh_connections(self):
-        """Query and cache current local process connection status in background thread."""
-        # Query active connections
-        try:
-            self._all_connections = get_active_connections()
-            self._display_connections()
-        except Exception as exc:
-            logger.warning("Failed to refresh local connections: %s", exc)
+        """Query current local process connection status in background thread to prevent lag."""
+        if self._conn_refresh_in_progress:
+            return
+        self._conn_refresh_in_progress = True
+        
+        self._conn_worker = ConnectionRefreshWorker(self)
+        self._conn_worker.connections_ready.connect(self._on_connections_ready)
+        self._conn_worker.start()
+
+    @Slot(list)
+    def _on_connections_ready(self, conns: list):
+        self._conn_refresh_in_progress = False
+        self._all_connections = conns
+        self._display_connections()
 
     def _display_connections(self):
         """Filter and render connections list based on filter query."""
