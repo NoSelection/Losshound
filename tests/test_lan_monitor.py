@@ -78,6 +78,22 @@ def test_resolve_hostname_safe():
         assert name == ""
 
 
+def test_resolve_mdns_name():
+    from losshound.core.lan_monitor import resolve_mdns_name
+    
+    mock_socket = MagicMock()
+    mock_payload = b"\x00\x00\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+    mock_payload += b"\x03107\x011\x03168\x03192\x07in-addr\x04arpa\x00\x00\x0c\x00\x01"
+    mock_payload += b"\xc0\x0c\x00\x0c\x00\x01\x00\x00\x00\xff\x00\x13"
+    mock_payload += b"\x0btest-device\x05local\x00"
+    
+    mock_socket.recvfrom.return_value = (mock_payload, ("192.168.1.107", 5353))
+    
+    with patch("socket.socket", return_value=mock_socket):
+        name = resolve_mdns_name("192.168.1.107")
+        assert name == "test-device"
+
+
 def test_parse_arp_table():
     mock_res = MagicMock()
     mock_res.stdout = MOCK_ARP_OUTPUT.encode("cp850")

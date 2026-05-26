@@ -490,6 +490,128 @@ def lookup_vendor(mac: str) -> str:
     return _OUI_DB.get(prefix, "Unknown")
 
 
+def decode_dns_name(data: bytes, offset: int) -> tuple[str, int]:
+    """Decode compressed labels in a DNS packet according to RFC 1035."""
+    labels = []
+    visited = set()
+    curr = offset
+    pointer_followed = False
+    next_offset = -1
+    
+    while True:
+        if curr >= len(data):
+            break
+        length = data[curr]
+        
+        # Pointer check
+        if (length & 0xC0) == 0xC0:
+            if curr + 1 >= len(data):
+                break
+            pointer = ((length & 0x3F) << 8) | data[curr+1]
+            if pointer in visited:
+                break
+            visited.add(pointer)
+            if not pointer_followed:
+                next_offset = curr + 2
+                pointer_followed = True
+            curr = pointer
+            continue
+            
+        curr += 1
+        if length == 0:
+            break
+            
+        if curr + length > len(data):
+            break
+            
+        label = data[curr:curr+length].decode("utf-8", errors="ignore")
+        labels.append(label)
+        curr += length
+        
+    final_offset = next_offset if pointer_followed else curr
+    return ".".join(labels), final_offset
+
+
+def resolve_mdns_name(ip: str) -> str:
+    """Query link-local mDNS multicast (224.0.0.251:5353) to fetch the real device name."""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return ""
+        
+    rev_name = f"{parts[3]}.{parts[2]}.{parts[1]}.{parts[0]}.in-addr.arpa"
+    
+    # Standard DNS Header: ID=0, Flags=0, QDCount=1, ANCount=0, NSCount=0, ARCount=0
+    header = b"\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    
+    query = b""
+    for part in rev_name.split("."):
+        query += bytes([len(part)]) + part.encode("ascii")
+    query += b"\x00"
+    query += b"\x00\x0c\x00\x01"  # Type: PTR (12), Class: IN (1)
+    
+    packet = header + query
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.4)
+        sock.sendto(packet, ("224.0.0.251", 5353))
+        
+        # Read matching response (try up to 3 responses)
+        for _ in range(3):
+            data, _ = sock.recvfrom(1500)
+            if len(data) < 12:
+                continue
+                
+            qdcount = (data[4] << 8) | data[5]
+            ancount = (data[6] << 8) | data[7]
+            
+            if ancount == 0:
+                continue
+                
+            offset = 12
+            for _ in range(qdcount):
+                _, offset = decode_dns_name(data, offset)
+                offset += 4  # Skip Type & Class
+                
+            for _ in range(ancount):
+                if offset >= len(data):
+                    break
+                _, offset = decode_dns_name(data, offset)
+                if offset + 10 > len(data):
+                    break
+                ans_type = (data[offset] << 8) | data[offset+1]
+                rdlength = (data[offset+8] << 8) | data[offset+9]
+                offset += 10
+                
+                if offset + rdlength > len(data):
+                    break
+                    
+                if ans_type == 12:  # PTR Record type
+                    host, _ = decode_dns_name(data, offset)
+                    if host.endswith(".local"):
+                        host = host[:-6]
+                    if host:
+                        return host
+                offset += rdlength
+    except Exception:
+        pass
+    finally:
+        if sock:
+            sock.close()
+            
+    # Regex fallback search inside raw payload for safety
+    try:
+        if "data" in locals() and len(data) > 0:
+            text = data.decode("ascii", errors="ignore")
+            matches = re.findall(r"([a-zA-Z0-9\-]+)\.local", text)
+            if matches:
+                return matches[0]
+    except Exception:
+        pass
+        
+    return ""
+
+
 def resolve_netbios_name(ip: str) -> str:
     """Attempt to resolve hostname of an IP via a UDP NetBIOS Node Status query on port 137."""
     query = (
@@ -534,7 +656,7 @@ def resolve_netbios_name(ip: str) -> str:
 
 
 def resolve_hostname_safe(ip: str) -> str:
-    """Resolve IP to hostname using socket DNS then NetBIOS fallback."""
+    """Resolve IP to hostname using socket DNS, mDNS fallback, then NetBIOS fallback."""
     original_timeout = socket.getdefaulttimeout()
     try:
         socket.setdefaulttimeout(1.0)
@@ -545,6 +667,11 @@ def resolve_hostname_safe(ip: str) -> str:
         pass
     finally:
         socket.setdefaulttimeout(original_timeout)
+        
+    # mDNS fallback
+    mdns_name = resolve_mdns_name(ip)
+    if mdns_name:
+        return mdns_name
         
     # NetBIOS fallback
     nb_name = resolve_netbios_name(ip)
