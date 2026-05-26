@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QGridLayout, QLabel, QTableWidget, QTableWidgetItem,
+    QGridLayout, QLabel, QScrollArea, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget, QHeaderView,
 )
 
@@ -13,7 +11,14 @@ from losshound.gui.widgets import MetricCard, StatusBanner
 class DashboardTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        layout = QVBoxLayout(self)
+        
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setStyleSheet("background-color: transparent;")
+        
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
@@ -88,6 +93,11 @@ class DashboardTab(QWidget):
         self._events_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._events_table.setMaximumHeight(160)
         layout.addWidget(self._events_table)
+
+        scroll.setWidget(content)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
 
     def update_observation(self, obs: Observation):
         """Update metric cards from a new observation."""

@@ -140,7 +140,7 @@ class MetricCard(QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setProperty("class", "metric-card")
-
+        self.setMinimumHeight(76)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 9, 12, 9)
