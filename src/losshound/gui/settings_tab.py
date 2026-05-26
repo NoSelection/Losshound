@@ -215,6 +215,16 @@ class SettingsTab(QWidget):
         )
         behavior_form.addRow("Close button:", self._close_to_tray)
 
+        self._lan_firewall = QCheckBox("Allow LAN discovery (creates a Windows Firewall rule)")
+        self._lan_firewall.setChecked(config.lan_discovery_firewall_enabled)
+        self._lan_firewall.setToolTip(
+            "Adds a narrow inbound UDP rule (mDNS, LLMNR, SSDP, NetBIOS) scoped "
+            "to this Losshound executable only — no other apps benefit. "
+            "Required to receive friendly device names on Public Wi-Fi profiles. "
+            "Unchecking removes the rule on next save. Requires administrator."
+        )
+        behavior_form.addRow("LAN discovery:", self._lan_firewall)
+
         main_layout.addWidget(behavior_group)
 
         # Buttons
@@ -271,6 +281,7 @@ class SettingsTab(QWidget):
             ping_timeout_ms=self._ping_timeout.value(),
             auto_benchmark_interval_minutes=self._config.auto_benchmark_interval_minutes,
             close_to_tray=self._close_to_tray.isChecked(),
+            lan_discovery_firewall_enabled=self._lan_firewall.isChecked(),
             pdf_default_dir=self._config.pdf_default_dir,
             alerts=AlertsConfig(
                 enabled=self._alerts_enabled.isChecked(),
@@ -305,6 +316,21 @@ class SettingsTab(QWidget):
             return
 
         save_config(config)
+
+        # Apply firewall preference change immediately if it flipped.
+        # apply_firewall_preference is idempotent and safe to call even when
+        # the value didn't change.
+        if config.lan_discovery_firewall_enabled != self._config.lan_discovery_firewall_enabled:
+            from losshound.core.firewall import apply_firewall_preference
+            applied = apply_firewall_preference(config.lan_discovery_firewall_enabled)
+            if not applied and config.lan_discovery_firewall_enabled:
+                QMessageBox.warning(
+                    self, "LAN discovery firewall rule",
+                    "Couldn't update the firewall rule — most likely Losshound "
+                    "isn't running as administrator. Relaunch via run_as_admin.bat "
+                    "for this setting to take effect.",
+                )
+
         self._config = config
         self.config_changed.emit(config)
         QMessageBox.information(self, "Settings", "Settings saved successfully.")
@@ -321,6 +347,7 @@ class SettingsTab(QWidget):
         self._dns_hostnames.setText(", ".join(default.dns_test_hostnames))
         self._tracert_target.setText(default.tracert_target)
         self._close_to_tray.setChecked(default.close_to_tray)
+        self._lan_firewall.setChecked(default.lan_discovery_firewall_enabled)
 
         dc = default.diagnosis
         self._gw_loss.setValue(dc.gateway_loss_threshold)

@@ -63,6 +63,10 @@ class AppConfig:
     auto_benchmark_interval_minutes: int = 60
     close_to_tray: bool = False
     pdf_default_dir: Optional[str] = None
+    # When True, on launch we add a narrow Windows Firewall rule (UDP inbound on
+    # 5353/5355/1900/137, scoped to this exe only) so multicast LAN-discovery
+    # responses are not dropped on Public network profiles.
+    lan_discovery_firewall_enabled: bool = True
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     diagnosis: DiagnosisConfig = field(default_factory=DiagnosisConfig)
     log_level: str = "INFO"

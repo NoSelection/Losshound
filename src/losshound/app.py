@@ -144,12 +144,17 @@ def main():
 
 def _run_gui(config):
     from PySide6.QtWidgets import QApplication
+    from losshound.core.firewall import apply_firewall_preference
     from losshound.core.job_object import install_kill_on_close_job
     from losshound.gui.branding import app_icon
     from losshound.gui.main_window import MainWindow
 
     # Tie ping/tracert/netsh children to this process so they die with us.
     install_kill_on_close_job()
+
+    # Reconcile the LAN-discovery firewall rule with the user's saved preference.
+    # No-ops when not admin or when state already matches.
+    apply_firewall_preference(config.lan_discovery_firewall_enabled)
 
     app = QApplication(sys.argv)
     app.setApplicationName("Losshound")
