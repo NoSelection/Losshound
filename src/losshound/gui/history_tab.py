@@ -24,6 +24,7 @@ class HistoryTab(QWidget):
         controls.addWidget(QLabel("Filter:"))
 
         self._filter = QComboBox()
+        self._filter.setFixedWidth(150)
         self._filter.addItems([
             "All", "Healthy", "LAN Issue", "ISP/WAN Issue",
             "DNS Issue", "Route Issue", "Intermittent",
@@ -44,12 +45,12 @@ class HistoryTab(QWidget):
         self._table.setHorizontalHeaderLabels([
             "Date / Time", "Status", "Summary", "Confidence", "Details",
         ])
-        self._table.horizontalHeader().setSectionResizeMode(
-            2, QHeaderView.ResizeMode.Stretch
-        )
-        self._table.horizontalHeader().setSectionResizeMode(
-            4, QHeaderView.ResizeMode.Stretch
-        )
+        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        self._table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self._table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -85,9 +86,12 @@ class HistoryTab(QWidget):
                 date_part, time_part = ts.split("T")
                 ts = f"{date_part}  {time_part[:8]}"
 
-            self._table.setItem(row, 0, QTableWidgetItem(ts))
+            ts_item = QTableWidgetItem(ts)
+            ts_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 0, ts_item)
 
             cat_item = QTableWidgetItem(entry["category"].replace("_", " ").title())
+            cat_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             color_map = {
                 "healthy": "#75c884",
                 "lan_issue": "#e06363",
@@ -101,7 +105,10 @@ class HistoryTab(QWidget):
             self._table.setItem(row, 1, cat_item)
 
             self._table.setItem(row, 2, QTableWidgetItem(entry["summary"]))
-            self._table.setItem(row, 3, QTableWidgetItem(entry["confidence"]))
+
+            conf_item = QTableWidgetItem(entry["confidence"])
+            conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 3, conf_item)
 
             # Build detail string from evidence
             ev = entry.get("evidence", {})
