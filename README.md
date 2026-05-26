@@ -1,7 +1,7 @@
 # Losshound
 
 <p align="center">
-  <img src="assets/losshound_banner.png" alt="Losshound Banner" width="100%">
+  <img src="assets/losshound-readme-hero.png" alt="Losshound Banner" width="100%">
 </p>
 
 Lightweight Windows network diagnosis and optimization tool that continuously monitors connectivity, determines the most likely cause of network issues, and can automatically tune your network stack for better performance.
