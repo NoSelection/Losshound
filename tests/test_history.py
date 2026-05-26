@@ -124,3 +124,38 @@ def test_prune():
     loaded = store.get_recent_observations(minutes=60)
     assert len(loaded) == 0
     store.close()
+
+
+def test_discovered_devices():
+    store = _make_store()
+    
+    # Save a device
+    store.save_device("00-11-22-33-44-55", "192.168.1.50", "Test-Device", "Intel")
+    devices = store.get_devices()
+    assert len(devices) == 1
+    assert devices[0]["mac_address"] == "00-11-22-33-44-55"
+    assert devices[0]["status"] == "unknown"
+    assert devices[0]["is_active"] is True
+    
+    # Update device status
+    store.update_device_status("00-11-22-33-44-55", "authorized")
+    devices = store.get_devices()
+    assert devices[0]["status"] == "authorized"
+    
+    # Set active status to inactive
+    store.set_all_devices_inactive()
+    devices = store.get_devices()
+    assert devices[0]["is_active"] is False
+    
+    # Update device active status by saving again
+    store.save_device("00-11-22-33-44-55", "192.168.1.50", "Test-Device", "Intel")
+    devices = store.get_devices()
+    assert devices[0]["is_active"] is True
+    
+    # Clear devices
+    store.clear_discovered_devices()
+    devices = store.get_devices()
+    assert len(devices) == 0
+    
+    store.close()
+

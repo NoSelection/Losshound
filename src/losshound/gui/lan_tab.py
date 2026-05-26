@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (
     QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QProgressBar, QPushButton, QSplitter, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget, QGroupBox,
+    QMessageBox,
 )
 
 from losshound.core.lan_monitor import lookup_vendor
@@ -75,6 +76,10 @@ class LANTab(QWidget):
         self._scan_btn = QPushButton("Scan Now")
         self._scan_btn.clicked.connect(self._start_scan)
         controls_layout.addWidget(self._scan_btn)
+        
+        self._reset_btn = QPushButton("Clear History")
+        self._reset_btn.clicked.connect(self._clear_devices)
+        controls_layout.addWidget(self._reset_btn)
 
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)  # Indeterminate loading bar
@@ -192,6 +197,17 @@ class LANTab(QWidget):
         self._progress.setVisible(False)
         self._status_label.setText(f"Scan complete. Found {len(devices)} active devices.")
         self._refresh_devices_table()
+
+    def _clear_devices(self):
+        reply = QMessageBox.question(
+            self, "Confirm Reset",
+            "Are you sure you want to clear all discovered LAN devices from history?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._history.clear_discovered_devices()
+            self._refresh_devices_table()
+            self._status_label.setText("Device list cleared. Click Scan Now to discover active devices.")
 
     def _refresh_devices_table(self):
         self._devices_table.setRowCount(0)

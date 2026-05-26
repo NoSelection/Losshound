@@ -471,6 +471,11 @@ class HistoryStore:
         self._conn.execute("UPDATE discovered_devices SET is_active = 0")
         self._conn.commit()
 
+    def clear_discovered_devices(self) -> None:
+        """Clear all entries from the discovered_devices table."""
+        self._conn.execute("DELETE FROM discovered_devices")
+        self._conn.commit()
+
 
 def _deserialize_observation(raw_json: str) -> Observation:
     """Reconstruct an Observation from stored JSON."""
