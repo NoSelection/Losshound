@@ -140,14 +140,7 @@ class MetricCard(QFrame):
     def __init__(self, title: str, parent=None):
         super().__init__(parent)
         self.setProperty("class", "metric-card")
-        self.setStyleSheet("""
-            MetricCard {
-                background-color: #1b2028;
-                border: 1px solid #3a4350;
-                border-radius: 2px;
-                padding: 10px;
-            }
-        """)
+
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 9, 12, 9)
@@ -251,7 +244,8 @@ class StatusBanner(QFrame):
             StatusBanner {{
                 background-color: {s['bg']};
                 border: 1px solid {s['border']};
-                border-radius: 2px;
+                border-left: 4px solid {s['text']};
+                border-radius: 0px;
             }}
         """)
         self._status_label.setStyleSheet(

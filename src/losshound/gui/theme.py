@@ -12,7 +12,7 @@ def button_style(kind: str = "default") -> str:
         background-color: {bg};
         color: {text};
         border: 1px solid {border};
-        border-radius: 6px;
+        border-radius: 0px;
         font-weight: bold;
         padding: 8px 16px;
     }}
@@ -46,7 +46,7 @@ def get_dark_stylesheet() -> str:
 
     QTabWidget::pane {
         border: 1px solid #1a2230;
-        border-radius: 6px;
+        border-radius: 0px;
         background-color: #0d0f13;
     }
 
@@ -54,16 +54,18 @@ def get_dark_stylesheet() -> str:
         background-color: #131720;
         color: #8f9aaa;
         padding: 8px 18px;
-        margin: 4px 2px;
+        margin: 0px 1px;
         border: 1px solid #242f42;
-        border-radius: 6px;
+        border-bottom: none;
+        border-radius: 0px;
         font-weight: bold;
     }
 
     QTabBar::tab:selected {
-        background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #1a2d37, stop:1 #13222b);
+        background-color: #1a2230;
         color: #62c7d8;
-        border-color: #62c7d8;
+        border-top: 3px solid #62c7d8;
+        border-bottom: none;
     }
 
     QTabBar::tab:hover {
@@ -74,7 +76,7 @@ def get_dark_stylesheet() -> str:
     QFrame.metric-card {
         background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
         border: 1px solid #20293a;
-        border-radius: 8px;
+        border-radius: 0px;
         padding: 12px;
     }
 
@@ -124,7 +126,7 @@ def get_dark_stylesheet() -> str:
         font-size: 18px;
         font-weight: bold;
         padding: 16px;
-        border-radius: 8px;
+        border-radius: 0px;
         border: 1px solid #225c34;
     }
 
@@ -134,7 +136,7 @@ def get_dark_stylesheet() -> str:
         font-size: 18px;
         font-weight: bold;
         padding: 16px;
-        border-radius: 8px;
+        border-radius: 0px;
         border: 1px solid #6d521d;
     }
 
@@ -144,7 +146,7 @@ def get_dark_stylesheet() -> str:
         font-size: 18px;
         font-weight: bold;
         padding: 16px;
-        border-radius: 8px;
+        border-radius: 0px;
         border: 1px solid #7c2227;
     }
 
@@ -154,7 +156,7 @@ def get_dark_stylesheet() -> str:
         font-size: 18px;
         font-weight: bold;
         padding: 16px;
-        border-radius: 8px;
+        border-radius: 0px;
         border: 1px solid #2b3648;
     }
 
@@ -163,7 +165,7 @@ def get_dark_stylesheet() -> str:
         color: #e6edf6;
         border: 1px solid #242f42;
         padding: 8px 16px;
-        border-radius: 6px;
+        border-radius: 0px;
         font-weight: bold;
     }
 
@@ -186,7 +188,7 @@ def get_dark_stylesheet() -> str:
         background-color: #1d343e;
         color: #e6edf6;
         border-color: #62c7d8;
-        border-radius: 6px;
+        border-radius: 0px;
     }
 
     QPushButton.primary:hover {
@@ -196,7 +198,7 @@ def get_dark_stylesheet() -> str:
     QTableWidget {
         background-color: #10141c;
         border: 1px solid #1a2230;
-        border-radius: 6px;
+        border-radius: 0px;
         gridline-color: #18202d;
         selection-background-color: #1a2d3e;
         selection-color: #e6edf6;
@@ -210,7 +212,7 @@ def get_dark_stylesheet() -> str:
         background-color: #131720;
         color: #e6edf6;
         border: 1px solid #242f42;
-        border-radius: 4px;
+        border-radius: 0px;
         padding: 2px 6px;
         margin: 2px;
     }
@@ -219,7 +221,7 @@ def get_dark_stylesheet() -> str:
         background-color: #131720;
         color: #e6edf6;
         border: 1px solid #242f42;
-        border-radius: 4px;
+        border-radius: 0px;
         padding: 2px 6px;
         margin: 2px;
     }
@@ -241,7 +243,7 @@ def get_dark_stylesheet() -> str:
     QTextEdit {
         background-color: #10141c;
         border: 1px solid #1a2230;
-        border-radius: 6px;
+        border-radius: 0px;
         padding: 8px;
         font-family: "Cascadia Mono", "Cascadia Code", "Consolas", monospace;
         font-size: 12px;
@@ -255,7 +257,7 @@ def get_dark_stylesheet() -> str:
 
     QScrollBar::handle:vertical {
         background-color: #242f42;
-        border-radius: 4px;
+        border-radius: 0px;
         min-height: 20px;
     }
 
@@ -275,7 +277,7 @@ def get_dark_stylesheet() -> str:
 
     QScrollBar::handle:horizontal {
         background-color: #242f42;
-        border-radius: 4px;
+        border-radius: 0px;
         min-width: 20px;
     }
 
@@ -291,7 +293,7 @@ def get_dark_stylesheet() -> str:
         background-color: #131720;
         color: #e6edf6;
         border: 1px solid #242f42;
-        border-radius: 6px;
+        border-radius: 0px;
         padding: 6px 10px;
     }
 
@@ -301,7 +303,7 @@ def get_dark_stylesheet() -> str:
 
     QGroupBox {
         border: 1px solid #1a2230;
-        border-radius: 8px;
+        border-radius: 0px;
         margin-top: 16px;
         padding-top: 20px;
         font-weight: bold;
@@ -325,7 +327,7 @@ def get_dark_stylesheet() -> str:
         background-color: #131720;
         color: #e6edf6;
         border: 1px solid #242f42;
-        border-radius: 6px;
+        border-radius: 0px;
         padding: 6px 10px;
     }
 
