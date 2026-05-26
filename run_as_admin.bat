@@ -2,11 +2,11 @@
 :: Losshound - Run as Administrator
 :: One-click launcher with elevated privileges
 
-:: Check if already running as admin
-net session >nul 2>&1
-if %errorlevel% == 0 (
-    goto :run
-)
+:: Reliable admin check via PowerShell IsInRole.
+:: NOTE: Do NOT use 'net session' here — it fails if the Server (LanmanServer)
+:: service is disabled, which makes the elevated relaunch loop forever.
+powershell -NoProfile -Command "if (([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 0 } else { exit 1 }"
+if %errorlevel% == 0 goto :run
 
 :: Request admin elevation
 echo Requesting administrator privileges...
