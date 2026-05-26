@@ -5,6 +5,7 @@ from datetime import datetime
 from losshound.core.lan_monitor import (
     get_local_network_info,
     get_subnet_ips,
+    is_lan_scoped_ip,
     lookup_vendor,
     resolve_hostname_safe,
     parse_arp_table,
@@ -68,14 +69,45 @@ def test_lookup_vendor():
     assert lookup_vendor("00-00-00-00-00-00") == "Unknown"
 
 
+def test_is_lan_scoped_ip():
+    assert is_lan_scoped_ip("192.168.1.1")
+    assert is_lan_scoped_ip("10.0.0.5")
+    assert is_lan_scoped_ip("172.16.4.20")
+    assert is_lan_scoped_ip("169.254.1.10")
+    assert not is_lan_scoped_ip("8.8.8.8")
+    assert not is_lan_scoped_ip("224.0.0.251")
+    assert not is_lan_scoped_ip("example.com")
+
+
 def test_resolve_hostname_safe():
-    with patch("socket.gethostbyaddr", return_value=("router.local", [], [])):
+    with patch("socket.gethostbyaddr") as reverse_dns, \
+         patch("losshound.core.lan_monitor.resolve_mdns_name", return_value="router.local"), \
+         patch("losshound.core.lan_monitor.resolve_llmnr_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_netbios_name", return_value=""):
         name = resolve_hostname_safe("192.168.1.1")
         assert name == "router.local"
+        reverse_dns.assert_not_called()
         
-    with patch("socket.gethostbyaddr", side_effect=Exception("Failed")):
+    with patch("socket.gethostbyaddr") as reverse_dns, \
+         patch("losshound.core.lan_monitor.resolve_mdns_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_llmnr_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_netbios_name", return_value=""):
         name = resolve_hostname_safe("192.168.1.99")
         assert name == ""
+        reverse_dns.assert_not_called()
+
+
+def test_resolve_hostname_safe_skips_public_reverse_dns():
+    with patch("socket.gethostbyaddr") as reverse_dns, \
+         patch("losshound.core.lan_monitor.resolve_mdns_name") as mdns, \
+         patch("losshound.core.lan_monitor.resolve_llmnr_name") as llmnr, \
+         patch("losshound.core.lan_monitor.resolve_netbios_name") as netbios:
+        name = resolve_hostname_safe("8.8.8.8")
+        assert name == ""
+        reverse_dns.assert_not_called()
+        mdns.assert_not_called()
+        llmnr.assert_not_called()
+        netbios.assert_not_called()
 
 
 def test_resolve_mdns_name():
@@ -128,7 +160,12 @@ def test_scan_local_network():
     mock_history.get_devices.return_value = []
     
     with patch("subprocess.run", side_effect=mock_subprocess_run), \
-         patch("socket.gethostbyaddr", return_value=("test-device", [], [])):
+         patch("socket.gethostbyaddr") as reverse_dns, \
+         patch("losshound.core.lan_monitor.resolve_mdns_name", return_value="test-device"), \
+         patch("losshound.core.lan_monitor.resolve_llmnr_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_netbios_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_http_title", return_value=""), \
+         patch("losshound.core.lan_monitor.scan_ssdp", return_value={}):
          
         devices = scan_local_network(mock_history)
         
@@ -136,6 +173,7 @@ def test_scan_local_network():
         assert devices[0]["mac_address"] == "1C-3B-F3-EA-BB-CC"
         assert devices[0]["vendor"] == "HP"
         assert devices[0]["hostname"] == "test-device"
+        reverse_dns.assert_not_called()
         
         # Verify db interaction
         assert mock_history.save_device.call_count == 2
@@ -154,6 +192,9 @@ def test_get_pid_to_process_name():
 
 
 def test_get_active_connections():
+    from losshound.core.local_monitor import _HOSTNAME_CACHE
+    _HOSTNAME_CACHE.clear()
+
     mock_tasklist = MagicMock()
     mock_tasklist.stdout = MOCK_TASKLIST_OUTPUT.encode("cp850")
     
@@ -168,7 +209,7 @@ def test_get_active_connections():
         return MagicMock()
         
     with patch("subprocess.run", side_effect=mock_subprocess_run), \
-         patch("socket.gethostbyaddr", return_value=("google.com", [], [])):
+         patch("socket.gethostbyaddr") as reverse_dns:
          
         conns = get_active_connections()
         
@@ -178,7 +219,8 @@ def test_get_active_connections():
         assert conns[0]["remote_ip"] == "142.250.74.46"
         assert conns[0]["remote_port"] == "443"
         assert conns[0]["state"] == "ESTABLISHED"
-        assert conns[0]["resolved_name"] == "google.com"
+        assert conns[0]["resolved_name"] == "142.250.74.46"
+        reverse_dns.assert_not_called()
 
 
 def test_scan_local_network_fallbacks():
@@ -200,8 +242,12 @@ def test_scan_local_network_fallbacks():
     mock_history.get_devices.return_value = []
     
     with patch("subprocess.run", side_effect=mock_subprocess_run), \
-         patch("socket.gethostbyaddr", side_effect=Exception("failed")), \
-         patch("losshound.core.lan_monitor.resolve_netbios_name", return_value=""):
+         patch("socket.gethostbyaddr") as reverse_dns, \
+         patch("losshound.core.lan_monitor.resolve_mdns_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_netbios_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_llmnr_name", return_value=""), \
+         patch("losshound.core.lan_monitor.resolve_http_title", return_value=""), \
+         patch("losshound.core.lan_monitor.scan_ssdp", return_value={}):
          
         devices = scan_local_network(mock_history)
         
@@ -209,4 +255,132 @@ def test_scan_local_network_fallbacks():
         # devices[1] has mac 04-D9-F5-12-34-56 (ASUS) -> should fall back to "ASUS Device"
         assert devices[0]["hostname"] == "HP Device"
         assert devices[1]["hostname"] == "ASUS Device"
+        reverse_dns.assert_not_called()
+
+
+def test_resolve_llmnr_name():
+    from losshound.core.lan_monitor import resolve_llmnr_name
+    
+    mock_socket = MagicMock()
+    # Simulating standard LLMNR DNS response: ID=0x1234, ANCOUNT=1, PTR record pointing to "win-pc"
+    mock_payload = b"\x12\x34\x84\x00\x00\x01\x00\x01\x00\x00\x00\x00"
+    mock_payload += b"\x03107\x011\x03168\x03192\x07in-addr\x04arpa\x00\x00\x0c\x00\x01"
+    mock_payload += b"\xc0\x0c\x00\x0c\x00\x01\x00\x00\x00\xff\x00\x08"
+    mock_payload += b"\x06win-pc\x00"
+    
+    mock_socket.recvfrom.return_value = (mock_payload, ("192.168.1.107", 5355))
+    
+    with patch("socket.socket", return_value=mock_socket):
+        name = resolve_llmnr_name("192.168.1.107")
+        assert name == "win-pc"
+
+
+def test_resolve_http_title():
+    from losshound.core.lan_monitor import resolve_http_title
+
+    mock_response = MagicMock()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.read.return_value = b"<html><head><TITLE>MalFormed\nRouter Title </TITLE></head></html>"
+
+    with patch("urllib.request.urlopen", return_value=mock_response):
+        title = resolve_http_title("192.168.1.1")
+        assert title == "MalFormed Router Title"
+
+
+def test_resolve_http_title_follows_meta_refresh():
+    """Routers often serve a meta-refresh stub at / -- we should follow it once."""
+    from losshound.core.lan_monitor import resolve_http_title
+
+    # First response: meta-refresh stub with no <title>
+    stub = MagicMock()
+    stub.__enter__.return_value = stub
+    stub.read.return_value = (
+        b'<html><head>'
+        b'<meta http-equiv="refresh" content="0; URL=/webpages/index.html" />'
+        b'</head></html>'
+    )
+
+    # Second response: the redirected page has a real title
+    real = MagicMock()
+    real.__enter__.return_value = real
+    real.read.return_value = b"<html><head><title>TP-Link Router</title></head></html>"
+
+    with patch("urllib.request.urlopen", side_effect=[stub, real]):
+        title = resolve_http_title("192.168.1.1")
+        assert title == "TP-Link Router"
+
+
+def test_resolve_http_title_meta_refresh_must_be_same_host():
+    """Don't follow meta-refresh to an external host (avoid being redirected to a public site)."""
+    from losshound.core.lan_monitor import resolve_http_title
+
+    stub = MagicMock()
+    stub.__enter__.return_value = stub
+    stub.read.return_value = (
+        b'<html><head>'
+        b'<meta http-equiv="refresh" content="0; URL=http://evil.example.com/" />'
+        b'</head></html>'
+    )
+
+    # If we accidentally follow it, urlopen would be called a second time;
+    # set side_effect to also return stub the second time so the test fails noisily
+    # if the redirect is followed.
+    with patch("urllib.request.urlopen", side_effect=[stub, stub, stub, stub]):
+        title = resolve_http_title("192.168.1.1")
+        assert title == ""
+
+
+def test_resolve_http_title_skips_public_ip():
+    from losshound.core.lan_monitor import resolve_http_title
+
+    with patch("urllib.request.urlopen") as urlopen:
+        assert resolve_http_title("8.8.8.8") == ""
+        urlopen.assert_not_called()
+
+
+def test_scan_ssdp():
+    import socket
+    from losshound.core.lan_monitor import scan_ssdp
+    
+    mock_socket = MagicMock()
+    # Simple SSDP M-SEARCH response packet with LOCATION header
+    mock_response_pkt = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"LOCATION: http://192.168.1.190:8008/device-desc.xml\r\n"
+        b"ST: ssdp:all\r\n\r\n"
+    )
+    mock_socket.recvfrom.side_effect = [
+        (mock_response_pkt, ("192.168.1.190", 1900)),
+        socket.timeout("timeout")
+    ]
+    
+    mock_xml_response = MagicMock()
+    mock_xml_response.__enter__.return_value = mock_xml_response
+    mock_xml_response.read.return_value = b"<device><friendlyName>Google Nest Mini</friendlyName></device>"
+    
+    with patch("socket.socket", return_value=mock_socket), \
+         patch("urllib.request.urlopen", return_value=mock_xml_response):
+        names = scan_ssdp()
+        assert names.get("192.168.1.190") == "Google Nest Mini"
+
+
+def test_scan_ssdp_ignores_public_location():
+    import socket
+    from losshound.core.lan_monitor import scan_ssdp
+
+    mock_socket = MagicMock()
+    mock_response_pkt = (
+        b"HTTP/1.1 200 OK\r\n"
+        b"LOCATION: http://8.8.8.8/device-desc.xml\r\n"
+        b"ST: ssdp:all\r\n\r\n"
+    )
+    mock_socket.recvfrom.side_effect = [
+        (mock_response_pkt, ("192.168.1.190", 1900)),
+        socket.timeout("timeout")
+    ]
+
+    with patch("socket.socket", return_value=mock_socket), \
+         patch("urllib.request.urlopen") as urlopen:
+        assert scan_ssdp() == {}
+        urlopen.assert_not_called()
 

@@ -1,14 +1,43 @@
 from __future__ import annotations
 
 import logging
+import ipaddress
 import re
 import socket
 import subprocess
+import ssl
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from html.parser import HTMLParser
 from typing import Optional, List, Dict
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
+
+
+def is_lan_scoped_ip(value: str) -> bool:
+    """Return True only for IP literals that should never require internet routing."""
+    try:
+        addr = ipaddress.ip_address(value.strip("[]"))
+    except ValueError:
+        return False
+
+    if addr.is_multicast or addr.is_unspecified:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
+
+
+def is_lan_scoped_url(url: str) -> bool:
+    """Allow only HTTP(S) URLs whose host is a local IP literal, avoiding DNS lookups."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return False
+
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return False
+    return is_lan_scoped_ip(parsed.hostname)
 
 # Expanded local OUI dictionary for popular manufacturers. Completely offline.
 _OUI_DB = {
@@ -655,25 +684,266 @@ def resolve_netbios_name(ip: str) -> str:
     return ""
 
 
-def resolve_hostname_safe(ip: str) -> str:
-    """Resolve IP to hostname using socket DNS, mDNS fallback, then NetBIOS fallback."""
-    original_timeout = socket.getdefaulttimeout()
+def resolve_llmnr_name(ip: str) -> str:
+    """Query link-local LLMNR multicast (224.0.0.252:5355) to fetch the real device name."""
+    parts = ip.split(".")
+    if len(parts) != 4:
+        return ""
+        
+    rev_name = f"{parts[3]}.{parts[2]}.{parts[1]}.{parts[0]}.in-addr.arpa"
+    
+    # Standard LLMNR Header: ID=0x1234, Flags=0, QDCount=1, ANCount=0, NSCount=0, ARCount=0
+    header = b"\x12\x34\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    
+    query = b""
+    for part in rev_name.split("."):
+        query += bytes([len(part)]) + part.encode("ascii")
+    query += b"\x00"
+    query += b"\x00\x0c\x00\x01"  # Type: PTR (12), Class: IN (1)
+    
+    packet = header + query
+    sock = None
     try:
-        socket.setdefaulttimeout(1.0)
-        hostname, _, _ = socket.gethostbyaddr(ip)
-        if hostname:
-            return hostname
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.4)
+        sock.sendto(packet, ("224.0.0.252", 5355))
+
+        # Read matching response (try up to 3 responses)
+        for _ in range(3):
+            data, _ = sock.recvfrom(1500)
+            if len(data) < 12:
+                continue
+
+            # Verify response ID matches our query (0x1234) to avoid stray LLMNR traffic
+            if data[0] != 0x12 or data[1] != 0x34:
+                continue
+
+            qdcount = (data[4] << 8) | data[5]
+            ancount = (data[6] << 8) | data[7]
+
+            if ancount == 0:
+                continue
+                
+            offset = 12
+            for _ in range(qdcount):
+                _, offset = decode_dns_name(data, offset)
+                offset += 4  # Skip Type & Class
+                
+            for _ in range(ancount):
+                if offset >= len(data):
+                    break
+                _, offset = decode_dns_name(data, offset)
+                if offset + 10 > len(data):
+                    break
+                ans_type = (data[offset] << 8) | data[offset+1]
+                rdlength = (data[offset+8] << 8) | data[offset+9]
+                offset += 10
+                
+                if offset + rdlength > len(data):
+                    break
+                    
+                if ans_type == 12:  # PTR Record type
+                    host, _ = decode_dns_name(data, offset)
+                    if host:
+                        return host
+                offset += rdlength
     except Exception:
         pass
     finally:
-        socket.setdefaulttimeout(original_timeout)
+        if sock:
+            sock.close()
+
+    return ""
+
+
+class TitleParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.title_parts = []
+        self.in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() == "title":
+            self.in_title = True
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.title_parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() == "title":
+            self.in_title = False
+
+
+_META_REFRESH_RE = re.compile(
+    r'<meta\s+[^>]*http-equiv\s*=\s*["\']?refresh["\']?[^>]*content\s*=\s*["\'][^"\']*url\s*=\s*([^"\'>\s]+)',
+    re.IGNORECASE,
+)
+
+
+def _extract_title(html: str) -> str:
+    parser = TitleParser()
+    try:
+        parser.feed(html)
+    except Exception:
+        return ""
+    title = "".join(parser.title_parts).strip()
+    return " ".join(title.split()) if title else ""
+
+
+def _fetch_html(url: str, ctx) -> str:
+    req = urllib.request.Request(url, headers={'User-Agent': 'Losshound/1.0'})
+    with urllib.request.urlopen(req, timeout=1.5, context=ctx) as response:
+        html_bytes = response.read()
+    try:
+        return html_bytes.decode("utf-8")
+    except Exception:
+        return html_bytes.decode("cp850", errors="ignore")
+
+
+def resolve_http_title(ip: str) -> str:
+    """Fetch HTTP/HTTPS root, extract <title>, follow one meta-refresh hop if root has none.
+
+    Many routers serve a tiny meta-refresh stub at / that redirects to the real
+    UI page; following that redirect once lets us pick up a real title instead
+    of falling back to a vendor label.
+    """
+    if not is_lan_scoped_ip(ip):
+        return ""
+
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+
+    for proto in ["http", "https"]:
+        try:
+            base_url = f"{proto}://{ip}/"
+            html = _fetch_html(base_url, ctx)
+        except Exception:
+            continue
+
+        title = _extract_title(html)
+        if title:
+            return title
+
+        # Root had no <title>; follow at most one same-host meta-refresh hop.
+        match = _META_REFRESH_RE.search(html)
+        if not match:
+            continue
+
+        target = match.group(1).strip().strip('"\'')
+        # Only follow same-host paths to avoid being redirected to a public site.
+        try:
+            from urllib.parse import urljoin, urlparse
+            absolute = urljoin(base_url, target)
+            parsed = urlparse(absolute)
+            if parsed.hostname != ip:
+                continue
+            html2 = _fetch_html(absolute, ctx)
+        except Exception:
+            continue
+
+        title2 = _extract_title(html2)
+        if title2:
+            return title2
+
+    return ""
+
+
+def scan_ssdp() -> Dict[str, str]:
+    """Broadcast SSDP M-SEARCH and fetch only LAN-scoped location XML friendly names."""
+    ip_to_name = {}
+    
+    query = (
+        "M-SEARCH * HTTP/1.1\r\n"
+        "HOST: 239.255.255.250:1900\r\n"
+        "MAN: \"ssdp:discover\"\r\n"
+        "MX: 1\r\n"
+        "ST: ssdp:all\r\n"
+        "\r\n"
+    )
+    
+    sock = None
+    locations = {}  # ip -> xml_url
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(1.0)
+        sock.sendto(query.encode("ascii"), ("239.255.255.250", 1900))
+
+        for _ in range(50):
+            try:
+                data, addr = sock.recvfrom(2048)
+            except socket.timeout:
+                break
+            except Exception:
+                # Skip malformed packet from one device, keep scanning others
+                continue
+
+            try:
+                ip = addr[0]
+                text = data.decode("utf-8", errors="ignore")
+
+                loc_match = re.search(r"LOCATION:\s*([^\r\n]+)", text, re.IGNORECASE)
+                if loc_match:
+                    url = loc_match.group(1).strip()
+                    if is_lan_scoped_url(url):
+                        locations[ip] = url
+            except Exception:
+                continue
+    except Exception:
+        pass
+    finally:
+        if sock:
+            sock.close()
+            
+    if locations:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
         
-    # mDNS fallback
+        def fetch_friendly_name(ip_url_tuple):
+            ip, url = ip_url_tuple
+            try:
+                req = urllib.request.Request(url, headers={'User-Agent': 'Losshound/1.0'})
+                with urllib.request.urlopen(req, timeout=0.6, context=ctx) as response:
+                    xml = response.read().decode("utf-8", errors="ignore")
+                    
+                    fn_match = re.search(r"<friendlyName>([^<]+)</friendlyName>", xml, re.IGNORECASE)
+                    if fn_match:
+                        return ip, fn_match.group(1).strip()
+                        
+                    mn_match = re.search(r"<modelName>([^<]+)</modelName>", xml, re.IGNORECASE)
+                    if mn_match:
+                        return ip, mn_match.group(1).strip()
+            except Exception:
+                pass
+            return ip, None
+            
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            results = executor.map(fetch_friendly_name, locations.items())
+            for ip, name in results:
+                if name:
+                    ip_to_name[ip] = name
+                    
+    return ip_to_name
+
+
+def resolve_hostname_safe(ip: str) -> str:
+    """Resolve IP to hostname using LAN-only mDNS, LLMNR, then NetBIOS probes."""
+    if not is_lan_scoped_ip(ip):
+        return ""
+
+    # mDNS
     mdns_name = resolve_mdns_name(ip)
     if mdns_name:
         return mdns_name
         
-    # NetBIOS fallback
+    # LLMNR
+    llmnr_name = resolve_llmnr_name(ip)
+    if llmnr_name:
+        return llmnr_name
+        
+    # NetBIOS
     nb_name = resolve_netbios_name(ip)
     if nb_name:
         return nb_name
@@ -732,23 +1002,41 @@ def scan_local_network(history_store=None) -> List[Dict[str, str]]:
         
     logger.info("Starting LAN scan on interface: %s", local_ip)
     
-    # Sweep subnet to refresh ARP cache
+    # Sweep subnet and run SSDP discovery concurrently
     ips = get_subnet_ips(local_ip)
-    run_ping_sweep(ips)
     
+    ssdp_names = {}
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        sweep_future = executor.submit(run_ping_sweep, ips)
+        ssdp_future = executor.submit(scan_ssdp)
+        
+        sweep_future.result()
+        try:
+            ssdp_names = ssdp_future.result()
+        except Exception as exc:
+            logger.warning("SSDP scan failed during sweep: %s", exc)
+            
     # Parse ARP cache
     raw_devices = parse_arp_table(local_ip)
     
     # Resolve details in parallel
-    devices = []
-    
     def resolve_device_details(dev: Dict[str, str]) -> Dict[str, str]:
         ip = dev["ip"]
         mac = dev["mac"]
         vendor = lookup_vendor(mac)
-        hostname = resolve_hostname_safe(ip)
         
-        # Fall back to vendor name if no network hostname is registered
+        # Priority 1: SSDP Friendly Name
+        hostname = ssdp_names.get(ip, "")
+        
+        # Priority 2: DNS / mDNS / LLMNR / NetBIOS hostname
+        if not hostname:
+            hostname = resolve_hostname_safe(ip)
+            
+        # Priority 3: HTTP page title
+        if not hostname:
+            hostname = resolve_http_title(ip)
+            
+        # Priority 4: Fallback to vendor or generic label
         if not hostname:
             if vendor and vendor != "Unknown":
                 hostname = f"{vendor} Device"
