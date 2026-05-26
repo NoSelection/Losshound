@@ -28,7 +28,8 @@ class LanScanWorker(QThread):
     def run(self):
         try:
             from losshound.core.lan_monitor import scan_local_network
-            devices = scan_local_network(self._history)
+            thread_safe_history = HistoryStore(self._history._db_path)
+            devices = scan_local_network(thread_safe_history)
             self.scan_complete.emit(devices)
         except Exception as exc:
             logger.exception("LAN Scan worker failed")
@@ -111,6 +112,7 @@ class LANTab(QWidget):
         ])
         self._devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._devices_table.verticalHeader().setVisible(False)
+        self._devices_table.verticalHeader().setDefaultSectionSize(36)
         # Only the Hostname column is editable (per-cell flag controls actual edit permission)
         self._devices_table.setEditTriggers(
             QTableWidget.EditTrigger.DoubleClicked | QTableWidget.EditTrigger.EditKeyPressed
@@ -148,6 +150,7 @@ class LANTab(QWidget):
         ])
         self._conn_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._conn_table.verticalHeader().setVisible(False)
+        self._conn_table.verticalHeader().setDefaultSectionSize(36)
         self._conn_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._conn_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         connections_layout.addWidget(self._conn_table)

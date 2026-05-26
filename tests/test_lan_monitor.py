@@ -209,7 +209,7 @@ def test_get_active_connections():
         return MagicMock()
         
     with patch("subprocess.run", side_effect=mock_subprocess_run), \
-         patch("socket.gethostbyaddr") as reverse_dns:
+         patch("socket.gethostbyaddr", return_value=("google.com", [], [])) as reverse_dns:
          
         conns = get_active_connections()
         
@@ -219,8 +219,8 @@ def test_get_active_connections():
         assert conns[0]["remote_ip"] == "142.250.74.46"
         assert conns[0]["remote_port"] == "443"
         assert conns[0]["state"] == "ESTABLISHED"
-        assert conns[0]["resolved_name"] == "142.250.74.46"
-        reverse_dns.assert_not_called()
+        assert conns[0]["resolved_name"] == "google.com"
+        reverse_dns.assert_called_once()
 
 
 def test_scan_local_network_fallbacks():

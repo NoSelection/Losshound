@@ -216,7 +216,8 @@ class MonitorThread(QThread):
         self._worker: Optional[MonitorWorker] = None
 
     def run(self):
-        self._worker = MonitorWorker(self._config, self._history)
+        thread_safe_history = HistoryStore(self._history._db_path)
+        self._worker = MonitorWorker(self._config, thread_safe_history)
         self._worker.observation_ready.connect(self.observation_ready.emit)
         self._worker.diagnosis_ready.connect(self.diagnosis_ready.emit)
         self._worker.error_occurred.connect(self.error_occurred.emit)

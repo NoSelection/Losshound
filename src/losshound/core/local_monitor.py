@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import StringIO
 from typing import List, Dict, Set
 
-from losshound.core.lan_monitor import run_command_resilient, resolve_hostname_safe
+from losshound.core.lan_monitor import run_command_resilient, resolve_hostname_safe, is_lan_scoped_ip
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,25 @@ socket.setdefaulttimeout(1.0)
 
 # Local hostname cache to avoid repeated slow lookups
 _HOSTNAME_CACHE: Dict[str, str] = {}
+
+
+def resolve_connection_hostname(ip: str) -> str:
+    """Resolve IP address to name. If LAN-scoped, use LAN local resolution. Otherwise, use public DNS reverse lookup."""
+    if is_lan_scoped_ip(ip):
+        return resolve_hostname_safe(ip)
+        
+    # Public IP: do standard DNS reverse lookup
+    original_timeout = socket.getdefaulttimeout()
+    try:
+        socket.setdefaulttimeout(1.0)
+        hostname, _, _ = socket.gethostbyaddr(ip)
+        if hostname:
+            return hostname
+    except Exception:
+        pass
+    finally:
+        socket.setdefaulttimeout(original_timeout)
+    return ""
 
 
 def get_pid_to_process_name() -> Dict[int, str]:
@@ -112,7 +131,7 @@ def get_active_connections() -> List[Dict[str, str]]:
     if unique_ips:
         with ThreadPoolExecutor(max_workers=10) as executor:
             # map remote IPs to lookup function
-            results = list(executor.map(resolve_hostname_safe, unique_ips))
+            results = list(executor.map(resolve_connection_hostname, unique_ips))
             for ip, name in zip(unique_ips, results):
                 _HOSTNAME_CACHE[ip] = name if name else ip
                 

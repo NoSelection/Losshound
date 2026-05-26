@@ -136,6 +136,15 @@ _BACKUP_DIR = Path(
 _BACKUP_FILE = _BACKUP_DIR / "optimizer_backup.json"
 
 
+def _sanitize_adapter_name(name: str) -> str:
+    """Sanitize the network adapter name to prevent command injection."""
+    # Allow alphanumeric, spaces, hyphens, underscores, parentheses, brackets, braces, dots, and plus signs
+    if re.match(r"^[a-zA-Z0-9_\-\s\(\)\[\]\.\{\}\+]+$", name):
+        return name
+    # Clean if not matching: strip double quotes and shell control characters
+    return re.sub(r'["&|;<>]', '', name)
+
+
 def _run(
     cmd: str | list[str],
     *,
@@ -618,7 +627,7 @@ class NetworkOptimizer:
             )
             ip_addr = ip_result.stdout.strip().splitlines()[0] if ip_result.stdout.strip() else ""
             return AdapterInfo(
-                name=data.get("Name", ""),
+                name=_sanitize_adapter_name(data.get("Name", "")),
                 interface_index=int(data.get("InterfaceIndex", 0)),
                 ip_address=ip_addr,
                 mac_address=data.get("MacAddress", ""),
@@ -647,7 +656,7 @@ class NetworkOptimizer:
             )
             name = result.stdout.strip()
             if name:
-                return name
+                return _sanitize_adapter_name(name)
         except Exception:
             pass
 
@@ -660,7 +669,7 @@ class NetworkOptimizer:
                 if "Connected" in line:
                     parts = line.split()
                     if len(parts) >= 4:
-                        return " ".join(parts[3:])
+                        return _sanitize_adapter_name(" ".join(parts[3:]))
         except Exception:
             pass
         return "Ethernet"
@@ -1540,7 +1549,7 @@ class NetworkOptimizer:
 
         # --- Adapter power management ---
         if backup.adapter and backup.adapter.name:
-            adapter_name = backup.adapter.name
+            adapter_name = _sanitize_adapter_name(backup.adapter.name)
 
             if backup.adapter.power_management_enabled is True:
                 pm_cmd = (

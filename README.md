@@ -17,6 +17,15 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 - **Local storage** — SQLite-based history with automatic pruning
 - **No telemetry** — fully offline, no data collection
 
+### LAN Monitor & Connection Tracking
+- **Offline Subnet Scanning:** Discovers active devices on your local network completely offline with zero telemetry or remote API calls.
+- **Multicast & Link-Local Hostname Resolution:** Resolves device names using mDNS, LLMNR, NetBIOS node status queries, and vendor OUI dictionary mappings.
+- **SSDP/UPnP friendlyName Extraction:** Discovers smart home and IoT devices (like Google Nest, Chromecast, or printers) and pulls their human-readable friendly names.
+- **HTTP Homepage Title Resolution:** Queries local router and hardware homepages (ports 80/443), following same-host meta-refresh redirects to extract admin page titles.
+- **Manual Hostname Customization:** Allows double-clicking any device hostname in the table to set a persistent custom label.
+- **Active Connection Tracker:** Maps local process IDs (PIDs) to active network sockets (TCP/UDP) using backgrounded `netstat` and `tasklist` sweeps.
+- **Dynamic Firewall Helper:** Automatically configures and scopes a narrow inbound Windows Firewall rule to allow multicast name resolution replies for the running executable.
+
 ### Network Optimizer
 - **One-click optimization** — automatically tune your Windows network stack
 - **DNS benchmark** — test 14 public DNS servers, auto-switch to the fastest
@@ -186,7 +195,10 @@ src/losshound/
 │   ├── diagnosis.py       # Rule-based diagnosis engine
 │   ├── dns_checks.py      # DNS resolution testing
 │   ├── dns_bench.py       # Raw UDP DNS server benchmarking
+│   ├── firewall.py        # Scoped Windows Firewall rule manager
 │   ├── gateway.py         # Default gateway detection
+│   ├── lan_monitor.py     # Subnet scan, mDNS, LLMNR, SSDP, HTTP resolver
+│   ├── local_monitor.py   # Connection tracker (tasklist & netstat)
 │   ├── logger.py          # Logging setup
 │   ├── models.py          # Data models (dataclasses)
 │   ├── optimizer.py       # Network performance optimizer
@@ -202,6 +214,7 @@ src/losshound/
 │   ├── dashboard.py       # Dashboard tab
 │   ├── history_tab.py     # History/events tab
 │   ├── route_tab.py       # Route details tab
+│   ├── lan_tab.py         # LAN Monitor tab
 │   ├── optimizer_tab.py   # Network optimizer tab
 │   ├── settings_tab.py    # Settings tab
 │   ├── export_tab.py      # Export/report tab
@@ -275,12 +288,12 @@ All data is stored locally:
 
 ## Known limitations
 
-- Windows only (uses Windows-specific tools: ping, tracert, ipconfig, netsh)
-- Ping and tracert output parsing assumes English locale (forces codepage 437)
+- Windows only (uses Windows-specific tools: ping, tracert, ipconfig, netstat, tasklist)
+- CLI tool outputs are parsed with resilient OEM code page fallback to prevent crashes on non-English Windows locales
 - Tracert checks are slow (30-90 seconds) and run on a longer interval
 - VPN connections may confuse gateway detection
 - No IPv6 support currently
-- Some optimizer features require Administrator privileges
+- Some optimizer and firewall features require Administrator privileges
 
 ## Contributing
 

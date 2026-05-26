@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -104,6 +105,25 @@ def apply_rule(rule: QosRule) -> QosResult:
             message="Administrator privileges required to create QoS policies",
         )
 
+    # Validate rule name against command injection/LPE
+    if not re.match(r"^[a-zA-Z0-9_\-\s]{1,64}$", rule.name):
+        return QosResult(
+            rule_name=rule.name,
+            success=False,
+            action="failed",
+            message="Invalid rule name: only alphanumeric, spaces, hyphens, and underscores allowed",
+        )
+
+    # Extract just the exe name from full path and validate
+    app_name = Path(rule.app_path).name if "\\" in rule.app_path or "/" in rule.app_path else rule.app_path
+    if not re.match(r"^[a-zA-Z0-9_\-\s\.]+$", app_name) or "'" in app_name or ";" in app_name:
+        return QosResult(
+            rule_name=rule.name,
+            success=False,
+            action="failed",
+            message="Invalid application path or name",
+        )
+
     policy_name = f"Losshound_{rule.name}"
 
     # Remove existing policy with same name first
@@ -112,9 +132,6 @@ def apply_rule(rule: QosRule) -> QosResult:
         f"Remove-NetQosPolicy -Name '{policy_name}' -Confirm:$false "
         f"-ErrorAction SilentlyContinue",
     ])
-
-    # Extract just the exe name from full path
-    app_name = Path(rule.app_path).name if "\\" in rule.app_path or "/" in rule.app_path else rule.app_path
 
     # Create new policy
     proc = _run([
@@ -151,6 +168,15 @@ def remove_rule(rule_name: str) -> QosResult:
             success=False,
             action="failed",
             message="Administrator privileges required",
+        )
+
+    # Validate rule name against command injection/LPE
+    if not re.match(r"^[a-zA-Z0-9_\-\s]{1,64}$", rule_name):
+        return QosResult(
+            rule_name=rule_name,
+            success=False,
+            action="failed",
+            message="Invalid rule name",
         )
 
     policy_name = f"Losshound_{rule_name}"
