@@ -5,7 +5,7 @@ import logging
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
-    QApplication, QLabel, QMainWindow, QStatusBar, QTabWidget,
+    QApplication, QMainWindow, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -25,8 +25,9 @@ from losshound.gui.tray import TrayIcon
 from losshound.gui.wifi_tab import WifiTab
 from losshound.gui.lan_tab import LANTab
 from losshound.gui.branding import app_icon
+from losshound.gui.painted import LosshoundTabBar
 from losshound.gui.theme import get_dark_stylesheet
-from losshound.gui.widgets import BrandHeader
+from losshound.gui.widgets import LosshoundHeader, MonitorStatusBar
 from losshound.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
@@ -38,11 +39,12 @@ class MainWindow(QMainWindow):
         self._config = config
         self._history = HistoryStore()
         self._really_quit = False
+        self._paused = False
 
         self.setWindowTitle("Losshound — Network Diagnosis")
         self.setWindowIcon(app_icon())
-        self.setMinimumSize(1000, 600)
-        self.resize(1040, 680)
+        self.setMinimumSize(1200, 720)
+        self.resize(1480, 880)
         self.setStyleSheet(get_dark_stylesheet())
 
         # Central widget with tabs
@@ -52,10 +54,16 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._brand_header = BrandHeader()
-        layout.addWidget(self._brand_header)
+        # Top brand rail
+        self._header = LosshoundHeader()
+        self._header.pause_clicked.connect(self._toggle_pause)
+        self._header.run_now_clicked.connect(self._run_now)
+        self._header.settings_clicked.connect(self._open_settings)
+        layout.addWidget(self._header)
 
         self._tabs = QTabWidget()
+        self._tabs.setTabBar(LosshoundTabBar(self._tabs))
+        self._tabs.setDocumentMode(True)
         layout.addWidget(self._tabs)
 
         # Create tabs
@@ -83,13 +91,13 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._export_tab, "Export")
 
-        # Status bar
-        self._status_bar = QStatusBar()
-        self.setStatusBar(self._status_bar)
-        self._status_label = QLabel("Starting up...")
-        self._status_bar.addWidget(self._status_label)
-        self._countdown_label = QLabel("")
-        self._status_bar.addPermanentWidget(self._countdown_label)
+        # Custom monitor status bar
+        self._status_bar = MonitorStatusBar()
+        layout.addWidget(self._status_bar)
+        self._status_bar.set_interval(config.ping_interval_seconds)
+        self._status_bar.set_targets(len(getattr(config, "public_ping_targets", [])))
+        self._status_bar.set_threads(1)
+        self._status_bar.set_monitoring(True)
 
         # Countdown timer
         self._seconds_until_next = config.ping_interval_seconds
@@ -112,16 +120,22 @@ class MainWindow(QMainWindow):
 
         # Start the monitor thread
         self._monitor = MonitorThread(config, self._history)
-        self._monitor.observation_ready.connect(self._on_observation)
-        self._monitor.diagnosis_ready.connect(self._on_diagnosis)
-        self._monitor.error_occurred.connect(self._on_error)
+        self._wire_monitor(self._monitor)
         self._monitor.start()
+
+    # ------------------------------------------------------------- Monitoring
+
+    def _wire_monitor(self, monitor: MonitorThread) -> None:
+        monitor.observation_ready.connect(self._on_observation)
+        monitor.diagnosis_ready.connect(self._on_diagnosis)
+        monitor.error_occurred.connect(self._on_error)
 
     def _on_observation(self, obs: Observation):
         self._dashboard.update_observation(obs)
+        self._dashboard.update_route(obs)
         self._route_tab.update_route(obs)
         self._tray.update_observation(obs)
-        self._status_label.setText(
+        self._status_bar.set_status_text(
             f"Last check: {obs.timestamp.strftime('%H:%M:%S')}"
         )
         self._seconds_until_next = self._config.ping_interval_seconds
@@ -136,7 +150,7 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, msg: str):
         logger.error("Monitor error: %s", msg)
-        self._status_label.setText(f"Error: {msg[:60]}")
+        self._status_bar.set_status_text(f"Error: {msg[:60]}")
 
     def _on_config_changed(self, config: AppConfig):
         self._config = config
@@ -144,10 +158,56 @@ class MainWindow(QMainWindow):
         self._alert_engine.update_config(config.alerts)
         self._notification_dispatcher.update_config(config.alerts)
         self._seconds_until_next = config.ping_interval_seconds
+        self._status_bar.set_interval(config.ping_interval_seconds)
+        self._status_bar.set_targets(len(getattr(config, "public_ping_targets", [])))
 
     def _tick_countdown(self):
+        if self._paused:
+            self._status_bar.set_countdown(0)
+            return
         self._seconds_until_next = max(0, self._seconds_until_next - 1)
-        self._countdown_label.setText(f"Next check in {self._seconds_until_next}s")
+        self._status_bar.set_countdown(self._seconds_until_next)
+
+    # ----------------------------------------------------------- Header actions
+
+    def _toggle_pause(self) -> None:
+        if self._paused:
+            # Resume — recreate the monitor thread.
+            self._monitor = MonitorThread(self._config, self._history)
+            self._wire_monitor(self._monitor)
+            self._monitor.start()
+            self._paused = False
+            self._header.set_paused(False)
+            self._status_bar.set_monitoring(True)
+            self._status_bar.set_status_text("Monitoring resumed")
+        else:
+            # Pause — stop the monitor thread.
+            try:
+                self._monitor.stop()
+            except Exception:
+                logger.exception("Error stopping monitor for pause")
+            self._paused = True
+            self._header.set_paused(True)
+            self._status_bar.set_monitoring(False)
+            self._status_bar.set_status_text("Monitoring paused")
+
+    def _run_now(self) -> None:
+        # We don't have a scheduler API for immediate runs; surface a
+        # status acknowledgement and rewind the countdown so the next
+        # tick fires immediately if we're not paused.
+        if self._paused:
+            self._status_bar.set_status_text("Resume monitoring first")
+            return
+        self._seconds_until_next = 1
+        self._status_bar.set_status_text("Run-now requested")
+
+    def _open_settings(self) -> None:
+        for i in range(self._tabs.count()):
+            if self._tabs.widget(i) is self._settings_tab:
+                self._tabs.setCurrentIndex(i)
+                return
+
+    # ------------------------------------------------------------- Tray hooks
 
     def _show_from_tray(self):
         self.showNormal()
@@ -157,10 +217,11 @@ class MainWindow(QMainWindow):
         self._really_quit = True
         self.close()
 
+    # ----------------------------------------------------------- Lifecycle
+
     def closeEvent(self, event: QCloseEvent):
         close_to_tray = getattr(self._config, "close_to_tray", False)
         if not self._really_quit and close_to_tray and self._tray.isVisible():
-            # Minimize to tray instead of closing
             self.hide()
             self._tray.showMessage(
                 "Losshound",
@@ -171,36 +232,25 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
 
-        # Real quit: stop everything, then ask the app to exit. The
-        # remaining cleanup is idempotent and also runs via aboutToQuit.
         self.shutdown_all()
         event.accept()
         QApplication.instance().quit()
 
     def shutdown_all(self):
-        """Stop every worker, thread, and timer this window owns.
-
-        Safe to call multiple times — also wired to QApplication.aboutToQuit
-        so a hard quit still flushes resources.
-        """
         if getattr(self, "_shutdown_done", False):
             return
         self._shutdown_done = True
 
-        # Stop the countdown timer first so nothing tries to update widgets
-        # while we're tearing things down.
         try:
             self._countdown_timer.stop()
         except Exception:
             pass
 
-        # Hide tray so its menu can't fire signals during teardown.
         try:
             self._tray.hide()
         except Exception:
             pass
 
-        # Stop every tab that exposes a shutdown() hook.
         tab_attrs = (
             "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",
             "_drop_tab", "_export_tab", "_lan_tab",
@@ -216,8 +266,6 @@ class MainWindow(QMainWindow):
                 except Exception:
                     logger.exception("Error shutting down %s", name)
 
-        # Stop the monitor thread last — it holds the longest-running
-        # subprocesses (tracert).
         try:
             self._monitor.stop()
         except Exception:
