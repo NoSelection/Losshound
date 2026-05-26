@@ -23,6 +23,7 @@ from losshound.gui.score_tab import ScoreTab
 from losshound.gui.settings_tab import SettingsTab
 from losshound.gui.tray import TrayIcon
 from losshound.gui.wifi_tab import WifiTab
+from losshound.gui.lan_tab import LANTab
 from losshound.gui.branding import app_icon
 from losshound.gui.theme import get_dark_stylesheet
 from losshound.gui.widgets import BrandHeader
@@ -68,6 +69,7 @@ class MainWindow(QMainWindow):
         self._wifi_tab = WifiTab()
         self._drop_tab = DropTab()
         self._qos_tab = QosTab()
+        self._lan_tab = LANTab(self._history)
 
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._history_tab, "History")
@@ -76,6 +78,7 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._qos_tab, "QoS")
         self._tabs.addTab(self._score_tab, "Score")
         self._tabs.addTab(self._wifi_tab, "WiFi")
+        self._tabs.addTab(self._lan_tab, "LAN Monitor")
         self._tabs.addTab(self._drop_tab, "Drops")
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._export_tab, "Export")
@@ -200,7 +203,7 @@ class MainWindow(QMainWindow):
         # Stop every tab that exposes a shutdown() hook.
         tab_attrs = (
             "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",
-            "_drop_tab", "_export_tab",
+            "_drop_tab", "_export_tab", "_lan_tab",
         )
         for name in tab_attrs:
             tab = getattr(self, name, None)

@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+import logging
+from PySide6.QtCore import QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QComboBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
+    QProgressBar, QPushButton, QSplitter, QTableWidget,
+    QTableWidgetItem, QVBoxLayout, QWidget, QGroupBox,
+)
+
+from losshound.core.lan_monitor import lookup_vendor
+from losshound.core.local_monitor import get_active_connections
+from losshound.storage.history import HistoryStore
+
+logger = logging.getLogger(__name__)
+
+
+class LanScanWorker(QThread):
+    """Background worker for LAN subnet discovery sweep to prevent GUI lag."""
+    scan_complete = Signal(list)
+
+    def __init__(self, history: HistoryStore):
+        super().__init__()
+        self._history = history
+
+    def run(self):
+        try:
+            from losshound.core.lan_monitor import scan_local_network
+            devices = scan_local_network(self._history)
+            self.scan_complete.emit(devices)
+        except Exception as exc:
+            logger.exception("LAN Scan worker failed")
+            self.scan_complete.emit([])
+
+
+class LANTab(QWidget):
+    def __init__(self, history: HistoryStore, parent=None):
+        super().__init__(parent)
+        self._history = history
+        self._scan_in_progress = False
+
+        # Main Layout
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(16, 16, 16, 16)
+        main_layout.setSpacing(12)
+
+        # Splitter to allow resizing of top and bottom sections
+        splitter = QSplitter(Qt.Orientation.Vertical)
+        main_layout.addWidget(splitter)
+
+        # -------------------------------------------------------------
+        # Section 1: Connected Devices (LAN)
+        # -------------------------------------------------------------
+        devices_box = QGroupBox("Connected Devices (LAN)")
+        devices_layout = QVBoxLayout(devices_box)
+        devices_layout.setContentsMargins(12, 16, 12, 12)
+        devices_layout.setSpacing(10)
+
+        # Controls Row
+        controls_layout = QHBoxLayout()
+        self._scan_btn = QPushButton("Scan Now")
+        self._scan_btn.clicked.connect(self._start_scan)
+        controls_layout.addWidget(self._scan_btn)
+
+        self._progress = QProgressBar()
+        self._progress.setRange(0, 0)  # Indeterminate loading bar
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(12)
+        self._progress.setVisible(False)
+        controls_layout.addWidget(self._progress)
+
+        self._status_label = QLabel("Click Scan to search for local devices.")
+        self._status_label.setStyleSheet("color: #788596;")
+        controls_layout.addWidget(self._status_label)
+        controls_layout.addStretch()
+        
+        devices_layout.addLayout(controls_layout)
+
+        # Devices Table
+        self._devices_table = QTableWidget(0, 6)
+        self._devices_table.setHorizontalHeaderLabels([
+            "Hostname", "IP Address", "MAC Address", "Vendor", "Status", "Authorization"
+        ])
+        self._devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._devices_table.verticalHeader().setVisible(False)
+        self._devices_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._devices_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        devices_layout.addWidget(self._devices_table)
+        
+        splitter.addWidget(devices_box)
+
+        # -------------------------------------------------------------
+        # Section 2: Active Local Connections
+        # -------------------------------------------------------------
+        connections_box = QGroupBox("Active Local Connections")
+        connections_layout = QVBoxLayout(connections_box)
+        connections_layout.setContentsMargins(12, 16, 12, 12)
+        connections_layout.setSpacing(10)
+
+        # Connections Filter
+        filter_layout = QHBoxLayout()
+        filter_layout.addWidget(QLabel("Filter by Process / Site:"))
+        self._filter_input = QLineEdit()
+        self._filter_input.setPlaceholderText("Search...")
+        self._filter_input.textChanged.connect(self._display_connections)
+        filter_layout.addWidget(self._filter_input)
+        filter_layout.addStretch()
+        
+        connections_layout.addLayout(filter_layout)
+
+        # Connections Table
+        self._conn_table = QTableWidget(0, 6)
+        self._conn_table.setHorizontalHeaderLabels([
+            "Process", "Protocol", "Local Port", "Remote IP", "Resolved Site / Host", "State"
+        ])
+        self._conn_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._conn_table.verticalHeader().setVisible(False)
+        self._conn_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self._conn_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        connections_layout.addWidget(self._conn_table)
+
+        splitter.addWidget(connections_box)
+
+        # Set splitter sizes (even split initially)
+        splitter.setSizes([300, 300])
+
+        # -------------------------------------------------------------
+        # Timers & Workers Initialization
+        # -------------------------------------------------------------
+        self._scan_worker = None
+
+        # Refresh local connections table every 5 seconds (performance optimization)
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.timeout.connect(self._refresh_connections)
+        self._refresh_timer.start(5000)
+
+        # Initial loads
+        self._refresh_devices_table()
+        self._refresh_connections()
+
+    def shutdown(self):
+        """Cleanly terminate the scan worker on app shutdown."""
+        if self._scan_worker and self._scan_worker.isRunning():
+            self._scan_worker.quit()
+            self._scan_worker.wait(1000)
+            if self._scan_worker.isRunning():
+                self._scan_worker.terminate()
+
+    # -----------------------------------------------------------------
+    # LAN Scan Logic
+    # -----------------------------------------------------------------
+    def _start_scan(self):
+        if self._scan_in_progress:
+            return
+
+        self._scan_in_progress = True
+        self._scan_btn.setEnabled(False)
+        self._progress.setVisible(True)
+        self._status_label.setText("Scanning subnet (sending pings & checking ARP)...")
+
+        # Launch scanning on a background thread
+        self._scan_worker = LanScanWorker(self._history)
+        self._scan_worker.scan_complete.connect(self._on_scan_complete)
+        self._scan_worker.start()
+
+    @Slot(list)
+    def _on_scan_complete(self, devices: list):
+        self._scan_in_progress = False
+        self._scan_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        self._status_label.setText(f"Scan complete. Found {len(devices)} active devices.")
+        self._refresh_devices_table()
+
+    def _refresh_devices_table(self):
+        self._devices_table.setRowCount(0)
+        devices = self._history.get_devices()
+
+        color_map = {
+            "authorized": "#75c884",   # Soft green
+            "suspicious": "#e06363",   # Soft red
+            "unknown": "#788596",      # Grey
+        }
+
+        for dev in devices:
+            row = self._devices_table.rowCount()
+            self._devices_table.insertRow(row)
+
+            # Columns: Hostname, IP Address, MAC Address, Vendor, Status, Authorization
+            hostname_item = QTableWidgetItem(dev["hostname"] or "Unknown")
+            if not dev["is_active"]:
+                # Fade out inactive/offline devices
+                hostname_item.setForeground(QColor("#4f5b66"))
+                
+            self._devices_table.setItem(row, 0, hostname_item)
+            
+            ip_item = QTableWidgetItem(dev["ip_address"])
+            if not dev["is_active"]:
+                ip_item.setForeground(QColor("#4f5b66"))
+            self._devices_table.setItem(row, 1, ip_item)
+            
+            mac_item = QTableWidgetItem(dev["mac_address"])
+            if not dev["is_active"]:
+                mac_item.setForeground(QColor("#4f5b66"))
+            self._devices_table.setItem(row, 2, mac_item)
+            
+            vendor_item = QTableWidgetItem(dev["vendor"] or "Unknown")
+            if not dev["is_active"]:
+                vendor_item.setForeground(QColor("#4f5b66"))
+            self._devices_table.setItem(row, 3, vendor_item)
+
+            status_text = dev["status"].upper()
+            if not dev["is_active"]:
+                status_text += " (OFFLINE)"
+            status_item = QTableWidgetItem(status_text)
+            status_item.setForeground(QColor(color_map.get(dev["status"], "#d8dee9")))
+            self._devices_table.setItem(row, 4, status_item)
+
+            # Dropdown for Authorization Action
+            auth_combo = QComboBox()
+            auth_combo.addItems(["Unknown", "Authorized", "Suspicious"])
+            
+            # Match current status
+            index_map = {"unknown": 0, "authorized": 1, "suspicious": 2}
+            auth_combo.setCurrentIndex(index_map.get(dev["status"], 0))
+            
+            # Avoid using cell lambda variables directly in slot to prevent closure issues
+            mac_addr = dev["mac_address"]
+            auth_combo.currentIndexChanged.connect(
+                lambda idx, m=mac_addr: self._on_auth_changed(m, idx)
+            )
+            self._devices_table.setCellWidget(row, 5, auth_combo)
+
+    def _on_auth_changed(self, mac: str, index: int):
+        status_map = {0: "unknown", 1: "authorized", 2: "suspicious"}
+        new_status = status_map.get(index, "unknown")
+        
+        self._history.update_device_status(mac, new_status)
+        logger.info("Device %s authorization status changed to %s", mac, new_status)
+        
+        # Refresh table formatting to update colors
+        self._refresh_devices_table()
+
+    # -----------------------------------------------------------------
+    # Local Connections Tracking Logic
+    # -----------------------------------------------------------------
+    def _refresh_connections(self):
+        """Query and cache current local process connection status in background thread."""
+        # Query active connections
+        try:
+            self._all_connections = get_active_connections()
+            self._display_connections()
+        except Exception as exc:
+            logger.warning("Failed to refresh local connections: %s", exc)
+
+    def _display_connections(self):
+        """Filter and render connections list based on filter query."""
+        self._conn_table.setRowCount(0)
+        filter_text = self._filter_input.text().lower()
+
+        if not hasattr(self, "_all_connections"):
+            return
+
+        for conn in self._all_connections:
+            proc = conn["process"]
+            resolved = conn["resolved_name"]
+
+            # Filter logic
+            if filter_text:
+                if filter_text not in proc.lower() and filter_text not in resolved.lower() and filter_text not in conn["remote_ip"]:
+                    continue
+
+            row = self._conn_table.rowCount()
+            self._conn_table.insertRow(row)
+
+            # Columns: Process, Protocol, Local Port, Remote IP, Resolved Site / Host, State
+            self._conn_table.setItem(row, 0, QTableWidgetItem(f"{proc} (PID: {conn['pid']})"))
+            self._conn_table.setItem(row, 1, QTableWidgetItem(conn["protocol"]))
+            self._conn_table.setItem(row, 2, QTableWidgetItem(conn["local_address"].rpartition(":")[2]))
+            self._conn_table.setItem(row, 3, QTableWidgetItem(conn["remote_ip"]))
+            
+            site_item = QTableWidgetItem(resolved)
+            # Highlight resolved domain names instead of bare IPs
+            if resolved != conn["remote_ip"]:
+                site_item.setForeground(QColor("#62c7d8"))  # Accent cyan color
+            self._conn_table.setItem(row, 4, site_item)
+            
+            state_item = QTableWidgetItem(conn["state"])
+            if conn["state"] == "ESTABLISHED":
+                state_item.setForeground(QColor("#75c884"))  # Green
+            self._conn_table.setItem(row, 5, state_item)

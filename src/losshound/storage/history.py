@@ -84,6 +84,18 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
 CREATE INDEX IF NOT EXISTS idx_alerts_category ON alerts(category);
+
+CREATE TABLE IF NOT EXISTS discovered_devices (
+    mac_address TEXT PRIMARY KEY,
+    ip_address TEXT NOT NULL,
+    hostname TEXT,
+    vendor TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1
+);
+CREATE INDEX IF NOT EXISTS idx_devices_active ON discovered_devices(is_active);
 """
 
 
@@ -396,6 +408,68 @@ class HistoryStore:
                 json.loads(route_rows[0][2]) if route_rows and route_rows[0][2] else []
             ),
         }
+
+    def save_device(
+        self, mac: str, ip: str, hostname: Optional[str], vendor: Optional[str],
+        status: Optional[str] = None
+    ) -> None:
+        """Insert or update a discovered LAN device."""
+        now = datetime.now().isoformat()
+        existing = self._conn.execute(
+            "SELECT status, first_seen FROM discovered_devices WHERE mac_address = ?",
+            (mac,)
+        ).fetchone()
+
+        if existing:
+            current_status = status if status else existing[0]
+            self._conn.execute(
+                """UPDATE discovered_devices
+                   SET ip_address = ?, hostname = ?, vendor = ?, status = ?, last_seen = ?, is_active = 1
+                   WHERE mac_address = ?""",
+                (ip, hostname, vendor, current_status, now, mac)
+            )
+        else:
+            current_status = status if status else "unknown"
+            self._conn.execute(
+                """INSERT INTO discovered_devices
+                   (mac_address, ip_address, hostname, vendor, status, first_seen, last_seen, is_active)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
+                (mac, ip, hostname, vendor, current_status, now, now)
+            )
+        self._conn.commit()
+
+    def get_devices(self) -> list[dict]:
+        """Retrieve all discovered LAN devices."""
+        rows = self._conn.execute(
+            """SELECT mac_address, ip_address, hostname, vendor, status, first_seen, last_seen, is_active
+               FROM discovered_devices ORDER BY ip_address"""
+        ).fetchall()
+        return [
+            {
+                "mac_address": r[0],
+                "ip_address": r[1],
+                "hostname": r[2],
+                "vendor": r[3],
+                "status": r[4],
+                "first_seen": r[5],
+                "last_seen": r[6],
+                "is_active": bool(r[7]),
+            }
+            for r in rows
+        ]
+
+    def update_device_status(self, mac: str, status: str) -> None:
+        """Update authorization status of a device."""
+        self._conn.execute(
+            "UPDATE discovered_devices SET status = ? WHERE mac_address = ?",
+            (status, mac)
+        )
+        self._conn.commit()
+
+    def set_all_devices_inactive(self) -> None:
+        """Mark all devices as inactive (used before starting a scan)."""
+        self._conn.execute("UPDATE discovered_devices SET is_active = 0")
+        self._conn.commit()
 
 
 def _deserialize_observation(raw_json: str) -> Observation:
