@@ -63,6 +63,18 @@ class _BufferbloatWorker(QThread):
             self.finished.emit(None)
 
 
+class _LoadLastBufferbloatWorker(QThread):
+    """Background worker to load the last bufferbloat snapshot on startup without blocking the GUI."""
+    finished = Signal(object)
+
+    def run(self):
+        try:
+            snapshot = get_latest_load_snapshot()
+            self.finished.emit(snapshot)
+        except Exception:
+            self.finished.emit(None)
+
+
 # ---------------------------------------------------------------------------
 # WiFi & Bufferbloat Tab
 # ---------------------------------------------------------------------------
@@ -73,10 +85,12 @@ class WifiTab(QWidget):
     def shutdown(self):
         from losshound.gui._shutdown import stop_qthread
         stop_qthread(getattr(self, "_worker", None))
+        stop_qthread(getattr(self, "_load_worker", None))
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker = None
+        self._load_worker = None
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -481,10 +495,11 @@ class WifiTab(QWidget):
         )
 
     def _load_last_bufferbloat(self):
-        """Load the most recent bufferbloat result on startup."""
-        try:
-            snapshot = get_latest_load_snapshot()
-            if snapshot:
-                self._display_bufferbloat(snapshot)
-        except Exception:
-            pass
+        """Load the most recent bufferbloat result on startup in the background."""
+        self._load_worker = _LoadLastBufferbloatWorker()
+        self._load_worker.finished.connect(self._on_last_bufferbloat_loaded)
+        self._load_worker.start()
+
+    def _on_last_bufferbloat_loaded(self, snapshot: LoadBenchmarkSnapshot | None):
+        if snapshot:
+            self._display_bufferbloat(snapshot)

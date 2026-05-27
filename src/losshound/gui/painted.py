@@ -116,6 +116,23 @@ class TexturedSurface(QWidget):
             # Debounce grid recreation (old pixmap scales smoothly in paintEvent in the meantime)
             self._resize_timer.start(80)
 
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._timer.start()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        from PySide6.QtCore import QEvent
+        if event.type() == QEvent.Type.WindowStateChange:
+            if self.window().isMinimized():
+                self._timer.stop()
+            else:
+                self._timer.start()
+
     def _recreate_grid(self) -> None:
         rect = self.rect()
         w = rect.width()
