@@ -8,13 +8,19 @@ from PySide6.QtWidgets import (
 from losshound.core.models import Observation, RouteSnapshot
 from losshound.core.route_monitor import diff_routes
 from losshound.storage.history import HistoryStore
+from losshound.gui.db_workers import DbQueryWorker
  
  
 class RouteTab(QWidget):
+    def shutdown(self):
+        from losshound.gui._shutdown import stop_qthread
+        stop_qthread(self._worker)
+ 
     def __init__(self, history: HistoryStore, parent=None):
         super().__init__(parent)
         self._history = history
         self._current_route: RouteSnapshot | None = None
+        self._worker: DbQueryWorker | None = None
  
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -81,12 +87,12 @@ class RouteTab(QWidget):
         outer.addWidget(scroll)
         
         self._load_changes()
-
+ 
     def update_route(self, obs: Observation):
         if obs.route_snapshot:
             self._current_route = obs.route_snapshot
             self._display_route(obs.route_snapshot)
-
+ 
     def _display_route(self, snap: RouteSnapshot):
         self._route_info.setText(
             f"Target: {snap.target} | "
@@ -113,8 +119,19 @@ class RouteTab(QWidget):
                 self._hops_table.setItem(row, 2 + i, rtt_item)
  
     def _load_changes(self):
+        if self._worker is not None and self._worker.isRunning():
+            return
+ 
+        self._worker = DbQueryWorker(
+            self._history._db_path,
+            lambda store: store.get_route_snapshots(hours=24),
+            self,
+        )
+        self._worker.finished.connect(self._on_changes_loaded)
+        self._worker.start()
+ 
+    def _on_changes_loaded(self, snapshots: list[RouteSnapshot]):
         self._changes_table.setRowCount(0)
-        snapshots = self._history.get_route_snapshots(hours=24)
  
         if len(snapshots) < 2:
             return

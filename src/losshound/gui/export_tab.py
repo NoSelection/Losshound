@@ -51,15 +51,20 @@ class _IspPdfWorker(QObject):
             self.finished.emit((None, str(exc)))
 
 
+from losshound.gui.db_workers import DbQueryWorker
+
+
 class ExportTab(QWidget):
     def shutdown(self):
         from losshound.gui._shutdown import stop_qthread
         stop_qthread(getattr(self, "_thread", None))
+        stop_qthread(getattr(self, "_quick_worker", None))
 
     def __init__(self, history: HistoryStore, parent=None):
         super().__init__(parent)
         self._history = history
         self._thread: QThread | None = None
+        self._quick_worker: DbQueryWorker | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -131,9 +136,21 @@ class ExportTab(QWidget):
         self._report_data: dict | None = None
 
     def _generate(self):
+        if self._quick_worker is not None and self._quick_worker.isRunning():
+            return
         hours = self._hours.value()
-        self._report_data = self._history.export_report(hours)
-        self._preview.setText(self._format_report(self._report_data))
+        self._preview.setText("Generating quick report...")
+        self._quick_worker = DbQueryWorker(
+            self._history._db_path,
+            lambda store: store.export_report(hours),
+            self,
+        )
+        self._quick_worker.finished.connect(self._on_quick_report_done)
+        self._quick_worker.start()
+
+    def _on_quick_report_done(self, data: dict):
+        self._report_data = data
+        self._preview.setText(self._format_report(data))
 
     def _generate_isp(self):
         if self._thread is not None and self._thread.isRunning():

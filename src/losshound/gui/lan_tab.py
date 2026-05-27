@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 from losshound.core.lan_monitor import lookup_vendor
 from losshound.core.local_monitor import get_active_connections
 from losshound.storage.history import HistoryStore
+from losshound.gui.db_workers import DbQueryWorker, DbWriteWorker
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,8 @@ class LANTab(QWidget):
         super().__init__(parent)
         self._history = history
         self._scan_in_progress = False
+        self._query_worker: DbQueryWorker | None = None
+        self._write_worker: DbWriteWorker | None = None
 
         # Main Layout
         main_layout = QVBoxLayout(self)
@@ -178,6 +181,10 @@ class LANTab(QWidget):
 
     def shutdown(self):
         """Cleanly terminate the scan and connection workers on app shutdown."""
+        from losshound.gui._shutdown import stop_qthread
+        stop_qthread(self._query_worker)
+        stop_qthread(self._write_worker)
+
         if self._scan_worker and self._scan_worker.isRunning():
             self._scan_worker.quit()
             self._scan_worker.wait(1000)
@@ -222,16 +229,36 @@ class LANTab(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._history.clear_discovered_devices()
-            self._refresh_devices_table()
-            self._status_label.setText("Device list cleared. Click Scan Now to discover active devices.")
+            self._status_label.setText("Clearing device list...")
+            self._write_worker = DbWriteWorker(
+                self._history._db_path,
+                lambda store: store.clear_discovered_devices(),
+                self,
+            )
+            self._write_worker.finished.connect(self._on_clear_complete)
+            self._write_worker.start()
+
+    def _on_clear_complete(self):
+        self._refresh_devices_table()
+        self._status_label.setText("Device list cleared. Click Scan Now to discover active devices.")
 
     def _refresh_devices_table(self):
+        if self._query_worker is not None and self._query_worker.isRunning():
+            return
+
+        self._query_worker = DbQueryWorker(
+            self._history._db_path,
+            lambda store: store.get_devices(),
+            self,
+        )
+        self._query_worker.finished.connect(self._on_devices_loaded)
+        self._query_worker.start()
+
+    def _on_devices_loaded(self, devices: list[dict]):
         # Suppress itemChanged signals while we repopulate so they're not mistaken for user edits
         self._suppress_item_changed = True
         try:
             self._devices_table.setRowCount(0)
-            devices = self._history.get_devices()
 
             color_map = {
                 "authorized": "#75c884",   # Soft green
@@ -314,20 +341,28 @@ class LANTab(QWidget):
         if not mac:
             return
         new_text = item.text().strip()
-        # Empty input clears the custom name (revert to auto-detected hostname)
-        self._history.set_device_custom_name(mac, new_text or None)
+        
+        self._write_worker = DbWriteWorker(
+            self._history._db_path,
+            lambda store: store.set_device_custom_name(mac, new_text or None),
+            self,
+        )
+        self._write_worker.finished.connect(self._refresh_devices_table)
+        self._write_worker.start()
         logger.info("Custom name for %s set to %r", mac, new_text or None)
-        self._refresh_devices_table()
 
     def _on_auth_changed(self, mac: str, index: int):
         status_map = {0: "unknown", 1: "authorized", 2: "suspicious"}
         new_status = status_map.get(index, "unknown")
         
-        self._history.update_device_status(mac, new_status)
+        self._write_worker = DbWriteWorker(
+            self._history._db_path,
+            lambda store: store.update_device_status(mac, new_status),
+            self,
+        )
+        self._write_worker.finished.connect(self._refresh_devices_table)
+        self._write_worker.start()
         logger.info("Device %s authorization status changed to %s", mac, new_status)
-        
-        # Refresh table formatting to update colors
-        self._refresh_devices_table()
 
     # -----------------------------------------------------------------
     # Local Connections Tracking Logic

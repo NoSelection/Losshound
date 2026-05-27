@@ -8,12 +8,18 @@ from PySide6.QtWidgets import (
 )
 
 from losshound.storage.history import HistoryStore
+from losshound.gui.db_workers import DbQueryWorker
 
 
 class HistoryTab(QWidget):
+    def shutdown(self):
+        from losshound.gui._shutdown import stop_qthread
+        stop_qthread(self._worker)
+
     def __init__(self, history: HistoryStore, parent=None):
         super().__init__(parent)
         self._history = history
+        self._worker: DbQueryWorker | None = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -59,8 +65,19 @@ class HistoryTab(QWidget):
         self._refresh()
 
     def _refresh(self):
+        if self._worker is not None and self._worker.isRunning():
+            return
+
+        self._worker = DbQueryWorker(
+            self._history._db_path,
+            lambda store: store.get_recent_diagnoses(200),
+            self,
+        )
+        self._worker.finished.connect(self._on_refresh_done)
+        self._worker.start()
+
+    def _on_refresh_done(self, entries: list[dict]):
         self._table.setRowCount(0)
-        entries = self._history.get_recent_diagnoses(200)
 
         filter_text = self._filter.currentText()
         filter_map = {

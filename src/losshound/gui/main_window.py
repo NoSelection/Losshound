@@ -261,7 +261,7 @@ class MainWindow(QMainWindow):
 
         tab_attrs = (
             "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",
-            "_drop_tab", "_export_tab", "_lan_tab",
+            "_drop_tab", "_export_tab", "_lan_tab", "_history_tab", "_route_tab",
         )
         for name in tab_attrs:
             tab = getattr(self, name, None)
