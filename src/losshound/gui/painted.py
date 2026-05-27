@@ -94,15 +94,27 @@ class TexturedSurface(QWidget):
         self._D = None
         self._has_numpy = False
 
+        # Pre-allocate brushes for all alpha levels to avoid object creation in paintEvent loop
+        self._brushes = [QBrush(QColor(255, 255, 255, a)) for a in range(256)]
+
         # 30 FPS update timer
         self._timer = QTimer(self)
         self._timer.setInterval(33)
         self._timer.timeout.connect(self.update_animation)
         self._timer.start()
 
+        # Resize debounce timer (prevents lag during drag/resizing)
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.timeout.connect(self._recreate_grid)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self._recreate_grid()
+        if self._base_grid_pixmap is None:
+            self._recreate_grid()
+        else:
+            # Debounce grid recreation (old pixmap scales smoothly in paintEvent in the meantime)
+            self._resize_timer.start(80)
 
     def _recreate_grid(self) -> None:
         rect = self.rect()
@@ -143,22 +155,22 @@ class TexturedSurface(QWidget):
 
         painter = QPainter(self._base_grid_pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        painter.setPen(Qt.PenStyle.NoPen)
-        # 228, 234, 244, 12 is the exact transparent base color used in the design
-        painter.setBrush(QColor(228, 234, 244, 12))
+        
+        # Use pen instead of brush/drawRect to avoid object instantiations inside the loop
+        pen = QPen(QColor(228, 234, 244, 12))
+        pen.setWidth(1)
+        painter.setPen(pen)
 
         if self._has_numpy:
             flat_x = self._X.ravel()
             flat_y = self._Y.ravel()
             for idx in range(len(flat_x)):
-                px = flat_x[idx]
-                py = flat_y[idx]
-                painter.drawRect(QRectF(px - 0.5, py - 0.5, 1.0, 1.0))
+                painter.drawPoint(int(flat_x[idx]), int(flat_y[idx]))
         else:
             fallback_cell = 14
             for px in range(int(fallback_cell / 2), w, fallback_cell):
                 for py in range(int(fallback_cell / 2), h, fallback_cell):
-                    painter.drawRect(QRectF(px - 0.5, py - 0.5, 1.0, 1.0))
+                    painter.drawPoint(px, py)
 
         painter.end()
 
@@ -225,9 +237,9 @@ class TexturedSurface(QWidget):
         if w < 10 or h < 10:
             return
 
-        # 1. Draw the pre-rendered static background grid pixmap
+        # 1. Draw the pre-rendered static background grid pixmap (scales smoothly on dynamic resize)
         if self._base_grid_pixmap and not self._base_grid_pixmap.isNull():
-            painter.drawPixmap(0, 0, self._base_grid_pixmap)
+            painter.drawPixmap(rect, self._base_grid_pixmap)
 
         max_dim = max(w, h)
         centerX = w / 2.0
@@ -307,15 +319,13 @@ class TexturedSurface(QWidget):
                 painter.setPen(Qt.PenStyle.NoPen)
                 for idx in range(len(active_intensity)):
                     intensity = active_intensity[idx]
-                    px = active_x[idx]
-                    py = active_y[idx]
-
-                    # Clean monochrome black & white halftone style (white dots with varying alpha)
                     alpha = int(18 + 225 * intensity)
-                    painter.setBrush(QColor(255, 255, 255, alpha))
-
                     radius = max(1.0, intensity * dot_size)
-                    painter.drawEllipse(QPointF(px, py), radius, radius)
+                    diameter = radius * 2.0
+
+                    painter.setBrush(self._brushes[alpha])
+                    # Avoid QPointF creation by calling direct float coordinates overload (cx - r, cy - r, w, h)
+                    painter.drawEllipse(active_x[idx] - radius, active_y[idx] - radius, diameter, diameter)
 
             except Exception:
                 pass  # Fallback will handle it
@@ -347,10 +357,11 @@ class TexturedSurface(QWidget):
 
                     if intensity > 0.01:
                         alpha = int(18 + 225 * intensity)
-                        painter.setPen(Qt.PenStyle.NoPen)
-                        painter.setBrush(QColor(255, 255, 255, alpha))
                         radius = max(1.0, intensity * 2.4)
-                        painter.drawEllipse(QPointF(px, py), radius, radius)
+                        diameter = radius * 2.0
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.setBrush(self._brushes[alpha])
+                        painter.drawEllipse(px - radius, py - radius, diameter, diameter)
 
         # Draw scanning lines and vignette overlay on top
         scanline = QPen(QColor(255, 255, 255, 4))
