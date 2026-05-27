@@ -20,7 +20,7 @@ from losshound.core.qos import (
 )
 
 
-class _ApplyWorker(QObject):
+class _ApplyWorker(QThread):
     finished = Signal(object)  # QosResult
 
     def __init__(self, rule: QosRule):
@@ -32,7 +32,7 @@ class _ApplyWorker(QObject):
         self.finished.emit(result)
 
 
-class _RemoveWorker(QObject):
+class _RemoveWorker(QThread):
     finished = Signal(object)
 
     def __init__(self, rule_name: str):
@@ -44,7 +44,7 @@ class _RemoveWorker(QObject):
         self.finished.emit(result)
 
 
-class _RemoveAllWorker(QObject):
+class _RemoveAllWorker(QThread):
     finished = Signal(object)
 
     def run(self):
@@ -228,19 +228,15 @@ class QosTab(QWidget):
 
     def _apply_single(self, rule: QosRule):
         self._status_label.setText(f"Applying {rule.name}...")
-        thread = QThread()
         worker = _ApplyWorker(rule)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(lambda res: self._on_apply_done(res, thread))
-        thread.start()
-        self._threads.append(thread)
+        worker.finished.connect(self._on_apply_done)
+        worker.start()
+        self._threads.append(worker)
 
-    def _on_apply_done(self, result: QosResult, thread: QThread):
-        thread.quit()
-        thread.wait(3000)
-        if thread in self._threads:
-            self._threads.remove(thread)
+    def _on_apply_done(self, result: QosResult):
+        worker = self.sender()
+        if worker in self._threads:
+            self._threads.remove(worker)
 
         if result.success:
             self._status_label.setText(f"{result.rule_name}: {result.action}")
@@ -256,21 +252,16 @@ class QosTab(QWidget):
         self._status_label.setText(f"Deleted saved rule: {rule.name}; removing policy...")
         self._status_label.setStyleSheet("color: #788596;")
 
-        thread = QThread()
         worker = _RemoveWorker(rule.name)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(
-            lambda res, name=rule.name: self._on_delete_policy_done(res, thread, name)
-        )
-        thread.start()
-        self._threads.append(thread)
+        worker.finished.connect(self._on_delete_policy_done)
+        worker.start()
+        self._threads.append(worker)
 
-    def _on_delete_policy_done(self, result: QosResult, thread: QThread, name: str):
-        thread.quit()
-        thread.wait(3000)
-        if thread in self._threads:
-            self._threads.remove(thread)
+    def _on_delete_policy_done(self, result: QosResult):
+        worker = self.sender()
+        if worker in self._threads:
+            self._threads.remove(worker)
+        name = worker._name if worker else "policy"
 
         if result.success:
             self._status_label.setText(f"Removed Windows policy: {name}")
@@ -302,19 +293,15 @@ class QosTab(QWidget):
         self._status_label.setText("Removing Losshound QoS policies...")
         self._status_label.setStyleSheet("color: #d9b65f;")
 
-        thread = QThread()
         worker = _RemoveAllWorker()
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(lambda res: self._on_remove_all_done(res, thread))
-        thread.start()
-        self._threads.append(thread)
+        worker.finished.connect(self._on_remove_all_done)
+        worker.start()
+        self._threads.append(worker)
 
-    def _on_remove_all_done(self, results: list[QosResult], thread: QThread):
-        thread.quit()
-        thread.wait(3000)
-        if thread in self._threads:
-            self._threads.remove(thread)
+    def _on_remove_all_done(self, results: list[QosResult]):
+        worker = self.sender()
+        if worker in self._threads:
+            self._threads.remove(worker)
 
         removed = sum(1 for r in results if r.success)
         self._status_label.setText(f"Removed {removed} policies")

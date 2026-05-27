@@ -311,9 +311,7 @@ class WifiTab(QWidget):
     def _on_wifi_scan(self):
         self._set_busy(True, "Scanning WiFi networks...")
         self._worker = _WifiScanWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_wifi_scan_done)
         self._worker.start()
 
@@ -431,9 +429,7 @@ class WifiTab(QWidget):
 
         self._set_busy(True, "Testing bufferbloat (this takes ~60s)...")
         self._worker = _BufferbloatWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_bufferbloat_done)
         self._worker.start()
 

@@ -396,6 +396,11 @@ def run_drop_analysis(
         progress_callback: Optional callable for status updates.
         stop_check: optional callable returning True to abort early.
     """
+    if duration_seconds <= 0:
+        raise ValueError("duration_seconds must be greater than 0")
+    if poll_interval < 1.0:
+        raise ValueError("poll_interval must be at least 1.0 seconds")
+
     samples: list[ConnSample] = []
     start_time = time.monotonic()
     end_time = start_time + duration_seconds

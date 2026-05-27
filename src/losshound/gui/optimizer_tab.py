@@ -8,7 +8,7 @@ from functools import partial
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -58,10 +58,22 @@ class _OptimizeWorker(QThread):
     finished = Signal(object)  # OptimizeReport
     progress = Signal(str)
 
-    def __init__(self, skip_dns: bool = False, skip_mtu: bool = False):
+    def __init__(
+        self,
+        skip_dns: bool = False,
+        skip_mtu: bool = False,
+        apply_dns: bool = False,
+        optimize_eee: bool = False,
+        optimize_rsc: bool = False,
+        optimize_lso: bool = False,
+    ):
         super().__init__()
         self._skip_dns = skip_dns
         self._skip_mtu = skip_mtu
+        self._apply_dns = apply_dns
+        self._optimize_eee = optimize_eee
+        self._optimize_rsc = optimize_rsc
+        self._optimize_lso = optimize_lso
 
     def run(self):
         try:
@@ -69,7 +81,12 @@ class _OptimizeWorker(QThread):
             self.progress.emit("Creating backup...")
             self.progress.emit("Optimizing network stack...")
             report = opt.optimize_all(
-                skip_dns=self._skip_dns, skip_mtu=self._skip_mtu,
+                skip_dns=self._skip_dns,
+                skip_mtu=self._skip_mtu,
+                apply_dns=self._apply_dns,
+                optimize_eee=self._optimize_eee,
+                optimize_rsc=self._optimize_rsc,
+                optimize_lso=self._optimize_lso,
             )
             self.finished.emit(report)
         except Exception as exc:
@@ -291,6 +308,48 @@ class OptimizerTab(QWidget):
 
         main_layout.addWidget(resp_group)
 
+        # --- Advanced Adapter Tweaks Group ---
+        adapter_group = QGroupBox("Advanced Adapter Tweaks (Opt-in)")
+        adapter_layout = QVBoxLayout(adapter_group)
+        adapter_layout.setSpacing(8)
+
+        cb_style = """
+            QCheckBox {
+                color: #d8dee9;
+                spacing: 8px;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                background-color: #141822;
+                border: 1px solid #20293a;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #75c884;
+                border: 1px solid #75c884;
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #75c884;
+            }
+        """
+
+        self._eee_checkbox = QCheckBox("Disable Energy Efficient Ethernet (EEE)")
+        self._eee_checkbox.setToolTip("Keeps physical ethernet link active, preventing power-state latency. (Reboot recommended)")
+        self._eee_checkbox.setStyleSheet(cb_style)
+        adapter_layout.addWidget(self._eee_checkbox)
+
+        self._rsc_checkbox = QCheckBox("Disable Receive Segment Coalescing (RSC)")
+        self._rsc_checkbox.setToolTip("Disables hardware packet buffering to reduce processing delay and jitter.")
+        self._rsc_checkbox.setStyleSheet(cb_style)
+        adapter_layout.addWidget(self._rsc_checkbox)
+
+        self._lso_checkbox = QCheckBox("Disable Large Send Offload (LSO)")
+        self._lso_checkbox.setToolTip("Prevents the network adapter driver from batching outbound packets, ensuring immediate transmission.")
+        self._lso_checkbox.setStyleSheet(cb_style)
+        adapter_layout.addWidget(self._lso_checkbox)
+
+        main_layout.addWidget(adapter_group)
+
         # --- Progress ---
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 0)  # indeterminate
@@ -502,10 +561,12 @@ class OptimizerTab(QWidget):
             return
 
         self._set_busy(True, "Optimizing network...")
-        self._worker = _OptimizeWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
+        self._worker = _OptimizeWorker(
+            optimize_eee=self._eee_checkbox.isChecked(),
+            optimize_rsc=self._rsc_checkbox.isChecked(),
+            optimize_lso=self._lso_checkbox.isChecked(),
         )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_optimize_done)
         self._worker.start()
 
@@ -532,9 +593,7 @@ class OptimizerTab(QWidget):
             return  # already running, ignore the click
         self._set_busy(True, "Benchmarking DNS servers...")
         self._worker = _DnsBenchmarkWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_dns_benchmark_done)
         self._worker.start()
 
@@ -570,9 +629,7 @@ class OptimizerTab(QWidget):
 
         self._set_busy(True, "Reverting all changes...")
         self._worker = _RestoreWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_restore_done)
         self._worker.start()
 
@@ -696,6 +753,11 @@ class OptimizerTab(QWidget):
             if idx >= 0:
                 self._resp_combo.setCurrentIndex(idx)
 
+        # Update advanced checkboxes from current status
+        self._eee_checkbox.setChecked(status.get("eee_disabled") is True)
+        self._rsc_checkbox.setChecked(status.get("rsc_disabled") is True)
+        self._lso_checkbox.setChecked(status.get("lso_disabled") is True)
+
     # ------------------------------------------------------------------
     # Benchmark actions
     # ------------------------------------------------------------------
@@ -704,16 +766,14 @@ class OptimizerTab(QWidget):
         if self._worker is not None and self._worker.isRunning():
             return  # already running, ignore the click
         self._set_busy(True, f"Running {label} benchmark (this takes ~60s)...")
+        self._active_benchmark_label = label
         self._worker = _BenchmarkWorker(label=label)
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
-        )
-        self._worker.finished.connect(
-            lambda snap: self._on_benchmark_done(snap, label),
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.finished.connect(self._on_benchmark_done)
         self._worker.start()
 
-    def _on_benchmark_done(self, snapshot: BenchmarkSnapshot | None, label: str):
+    def _on_benchmark_done(self, snapshot: BenchmarkSnapshot | None):
+        label = getattr(self, "_active_benchmark_label", "benchmark")
         self._worker = None
         if snapshot is None:
             self._set_busy(False, "Benchmark failed")
@@ -1048,9 +1108,7 @@ class OptimizerTab(QWidget):
 
         self._set_busy(True, "Starting auto-tune responsiveness benchmark...")
         self._worker = _AutoTuneResponsivenessWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg)
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_autotune_done)
         self._worker.start()
 

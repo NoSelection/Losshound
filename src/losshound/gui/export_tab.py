@@ -14,7 +14,7 @@ from losshound.gui.theme import button_style
 from losshound.storage.history import HistoryStore
 
 
-class _IspReportWorker(QObject):
+class _IspReportWorker(QThread):
     finished = Signal(str)  # formatted report text
 
     def __init__(self, history: HistoryStore, hours: int):
@@ -29,7 +29,7 @@ class _IspReportWorker(QObject):
         self.finished.emit(text)
 
 
-class _IspPdfWorker(QObject):
+class _IspPdfWorker(QThread):
     finished = Signal(object)  # tuple[Path | None, str]  (path, error_msg)
 
     def __init__(self, history, hours: int, output_path):
@@ -158,17 +158,13 @@ class ExportTab(QWidget):
         hours = self._hours.value()
         self._preview.setText("Generating ISP report...")
 
-        thread = QThread()
         worker = _IspReportWorker(self._history, hours)
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(lambda text: self._on_isp_done(text, thread))
-        thread.start()
-        self._thread = thread
+        worker.finished.connect(self._on_isp_done)
+        worker.start()
+        self._thread = worker
 
-    def _on_isp_done(self, text: str, thread: QThread):
-        thread.quit()
-        thread.wait(3000)
+    def _on_isp_done(self, text: str):
+        self._thread = None
         self._preview.setText(text)
         self._report_data = None  # ISP report is text-only for now
 
@@ -295,17 +291,13 @@ class ExportTab(QWidget):
 
         self._preview.setText(f"Generating PDF report to:\n{path}\n\nPlease wait...")
 
-        thread = QThread()
         worker = _IspPdfWorker(self._history, hours, Path(path))
-        worker.moveToThread(thread)
-        thread.started.connect(worker.run)
-        worker.finished.connect(lambda res: self._on_pdf_done(res, thread))
-        thread.start()
-        self._thread = thread
+        worker.finished.connect(self._on_pdf_done)
+        worker.start()
+        self._thread = worker
 
-    def _on_pdf_done(self, result, thread: QThread):
-        thread.quit()
-        thread.wait(3000)
+    def _on_pdf_done(self, result):
+        self._thread = None
         out_path, error = result
         if out_path is None:
             self._preview.setText(f"PDF generation failed:\n{error}")

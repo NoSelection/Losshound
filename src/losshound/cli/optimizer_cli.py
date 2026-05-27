@@ -50,7 +50,12 @@ def run_optimizer_command(args):
     opt = NetworkOptimizer()
 
     if args.command == "optimize":
-        _cmd_optimize(opt, skip_dns=args.skip_dns, skip_mtu=args.skip_mtu)
+        _cmd_optimize(
+            opt,
+            skip_dns=args.skip_dns,
+            skip_mtu=args.skip_mtu,
+            apply_dns=getattr(args, "apply_dns", False),
+        )
     elif args.command == "dns-benchmark":
         _cmd_dns_benchmark(opt)
     elif args.command == "net-status":
@@ -59,7 +64,7 @@ def run_optimizer_command(args):
         _cmd_restore(opt)
 
 
-def _cmd_optimize(opt, *, skip_dns: bool, skip_mtu: bool):
+def _cmd_optimize(opt, *, skip_dns: bool, skip_mtu: bool, apply_dns: bool):
     """Run full network optimization."""
     is_admin = opt.check_admin()
     print("Losshound Network Optimizer")
@@ -74,7 +79,11 @@ def _cmd_optimize(opt, *, skip_dns: bool, skip_mtu: bool):
     print("Creating backup of current settings...")
     print("Running optimizations...\n")
 
-    report = opt.optimize_all(skip_dns=skip_dns, skip_mtu=skip_mtu)
+    report = opt.optimize_all(
+        skip_dns=skip_dns,
+        skip_mtu=skip_mtu,
+        apply_dns=apply_dns,
+    )
 
     _print_results(report.results)
 

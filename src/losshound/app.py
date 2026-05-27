@@ -32,6 +32,10 @@ def main():
         help="Skip DNS benchmark and optimization",
     )
     opt_parser.add_argument(
+        "--apply-dns", action="store_true",
+        help="Allow optimize to change DNS servers after benchmarking",
+    )
+    opt_parser.add_argument(
         "--skip-mtu", action="store_true",
         help="Skip MTU discovery and optimization",
     )
@@ -122,6 +126,11 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.command == "drop-analyze":
+        if args.duration <= 0:
+            parser.error("drop-analyze --duration must be greater than 0 seconds")
+        if args.interval < 1.0:
+            parser.error("drop-analyze --interval must be at least 1.0 seconds")
 
     from losshound.core.config import load_config
     config = load_config(args.config)

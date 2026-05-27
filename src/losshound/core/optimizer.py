@@ -100,6 +100,9 @@ class AdapterBackup:
     name: str
     power_management_enabled: Optional[bool] = None
     interrupt_moderation_enabled: Optional[bool] = None
+    rsc_enabled: Optional[bool] = None
+    lso_enabled: Optional[bool] = None
+    eee_enabled: Optional[str] = None
 
 
 @dataclass
@@ -116,6 +119,8 @@ class BackupData:
     adapter: Optional[AdapterBackup] = None
     tcp_heuristics: str = "unknown"
     system_responsiveness: Optional[int] = None
+    fast_send_datagram_threshold: Optional[int] = None
+    tcp_del_ack_ticks: Optional[int] = None
 
 
 @dataclass
@@ -287,28 +292,33 @@ def _make_result(
     # --- Derive status ---
     status: str
     if success:
-        if reboot_required:
-            status = "Reboot required"
-        elif desired and before.strip().lower() == desired.strip().lower():
+        if desired and before.strip().lower() == desired.strip().lower():
             status = "Verified"
             after_display = before_display  # nothing actually changed
-            if not note:
-                note = f"Already set to {before_display}"
+            if not note or "reboot" in note.lower():
+                note = f"Already optimized (set to {before_display})"
         elif before.strip().lower() == after.strip().lower() and before.strip():
             status = "Verified"
-            if not note:
-                note = f"Already set to {before_display}"
+            if not note or "reboot" in note.lower():
+                note = f"Already optimized (set to {before_display})"
+        elif reboot_required:
+            status = "Reboot required"
         else:
             status = "Applied"
     else:
         # Determine failure flavour
         err_lower = (error or "").lower()
-        if needs_admin and ("administrator" in err_lower or "privilege" in err_lower):
+        if "skipped" in err_lower:
+            status = "Skipped"
+            after_display = "--"
+            if not note:
+                note = error or "Skipped"
+        elif needs_admin and ("administrator" in err_lower or "privilege" in err_lower):
             status = "Skipped"
             after_display = "--"
             if not note:
                 note = "Requires Administrator privileges"
-        elif "unsupported" in err_lower or "not found" in err_lower or "not recognized" in err_lower:
+        elif any(x in err_lower for x in ("unsupported", "not found", "not recognized", "not support", "does not support", "does not expose")):
             status = "Unsupported"
             after_display = "--"
             if not note:
@@ -649,16 +659,27 @@ class NetworkOptimizer:
     # ------------------------------------------------------------------
 
     def get_active_adapter(self) -> AdapterInfo:
-        """Detect the active network adapter via PowerShell."""
+        """Detect the active network adapter via PowerShell.
+
+        Prioritizes the adapter bound to the default IPv4 gateway route.
+        """
         try:
             result = _run(
                 [
                     "powershell", "-NoProfile", "-Command",
                     (
-                        "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} "
-                        "| Select-Object -First 1 Name, InterfaceIndex, "
-                        "MacAddress, LinkSpeed "
-                        "| ConvertTo-Json"
+                        "$route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
+                        "-ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1; "
+                        "$adapter = $null; "
+                        "if ($route) { "
+                        "    $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue; "
+                        "} "
+                        "if (-not $adapter) { "
+                        "    $adapter = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1; "
+                        "} "
+                        "if ($adapter) { "
+                        "    $adapter | Select-Object Name, InterfaceIndex, MacAddress, LinkSpeed | ConvertTo-Json "
+                        "}"
                     ),
                 ],
             )
@@ -698,8 +719,20 @@ class NetworkOptimizer:
             result = _run(
                 [
                     "powershell", "-NoProfile", "-Command",
-                    "(Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} "
-                    "| Select-Object -First 1).Name",
+                    (
+                        "$route = Get-NetRoute -DestinationPrefix '0.0.0.0/0' "
+                        "-ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1; "
+                        "$adapter = $null; "
+                        "if ($route) { "
+                        "    $adapter = Get-NetAdapter -InterfaceIndex $route.InterfaceIndex -ErrorAction SilentlyContinue; "
+                        "} "
+                        "if (-not $adapter) { "
+                        "    $adapter = Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | Select-Object -First 1; "
+                        "} "
+                        "if ($adapter) { "
+                        "    $adapter.Name "
+                        "}"
+                    ),
                 ],
             )
             name = result.stdout.strip()
@@ -722,7 +755,11 @@ class NetworkOptimizer:
             pass
         return "Ethernet"
 
-    def optimize_adapter(self) -> list[OptimizeResult]:
+    def optimize_adapter(
+        self,
+        *,
+        include_interrupt_moderation: bool = False,
+    ) -> list[OptimizeResult]:
         """Optimise the active network adapter settings."""
         results: list[OptimizeResult] = []
         if not self.check_admin():
@@ -825,6 +862,19 @@ class NetworkOptimizer:
                 command=pm_cmd,
             ))
 
+        if not include_interrupt_moderation:
+            results.append(_make_result(
+                name="Interrupt moderation",
+                success=False, before="", after="",
+                needs_admin=True,
+                error="Skipped: interrupt moderation changes are opt-in",
+                note=(
+                    "Skipped by default; disabling interrupt moderation can "
+                    "increase CPU interrupts and worsen lag under load"
+                ),
+            ))
+            return results
+
         # --- Interrupt moderation ---
         im_cmd = (
             f"Set-NetAdapterAdvancedProperty "
@@ -906,6 +956,266 @@ class NetworkOptimizer:
             ))
 
         return results
+
+    def optimize_winsock_datagram_threshold(self) -> OptimizeResult:
+        """Set Winsock FastSendDatagramThreshold to 1500 (requires admin)."""
+        name = "Set FastSendDatagramThreshold"
+        cmd_desc = r"Set registry HKLM\SYSTEM\CurrentControlSet\Services\AFD\Parameters\FastSendDatagramThreshold = 1500"
+        if not self.check_admin():
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True,
+                error="Administrator privileges required",
+                command=cmd_desc,
+            )
+
+        # First read current
+        key_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
+        before_str = "default (1024)"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ) as key:
+                val, _ = winreg.QueryValueEx(key, "FastSendDatagramThreshold")
+                before_str = str(val)
+        except OSError:
+            pass
+
+        try:
+            with winreg.CreateKeyEx(
+                winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_SET_VALUE
+            ) as key:
+                winreg.SetValueEx(
+                    key, "FastSendDatagramThreshold", 0,
+                    winreg.REG_DWORD, 1500,
+                )
+
+            # Verify
+            after_str = "Unknown"
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ) as key:
+                val, _ = winreg.QueryValueEx(key, "FastSendDatagramThreshold")
+                after_str = str(val)
+
+            verified = val == 1500
+            return _make_result(
+                name=name, success=verified,
+                before=before_str, after=after_str,
+                desired="1500",
+                needs_admin=True,
+                command=cmd_desc,
+                verification=f"Registry read-back: {after_str}",
+                reboot_required=True,
+                note="Enables Winsock fast datagram path for standard MTU size packets; reboot recommended" if verified else f"Verification read: {after_str}",
+            )
+        except OSError as exc:
+            return _make_result(
+                name=name, success=False,
+                before=before_str, after="",
+                needs_admin=True, error=str(exc),
+                command=cmd_desc,
+            )
+
+    def optimize_eee(self, disable: bool = True) -> OptimizeResult:
+        """Enable or disable Energy Efficient Ethernet (EEE) on the active adapter (requires admin)."""
+        name = "Disable Energy Efficient Ethernet (EEE)" if disable else "Enable Energy Efficient Ethernet (EEE)"
+        if not self.check_admin():
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True,
+                error="Administrator privileges required",
+            )
+
+        adapter = self.get_active_adapter()
+        if not adapter.name:
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True, error="No active adapter name found",
+            )
+
+        # Find property registry keyword
+        try:
+            kw_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"$p = Get-NetAdapterAdvancedProperty -Name '{adapter.name}' -ErrorAction SilentlyContinue "
+                f"| Where-Object {{ $_.RegistryKeyword -eq '*EEE' -or $_.RegistryKeyword -eq 'EEE' }}; "
+                f"if ($p) {{ $p.RegistryKeyword }} else {{ '' }}",
+            ])
+            kw = kw_proc.stdout.strip()
+            if not kw:
+                return _make_result(
+                    name=name, success=False, before="--", after="--",
+                    needs_admin=True,
+                    error="Adapter does not expose EEE property",
+                    note=f"Adapter '{adapter.name}' does not support EEE",
+                )
+
+            # Get current value
+            val_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"(Get-NetAdapterAdvancedProperty -Name '{adapter.name}' -RegistryKeyword '{kw}' -ErrorAction SilentlyContinue).RegistryValue",
+            ])
+            before_val = val_proc.stdout.strip()
+
+            target_val = "0" if disable else "1"
+            cmd = f"Set-NetAdapterAdvancedProperty -Name '{adapter.name}' -RegistryKeyword '{kw}' -RegistryValue {target_val}"
+            proc = _run(["powershell", "-NoProfile", "-Command", cmd])
+            ok = proc.returncode == 0
+
+            # Verify
+            verify_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"(Get-NetAdapterAdvancedProperty -Name '{adapter.name}' -RegistryKeyword '{kw}' -ErrorAction SilentlyContinue).RegistryValue",
+            ])
+            after_val = verify_proc.stdout.strip()
+            verified = ok and after_val == target_val
+
+            return _make_result(
+                name=name, success=verified,
+                before=before_val, after=after_val,
+                desired=target_val,
+                needs_admin=True,
+                command=cmd,
+                command_exit_code=proc.returncode,
+                verification=f"Registry keyword value: {after_val}",
+                note="Disables physical ethernet power-state delays" if (verified and disable) else "",
+            )
+        except Exception as exc:
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True, error=str(exc),
+            )
+
+    def optimize_rsc(self, disable: bool = True) -> OptimizeResult:
+        """Enable or disable Receive Segment Coalescing (RSC) on the active adapter (requires admin)."""
+        name = "Disable Receive Segment Coalescing (RSC)" if disable else "Enable Receive Segment Coalescing (RSC)"
+        if not self.check_admin():
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True,
+                error="Administrator privileges required",
+            )
+
+        adapter = self.get_active_adapter()
+        if not adapter.name:
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True, error="No active adapter name found",
+            )
+
+        # Check if RSC is supported
+        try:
+            check_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"$r = Get-NetAdapterRsc -Name '{adapter.name}' -ErrorAction SilentlyContinue; "
+                f"if ($r) {{ $r.IPv4Enabled }} else {{ 'NOT_SUPPORTED' }}"
+            ])
+            check_val = check_proc.stdout.strip().lower()
+            if check_val == "not_supported" or not check_val:
+                return _make_result(
+                    name=name, success=False, before="--", after="--",
+                    needs_admin=True,
+                    error="Adapter does not support RSC",
+                )
+
+            before_status = "Enabled" if check_val == "true" else "Disabled"
+            cmd = (
+                f"Disable-NetAdapterRsc -Name '{adapter.name}' -IPv4 -IPv6 -ErrorAction Stop"
+                if disable else
+                f"Enable-NetAdapterRsc -Name '{adapter.name}' -IPv4 -IPv6 -ErrorAction Stop"
+            )
+
+            proc = _run(["powershell", "-NoProfile", "-Command", cmd])
+            ok = proc.returncode == 0
+
+            # Verify
+            verify_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"(Get-NetAdapterRsc -Name '{adapter.name}' -ErrorAction SilentlyContinue).IPv4Enabled"
+            ])
+            verify_val = verify_proc.stdout.strip().lower()
+            verified = ok and (verify_val == "false" if disable else verify_val == "true")
+            after_status = "Disabled" if verify_val == "false" else ("Enabled" if verify_val == "true" else "Unknown")
+
+            return _make_result(
+                name=name, success=verified,
+                before=before_status, after=after_status,
+                desired="Disabled" if disable else "Enabled",
+                needs_admin=True,
+                command=cmd,
+                command_exit_code=proc.returncode,
+                verification=f"IPv4Enabled: {verify_val}",
+                note="Disables packet coalescing to avoid processing delay and jitter" if (verified and disable) else "",
+            )
+        except Exception as exc:
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True, error=str(exc),
+            )
+
+    def optimize_lso(self, disable: bool = True) -> OptimizeResult:
+        """Enable or disable Large Send Offload (LSO) on the active adapter (requires admin)."""
+        name = "Disable Large Send Offload (LSO)" if disable else "Enable Large Send Offload (LSO)"
+        if not self.check_admin():
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True,
+                error="Administrator privileges required",
+            )
+
+        adapter = self.get_active_adapter()
+        if not adapter.name:
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True, error="No active adapter name found",
+            )
+
+        # Check if LSO is supported
+        try:
+            check_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"$l = Get-NetAdapterLso -Name '{adapter.name}' -ErrorAction SilentlyContinue; "
+                f"if ($l) {{ $l.IPv4Enabled }} else {{ 'NOT_SUPPORTED' }}"
+            ])
+            check_val = check_proc.stdout.strip().lower()
+            if check_val == "not_supported" or not check_val:
+                return _make_result(
+                    name=name, success=False, before="--", after="--",
+                    needs_admin=True,
+                    error="Adapter does not support LSO",
+                )
+
+            before_status = "Enabled" if check_val == "true" else "Disabled"
+            cmd = (
+                f"Disable-NetAdapterLso -Name '{adapter.name}' -IPv4 -IPv6 -ErrorAction Stop"
+                if disable else
+                f"Enable-NetAdapterLso -Name '{adapter.name}' -IPv4 -IPv6 -ErrorAction Stop"
+            )
+
+            proc = _run(["powershell", "-NoProfile", "-Command", cmd])
+            ok = proc.returncode == 0
+
+            # Verify
+            verify_proc = _run([
+                "powershell", "-NoProfile", "-Command",
+                f"(Get-NetAdapterLso -Name '{adapter.name}' -ErrorAction SilentlyContinue).IPv4Enabled"
+            ])
+            verify_val = verify_proc.stdout.strip().lower()
+            verified = ok and (verify_val == "false" if disable else verify_val == "true")
+            after_status = "Disabled" if verify_val == "false" else ("Enabled" if verify_val == "true" else "Unknown")
+
+            return _make_result(
+                name=name, success=verified,
+                before=before_status, after=after_status,
+                desired="Disabled" if disable else "Enabled",
+                needs_admin=True,
+                command=cmd,
+                command_exit_code=proc.returncode,
+                verification=f"IPv4Enabled: {verify_val}",
+                note="Disables segmentation offloading to guarantee consistent packet timing" if (verified and disable) else "",
+            )
+        except Exception as exc:
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True, error=str(exc),
+            )
 
     # ------------------------------------------------------------------
     # Windows network tweaks
@@ -1249,7 +1559,7 @@ class NetworkOptimizer:
 
             iface_path = f"{base_path}\\{target_guid}"
             reg_full = f"HKLM\\{iface_path}"
-            cmd_desc = f"Set {reg_full}\\TcpAckFrequency=1, TCPNoDelay=1"
+            cmd_desc = f"Set {reg_full}\\TcpAckFrequency=1, TCPNoDelay=1, TcpDelAckTicks=0"
 
             # Read current state
             nagle_before = "Enabled (default)"
@@ -1261,7 +1571,12 @@ class NetworkOptimizer:
                     try:
                         nd, _ = winreg.QueryValueEx(key, "TCPNoDelay")
                         ack, _ = winreg.QueryValueEx(key, "TcpAckFrequency")
-                        if nd == 1 and ack == 1:
+                        ticks = 2
+                        try:
+                            ticks, _ = winreg.QueryValueEx(key, "TcpDelAckTicks")
+                        except OSError:
+                            pass
+                        if nd == 1 and ack == 1 and ticks == 0:
                             nagle_before = "Disabled"
                     except OSError:
                         pass
@@ -1278,6 +1593,9 @@ class NetworkOptimizer:
                 winreg.SetValueEx(
                     key, "TCPNoDelay", 0, winreg.REG_DWORD, 1,
                 )
+                winreg.SetValueEx(
+                    key, "TcpDelAckTicks", 0, winreg.REG_DWORD, 0,
+                )
 
             # Verify
             nagle_after = "Unknown"
@@ -1288,10 +1606,15 @@ class NetworkOptimizer:
                 ) as key:
                     nd, _ = winreg.QueryValueEx(key, "TCPNoDelay")
                     ack, _ = winreg.QueryValueEx(key, "TcpAckFrequency")
-                    if nd == 1 and ack == 1:
+                    ticks = 2
+                    try:
+                        ticks, _ = winreg.QueryValueEx(key, "TcpDelAckTicks")
+                    except OSError:
+                        pass
+                    if nd == 1 and ack == 1 and ticks == 0:
                         nagle_after = "Disabled"
                     else:
-                        nagle_after = f"TCPNoDelay={nd}, TcpAckFrequency={ack}"
+                        nagle_after = f"TCPNoDelay={nd}, TcpAckFrequency={ack}, TcpDelAckTicks={ticks}"
             except OSError:
                 nagle_after = "Written (unverified)"
 
@@ -1304,7 +1627,7 @@ class NetworkOptimizer:
                 command=cmd_desc,
                 verification=f"Registry read-back: {nagle_after}",
                 reboot_required=True,
-                note="Disables send buffering for lower latency; reboot recommended",
+                note="Disables TCP delay mechanisms and delayed ACK timer for lowest latency; reboot recommended",
             )
         except OSError as exc:
             return _make_result(
@@ -1337,7 +1660,7 @@ class NetworkOptimizer:
             logger.warning("Failed to read MTU: %s", exc)
         return 1500  # sensible default
 
-    def find_optimal_mtu(self, target: str = "8.8.8.8") -> int:
+    def find_optimal_mtu(self, target: str = "8.8.8.8") -> Optional[int]:
         """Binary-search for the largest MTU that does not cause fragmentation.
 
         Uses ``ping -f -l <size>`` to test.  The returned value includes
@@ -1345,7 +1668,7 @@ class NetworkOptimizer:
         """
         low = 500
         high = 1500
-        best = 1400  # safe fallback
+        best: Optional[int] = None
 
         while low <= high:
             mid = (low + high) // 2
@@ -1378,6 +1701,10 @@ class NetworkOptimizer:
                 else:
                     # Timeout or other failure — shrink
                     high = mid - 1
+
+        if best is None:
+            logger.warning("MTU discovery was inconclusive; leaving current MTU unchanged")
+            return None
 
         optimal_mtu = best + 28  # add IP+ICMP header
         logger.info("Optimal MTU detected: %d (payload %d + 28)", optimal_mtu, best)
@@ -1484,6 +1811,36 @@ class NetworkOptimizer:
         except OSError:
             pass
 
+        # Check TcpDelAckTicks state
+        tcp_del_ack_ticks: int | None = None
+        if nagle_guid:
+            iface_path = f"{base_path}\\{nagle_guid}"
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
+                    winreg.KEY_READ,
+                ) as key:
+                    try:
+                        val, _ = winreg.QueryValueEx(key, "TcpDelAckTicks")
+                        tcp_del_ack_ticks = int(val)
+                    except OSError:
+                        pass
+            except OSError:
+                pass
+
+        # Check FastSendDatagramThreshold state
+        fast_send_datagram_threshold: int | None = None
+        afd_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, afd_path, 0,
+                winreg.KEY_READ,
+            ) as key:
+                val, _ = winreg.QueryValueEx(key, "FastSendDatagramThreshold")
+                fast_send_datagram_threshold = int(val)
+        except OSError:
+            pass
+
         # Snapshot adapter settings
         adapter_backup = self._backup_adapter_settings()
 
@@ -1501,6 +1858,8 @@ class NetworkOptimizer:
             adapter=adapter_backup,
             tcp_heuristics=tcp_heuristics,
             system_responsiveness=system_responsiveness,
+            fast_send_datagram_threshold=fast_send_datagram_threshold,
+            tcp_del_ack_ticks=tcp_del_ack_ticks,
         )
 
         # Persist to disk
@@ -1549,10 +1908,58 @@ class NetworkOptimizer:
             except Exception:
                 pass
 
+            # RSC state
+            rsc_enabled: bool | None = None
+            try:
+                proc = _run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"(Get-NetAdapterRsc -Name '{name}' -ErrorAction SilentlyContinue).IPv4Enabled",
+                ])
+                val = proc.stdout.strip().lower()
+                if val == "true":
+                    rsc_enabled = True
+                elif val == "false":
+                    rsc_enabled = False
+            except Exception:
+                pass
+
+            # LSO state
+            lso_enabled: bool | None = None
+            try:
+                proc = _run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"(Get-NetAdapterLso -Name '{name}' -ErrorAction SilentlyContinue).IPv4Enabled",
+                ])
+                val = proc.stdout.strip().lower()
+                if val == "true":
+                    lso_enabled = True
+                elif val == "false":
+                    lso_enabled = False
+            except Exception:
+                pass
+
+            # EEE state
+            eee_enabled: str | None = None
+            try:
+                proc = _run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"$p = Get-NetAdapterAdvancedProperty -Name '{name}' -ErrorAction SilentlyContinue "
+                    f"| Where-Object {{ $_.RegistryKeyword -eq '*EEE' -or $_.RegistryKeyword -eq 'EEE' }}; "
+                    f"if ($p) {{ $p.RegistryValue }} else {{ '' }}",
+                ])
+                val = proc.stdout.strip()
+                if val:
+                    eee_enabled = val
+            except Exception:
+                pass
+
             return AdapterBackup(
                 name=name,
                 power_management_enabled=power_enabled,
                 interrupt_moderation_enabled=int_mod_enabled,
+                rsc_enabled=rsc_enabled,
+                lso_enabled=lso_enabled,
+                eee_enabled=eee_enabled,
             )
         except Exception as exc:
             logger.warning("Failed to backup adapter settings: %s", exc)
@@ -1580,6 +1987,12 @@ class NetworkOptimizer:
             # Handle adapter sub-object
             adapter_raw = data.pop("adapter", None)
             if adapter_raw and isinstance(adapter_raw, dict):
+                if "rsc_enabled" not in adapter_raw:
+                    adapter_raw["rsc_enabled"] = None
+                if "lso_enabled" not in adapter_raw:
+                    adapter_raw["lso_enabled"] = None
+                if "eee_enabled" not in adapter_raw:
+                    adapter_raw["eee_enabled"] = None
                 data["adapter"] = AdapterBackup(**adapter_raw)
             else:
                 data["adapter"] = None
@@ -1587,6 +2000,10 @@ class NetworkOptimizer:
                 data["tcp_heuristics"] = "unknown"
             if "system_responsiveness" not in data:
                 data["system_responsiveness"] = None
+            if "fast_send_datagram_threshold" not in data:
+                data["fast_send_datagram_threshold"] = None
+            if "tcp_del_ack_ticks" not in data:
+                data["tcp_del_ack_ticks"] = None
             return BackupData(**data)
         except Exception as exc:
             logger.warning("Failed to load backup: %s", exc)
@@ -1749,7 +2166,7 @@ class NetworkOptimizer:
                     r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
                     r"\Interfaces\\" + backup.nagle_interface_guid
                 )
-                cmd_desc = f"Delete registry TcpAckFrequency, TCPNoDelay from {backup.nagle_interface_guid}"
+                cmd_desc = f"Delete/Restore registry TcpAckFrequency, TCPNoDelay, TcpDelAckTicks from {backup.nagle_interface_guid}"
                 try:
                     with winreg.OpenKey(
                         winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
@@ -1761,13 +2178,26 @@ class NetworkOptimizer:
                                 winreg.DeleteValue(key, val_name)
                             except OSError:
                                 pass
+                        if backup.tcp_del_ack_ticks is None:
+                            try:
+                                winreg.DeleteValue(key, "TcpDelAckTicks")
+                            except OSError:
+                                pass
+                        else:
+                            try:
+                                winreg.SetValueEx(
+                                    key, "TcpDelAckTicks", 0,
+                                    winreg.REG_DWORD, backup.tcp_del_ack_ticks,
+                                )
+                            except OSError:
+                                pass
                     results.append(_make_result(
                         name="Restore Nagle's algorithm", success=True,
                         before="Disabled", after="Enabled (default)",
                         needs_admin=True,
                         command=cmd_desc,
                         reboot_required=True,
-                        note="Registry overrides removed; reboot recommended",
+                        note="Registry overrides removed/restored; reboot recommended",
                     ))
                 except OSError as exc:
                     results.append(_make_result(
@@ -1776,6 +2206,45 @@ class NetworkOptimizer:
                         needs_admin=True, error=str(exc),
                         command=cmd_desc,
                     ))
+
+        # --- FastSendDatagramThreshold ---
+        if hasattr(backup, "fast_send_datagram_threshold") and backup.fast_send_datagram_threshold is not None:
+            if not is_admin:
+                results.append(_need_admin("Restore FastSendDatagramThreshold"))
+            else:
+                afd_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
+                cmd_desc = "Restore registry FastSendDatagramThreshold"
+                try:
+                    with winreg.OpenKey(
+                        winreg.HKEY_LOCAL_MACHINE, afd_path, 0,
+                        winreg.KEY_SET_VALUE,
+                    ) as key:
+                        winreg.SetValueEx(
+                            key, "FastSendDatagramThreshold", 0,
+                            winreg.REG_DWORD, backup.fast_send_datagram_threshold,
+                        )
+                    results.append(_make_result(
+                        name="Restore FastSendDatagramThreshold", success=True,
+                        before="current", after=str(backup.fast_send_datagram_threshold),
+                        needs_admin=True, command=cmd_desc,
+                    ))
+                except OSError as exc:
+                    results.append(_make_result(
+                        name="Restore FastSendDatagramThreshold", success=False,
+                        before="current", after="",
+                        needs_admin=True, error=str(exc), command=cmd_desc,
+                    ))
+        elif is_admin:
+            # If it was originally not set (None), we delete the registry key override to return to default
+            afd_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, afd_path, 0,
+                    winreg.KEY_SET_VALUE,
+                ) as key:
+                    winreg.DeleteValue(key, "FastSendDatagramThreshold")
+            except OSError:
+                pass
 
         # --- Adapter power management ---
         if backup.adapter and backup.adapter.name:
@@ -1849,6 +2318,102 @@ class NetworkOptimizer:
                             command=im_cmd,
                         ))
 
+            # --- Adapter RSC Restore ---
+            if getattr(backup.adapter, "rsc_enabled", None) is not None:
+                rsc_cmd = (
+                    f"Enable-NetAdapterRsc -Name '{adapter_name}' -IPv4 -IPv6 -ErrorAction SilentlyContinue"
+                    if backup.adapter.rsc_enabled else
+                    f"Disable-NetAdapterRsc -Name '{adapter_name}' -IPv4 -IPv6 -ErrorAction SilentlyContinue"
+                )
+                if not is_admin:
+                    results.append(_need_admin("Restore RSC"))
+                else:
+                    try:
+                        proc = _run(["powershell", "-NoProfile", "-Command", rsc_cmd])
+                        ok = proc.returncode == 0
+                        results.append(_make_result(
+                            name="Restore RSC", success=ok,
+                            before="current", after="Enabled" if backup.adapter.rsc_enabled else "Disabled",
+                            needs_admin=True,
+                            error=proc.stderr.strip() or None if not ok else None,
+                            command=rsc_cmd,
+                            command_exit_code=proc.returncode,
+                        ))
+                    except Exception as exc:
+                        results.append(_make_result(
+                            name="Restore RSC", success=False,
+                            before="current", after="",
+                            needs_admin=True, error=str(exc),
+                            command=rsc_cmd,
+                        ))
+
+            # --- Adapter LSO Restore ---
+            if getattr(backup.adapter, "lso_enabled", None) is not None:
+                lso_cmd = (
+                    f"Enable-NetAdapterLso -Name '{adapter_name}' -IPv4 -IPv6 -ErrorAction SilentlyContinue"
+                    if backup.adapter.lso_enabled else
+                    f"Disable-NetAdapterLso -Name '{adapter_name}' -IPv4 -IPv6 -ErrorAction SilentlyContinue"
+                )
+                if not is_admin:
+                    results.append(_need_admin("Restore LSO"))
+                else:
+                    try:
+                        proc = _run(["powershell", "-NoProfile", "-Command", lso_cmd])
+                        ok = proc.returncode == 0
+                        results.append(_make_result(
+                            name="Restore LSO", success=ok,
+                            before="current", after="Enabled" if backup.adapter.lso_enabled else "Disabled",
+                            needs_admin=True,
+                            error=proc.stderr.strip() or None if not ok else None,
+                            command=lso_cmd,
+                            command_exit_code=proc.returncode,
+                        ))
+                    except Exception as exc:
+                        results.append(_make_result(
+                            name="Restore LSO", success=False,
+                            before="current", after="",
+                            needs_admin=True, error=str(exc),
+                            command=lso_cmd,
+                        ))
+
+            # --- Adapter EEE Restore ---
+            if getattr(backup.adapter, "eee_enabled", None) is not None:
+                if not is_admin:
+                    results.append(_need_admin("Restore EEE"))
+                else:
+                    try:
+                        kw_proc = _run([
+                            "powershell", "-NoProfile", "-Command",
+                            f"$p = Get-NetAdapterAdvancedProperty -Name '{adapter_name}' -ErrorAction SilentlyContinue "
+                            f"| Where-Object {{ $_.RegistryKeyword -eq '*EEE' -or $_.RegistryKeyword -eq 'EEE' }}; "
+                            f"if ($p) {{ $p.RegistryKeyword }} else {{ '' }}",
+                        ])
+                        kw = kw_proc.stdout.strip()
+                        if kw:
+                            eee_cmd = f"Set-NetAdapterAdvancedProperty -Name '{adapter_name}' -RegistryKeyword '{kw}' -RegistryValue {backup.adapter.eee_enabled}"
+                            proc = _run(["powershell", "-NoProfile", "-Command", eee_cmd])
+                            ok = proc.returncode == 0
+                            results.append(_make_result(
+                                name="Restore EEE", success=ok,
+                                before="current", after=f"Value {backup.adapter.eee_enabled}",
+                                needs_admin=True,
+                                error=proc.stderr.strip() or None if not ok else None,
+                                command=eee_cmd,
+                                command_exit_code=proc.returncode,
+                            ))
+                        else:
+                            results.append(_make_result(
+                                name="Restore EEE", success=False,
+                                before="current", after="",
+                                needs_admin=True, error="EEE property not found on adapter",
+                            ))
+                    except Exception as exc:
+                        results.append(_make_result(
+                            name="Restore EEE", success=False,
+                            before="current", after="",
+                            needs_admin=True, error=str(exc),
+                        ))
+
         # --- TCP Heuristics ---
         if backup.tcp_heuristics and backup.tcp_heuristics != "unknown":
             if not is_admin:
@@ -1902,6 +2467,101 @@ class NetworkOptimizer:
         heuristics = self.get_tcp_heuristics()
         responsiveness = self.get_system_responsiveness()
 
+        # Check current TcpDelAckTicks in active interface
+        tcp_del_ack_ticks: int | None = None
+        base_path = r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces"
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base_path) as base:
+                idx = 0
+                while True:
+                    try:
+                        guid = winreg.EnumKey(base, idx)
+                    except OSError:
+                        break
+                    idx += 1
+                    try:
+                        with winreg.OpenKey(base, guid) as sub:
+                            for val_name in ("DhcpDefaultGateway", "DefaultGateway"):
+                                try:
+                                    gw, _ = winreg.QueryValueEx(sub, val_name)
+                                    if gw and any(g for g in gw if g):
+                                        try:
+                                            ticks, _ = winreg.QueryValueEx(sub, "TcpDelAckTicks")
+                                            tcp_del_ack_ticks = int(ticks)
+                                        except OSError:
+                                            pass
+                                        break
+                                except OSError:
+                                    continue
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+
+        # Check current FastSendDatagramThreshold
+        fast_send_datagram_threshold: int | None = None
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\AFD\Parameters", 0,
+                winreg.KEY_READ,
+            ) as key:
+                val, _ = winreg.QueryValueEx(key, "FastSendDatagramThreshold")
+                fast_send_datagram_threshold = int(val)
+        except OSError:
+            pass
+
+        # Check adapter settings
+        rsc_disabled: bool | None = None
+        lso_disabled: bool | None = None
+        eee_disabled: bool | None = None
+
+        try:
+            adapter = self.get_active_adapter()
+            if adapter.name:
+                # Check RSC
+                proc = _run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"(Get-NetAdapterRsc -Name '{adapter.name}' -ErrorAction SilentlyContinue).IPv4Enabled",
+                ])
+                val = proc.stdout.strip().lower()
+                if val == "true":
+                    rsc_disabled = False
+                elif val == "false":
+                    rsc_disabled = True
+
+                # Check LSO
+                proc = _run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"(Get-NetAdapterLso -Name '{adapter.name}' -ErrorAction SilentlyContinue).IPv4Enabled",
+                ])
+                val = proc.stdout.strip().lower()
+                if val == "true":
+                    lso_disabled = False
+                elif val == "false":
+                    lso_disabled = True
+
+                # Check EEE
+                # Find keyword first
+                kw_proc = _run([
+                    "powershell", "-NoProfile", "-Command",
+                    f"$p = Get-NetAdapterAdvancedProperty -Name '{adapter.name}' -ErrorAction SilentlyContinue "
+                    f"| Where-Object {{ $_.RegistryKeyword -eq '*EEE' -or $_.RegistryKeyword -eq 'EEE' }}; "
+                    f"if ($p) {{ $p.RegistryKeyword }} else {{ '' }}",
+                ])
+                kw = kw_proc.stdout.strip()
+                if kw:
+                    val_proc = _run([
+                        "powershell", "-NoProfile", "-Command",
+                        f"(Get-NetAdapterAdvancedProperty -Name '{adapter.name}' -RegistryKeyword '{kw}' -ErrorAction SilentlyContinue).RegistryValue",
+                    ])
+                    val = val_proc.stdout.strip()
+                    if val == "0":
+                        eee_disabled = True
+                    elif val in ("1", "2", "3"):
+                        eee_disabled = False
+        except Exception:
+            pass
+
         return {
             "admin": self.check_admin(),
             "tcp": asdict(tcp),
@@ -1911,6 +2571,11 @@ class NetworkOptimizer:
             "network_throttling_index": throttling,
             "tcp_heuristics": heuristics,
             "system_responsiveness": responsiveness,
+            "fast_send_datagram_threshold": fast_send_datagram_threshold,
+            "tcp_del_ack_ticks": tcp_del_ack_ticks,
+            "rsc_disabled": rsc_disabled,
+            "lso_disabled": lso_disabled,
+            "eee_disabled": eee_disabled,
             "backup_exists": _BACKUP_FILE.is_file(),
         }
 
@@ -1923,6 +2588,10 @@ class NetworkOptimizer:
         *,
         skip_dns: bool = False,
         skip_mtu: bool = False,
+        apply_dns: bool = False,
+        optimize_eee: bool = False,
+        optimize_rsc: bool = False,
+        optimize_lso: bool = False,
     ) -> OptimizeReport:
         """Run all optimisations and return a comprehensive report.
 
@@ -1934,6 +2603,10 @@ class NetworkOptimizer:
             If ``True``, do not benchmark or change DNS servers.
         skip_mtu:
             If ``True``, do not discover or change MTU.
+        apply_dns:
+            If ``True``, allow DNS server changes when benchmarks show a clear
+            improvement. Defaults to ``False`` because public DNS can hurt VPN,
+            split-DNS, or CDN routing setups.
         """
         is_admin = self.check_admin()
         results: list[OptimizeResult] = []
@@ -1943,36 +2616,123 @@ class NetworkOptimizer:
 
         # --- DNS ---
         if not skip_dns:
-            logger.info("Running DNS benchmark ...")
-            dns_results = self.benchmark_dns()
-            if dns_results and dns_results[0].success_rate > 0.5:
-                best = dns_results[0]
-                # Pick a secondary from a different provider
-                secondary = ""
-                for r in dns_results[1:]:
-                    if r.name != best.name and r.success_rate > 0.5:
-                        secondary = r.server
-                        break
-                results.append(self.apply_dns(best.server, secondary))
-            else:
+            current_primary, current_secondary = self.get_current_dns()
+            current_dns = [
+                s for s in (current_primary, current_secondary)
+                if s
+            ]
+
+            if not apply_dns:
                 results.append(_make_result(
                     name="DNS optimization",
                     success=False,
-                    before="", after="",
+                    before=", ".join(current_dns), after="",
                     needs_admin=False,
-                    error="No reliable DNS servers found during benchmark",
-                    note="All tested DNS servers had <50% success rate",
+                    error="Skipped: DNS changes require explicit opt-in",
+                    note=(
+                        "Skipped automatic DNS switching; changing DNS can "
+                        "break VPN/split-DNS or worsen CDN routing"
+                    ),
                 ))
+            else:
+                logger.info("Running DNS benchmark ...")
+                servers = list(dict.fromkeys(current_dns + list(DNS_SERVERS.keys())))
+                dns_results = self.benchmark_dns(servers=servers)
+                reliable = [
+                    r for r in dns_results
+                    if r.success_rate >= 0.8 and r.avg_ms != float("inf")
+                ]
+                if reliable:
+                    best = reliable[0]
+                    current_results = [
+                        r for r in reliable if r.server in set(current_dns)
+                    ]
+                    current_best = min(
+                        current_results,
+                        key=lambda r: r.avg_ms,
+                        default=None,
+                    )
+
+                    clear_improvement = True
+                    if current_best is not None:
+                        gain_ms = current_best.avg_ms - best.avg_ms
+                        required_gain = max(5.0, current_best.avg_ms * 0.15)
+                        clear_improvement = gain_ms >= required_gain
+
+                    if best.server in current_dns:
+                        results.append(_make_result(
+                            name="DNS optimization",
+                            success=True,
+                            before=", ".join(current_dns),
+                            after=", ".join(current_dns),
+                            desired=", ".join(current_dns),
+                            needs_admin=False,
+                            note="Current DNS already benchmarks fastest enough",
+                        ))
+                    elif not clear_improvement:
+                        results.append(_make_result(
+                            name="DNS optimization",
+                            success=False,
+                            before=", ".join(current_dns), after="",
+                            needs_admin=False,
+                            error="Skipped: DNS benchmark improvement was not clear",
+                            note="Skipped DNS change because the measured gain was too small",
+                        ))
+                    else:
+                        secondary = ""
+                        for r in reliable:
+                            if r.server != best.server and r.name != best.name:
+                                secondary = r.server
+                                break
+                        results.append(self.apply_dns(best.server, secondary))
+                else:
+                    results.append(_make_result(
+                        name="DNS optimization",
+                        success=False,
+                        before=", ".join(current_dns), after="",
+                        needs_admin=False,
+                        error="No reliable DNS servers found during benchmark",
+                        note="All tested DNS servers had <80% success rate",
+                    ))
 
         # --- TCP ---
         results.extend(self.optimize_tcp())
+        results.append(self.optimize_winsock_datagram_threshold())
 
         # --- Adapter ---
-        results.extend(self.optimize_adapter())
+        results.extend(self.optimize_adapter(include_interrupt_moderation=False))
+        if optimize_eee:
+            results.append(self.optimize_eee(disable=True))
+        if optimize_rsc:
+            results.append(self.optimize_rsc(disable=True))
+        if optimize_lso:
+            results.append(self.optimize_lso(disable=True))
 
         # --- Flush caches ---
-        results.append(self.flush_dns_cache())
-        results.append(self.flush_arp_cache())
+        dns_changed = any(
+            r.name == "Set DNS servers" and r.status == "Applied"
+            for r in results
+        )
+        if dns_changed:
+            results.append(self.flush_dns_cache())
+        else:
+            results.append(_make_result(
+                name="Flush DNS cache",
+                success=False,
+                before="", after="",
+                needs_admin=False,
+                error="Skipped: DNS cache flush is only needed after DNS changes",
+                note="Skipped DNS cache flush because DNS servers were not changed",
+            ))
+
+        results.append(_make_result(
+            name="Flush ARP cache",
+            success=False,
+            before="", after="",
+            needs_admin=True,
+            error="Skipped: ARP cache flush is a manual repair action",
+            note="Skipped ARP flush to avoid a short LAN hiccup",
+        ))
 
         # --- Network throttling ---
         results.append(self.disable_network_throttling())
@@ -1990,7 +2750,17 @@ class NetworkOptimizer:
         if not skip_mtu:
             logger.info("Discovering optimal MTU ...")
             optimal_mtu = self.find_optimal_mtu()
-            results.append(self.apply_mtu(optimal_mtu))
+            if optimal_mtu is None:
+                results.append(_make_result(
+                    name="Set MTU",
+                    success=False,
+                    before="", after="",
+                    needs_admin=False,
+                    error="Skipped: MTU discovery had no successful probe",
+                    note="Skipped MTU change because probe results were inconclusive",
+                ))
+            else:
+                results.append(self.apply_mtu(optimal_mtu))
 
         # --- Summary ---
         total = len(results)
@@ -2002,6 +2772,12 @@ class NetworkOptimizer:
         unsupported = sum(1 for r in results if r.status == "Unsupported")
         reboot = sum(1 for r in results if r.status == "Reboot required")
 
+        skipped_admin = sum(
+            1 for r in results
+            if r.status == "Skipped" and ("admin" in (r.note or "").lower() or "privilege" in (r.note or "").lower())
+        )
+        skipped_other = skipped - skipped_admin
+
         parts: list[str] = []
         if applied:
             parts.append(f"{applied} applied")
@@ -2009,8 +2785,10 @@ class NetworkOptimizer:
             parts.append(f"{verified} already optimal")
         if reboot:
             parts.append(f"{reboot} need reboot")
-        if skipped:
-            parts.append(f"{skipped} skipped (requires Administrator)")
+        if skipped_admin:
+            parts.append(f"{skipped_admin} skipped (requires Administrator)")
+        if skipped_other:
+            parts.append(f"{skipped_other} skipped")
         if failed:
             parts.append(f"{failed} failed")
         if unsupported:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -11,7 +12,7 @@ from losshound.core.config import AppConfig
 from losshound.core.diagnosis import diagnose
 from losshound.core.dns_checks import check_dns
 from losshound.core.gateway import detect_gateway
-from losshound.core.models import Diagnosis, Observation, RouteSnapshot
+from losshound.core.models import Diagnosis, DnsResult, Observation, RouteSnapshot
 from losshound.core.ping import ping
 from losshound.core.route_monitor import trace_route
 from losshound.storage.history import HistoryStore
@@ -32,6 +33,7 @@ class MonitorWorker(QObject):
         self._history = history
         self._gateway_ip: Optional[str] = None
         self._last_route: Optional[RouteSnapshot] = None
+        self._last_dns_check_monotonic: Optional[float] = None
         self._tracert_running = False
         self._tracert_lock = threading.Lock()
         self._stopped = False
@@ -48,11 +50,10 @@ class MonitorWorker(QObject):
         self._route_timer.timeout.connect(self._run_route_check)
         self._route_timer.start(self._config.route_interval_seconds * 1000)
 
-        # Auto mini-benchmark timer
-        bench_interval = self._config.auto_benchmark_interval_minutes * 60 * 1000
-        self._bench_timer = QTimer(self)
-        self._bench_timer.timeout.connect(self._run_auto_benchmark)
-        self._bench_timer.start(bench_interval)
+        # Auto mini-benchmark timer. A non-positive interval disables it
+        # instead of creating a zero-delay timer that loops continuously.
+        self._bench_timer: Optional[QTimer] = None
+        self._configure_bench_timer()
 
         # Prune timer (hourly)
         self._prune_timer = QTimer(self)
@@ -64,8 +65,9 @@ class MonitorWorker(QObject):
         self._run_route_check()
         self._prune()
 
-        # Delay auto-benchmark by 2 minutes so startup isn't slow
-        QTimer.singleShot(120_000, self._run_auto_benchmark)
+        # Delay auto-benchmark by 2 minutes so startup isn't slow.
+        if self._bench_timer and self._bench_timer.isActive():
+            QTimer.singleShot(120_000, self._run_auto_benchmark)
 
     def stop(self):
         self._stopped = True
@@ -73,7 +75,7 @@ class MonitorWorker(QObject):
             self._ping_timer.stop()
         if hasattr(self, "_route_timer"):
             self._route_timer.stop()
-        if hasattr(self, "_bench_timer"):
+        if getattr(self, "_bench_timer", None):
             self._bench_timer.stop()
         if hasattr(self, "_prune_timer"):
             self._prune_timer.stop()
@@ -84,10 +86,29 @@ class MonitorWorker(QObject):
             self._ping_timer.setInterval(config.ping_interval_seconds * 1000)
         if hasattr(self, "_route_timer"):
             self._route_timer.setInterval(config.route_interval_seconds * 1000)
-        if hasattr(self, "_bench_timer"):
-            self._bench_timer.setInterval(
-                config.auto_benchmark_interval_minutes * 60 * 1000
-            )
+        self._configure_bench_timer()
+
+    def _configure_bench_timer(self) -> None:
+        interval_minutes = self._config.auto_benchmark_interval_minutes
+        timer = getattr(self, "_bench_timer", None)
+
+        if interval_minutes <= 0:
+            if timer is not None:
+                timer.stop()
+            return
+
+        interval_ms = int(interval_minutes * 60 * 1000)
+        if timer is None:
+            timer = QTimer(self)
+            timer.timeout.connect(self._run_auto_benchmark)
+            self._bench_timer = timer
+
+        timer.start(interval_ms)
+
+    def _dns_due(self) -> bool:
+        interval = max(1, self._config.dns_interval_seconds)
+        last_check = self._last_dns_check_monotonic
+        return last_check is None or (time.monotonic() - last_check) >= interval
 
     def _run_ping_cycle(self):
         """Run gateway ping, public pings, and DNS checks."""
@@ -122,12 +143,14 @@ class MonitorWorker(QObject):
                 pub_pings.append(result)
 
             # DNS checks
-            dns_results = []
-            for hostname in self._config.dns_test_hostnames:
-                if self._stopped or QThread.currentThread().isInterruptionRequested():
-                    return
-                result = check_dns(hostname)
-                dns_results.append(result)
+            dns_results: list[DnsResult] = []
+            if self._dns_due():
+                for hostname in self._config.dns_test_hostnames:
+                    if self._stopped or QThread.currentThread().isInterruptionRequested():
+                        return
+                    result = check_dns(hostname)
+                    dns_results.append(result)
+                self._last_dns_check_monotonic = time.monotonic()
 
             # Build observation
             obs = Observation(
@@ -200,9 +223,13 @@ class MonitorWorker(QObject):
             from losshound.core.benchmark import run_benchmark, save_snapshot
 
             logger.info("Running auto mini-benchmark")
+            ping_targets = self._config.public_ping_targets[:1] or ["1.1.1.1"]
             snapshot = run_benchmark(
                 label="auto",
-                ping_count=10,  # lighter than manual benchmark
+                ping_count=max(1, min(self._config.ping_count, 4)),
+                ping_targets=ping_targets,
+                dns_servers=[],
+                tcp_targets=[],
             )
             save_snapshot(snapshot)
             logger.info("Auto mini-benchmark complete — score data saved")

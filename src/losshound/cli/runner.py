@@ -40,6 +40,7 @@ def run_cli(config: AppConfig):
     print()
 
     cycle = 0
+    last_dns_check = None
     while running:
         cycle += 1
         now = datetime.now()
@@ -63,16 +64,21 @@ def run_cli(config: AppConfig):
 
         # DNS
         dns_results = []
-        for hostname in config.dns_test_hostnames:
-            result = check_dns(hostname)
-            dns_results.append(result)
-            status = "OK" if result.resolved else "FAIL"
-            time_str = f"{result.resolution_time_ms:.0f}ms" if result.resolution_time_ms else "N/A"
-            print(f"  DNS {hostname}: {status} ({time_str})")
+        dns_interval = max(1, config.dns_interval_seconds)
+        if last_dns_check is None or (time.monotonic() - last_dns_check) >= dns_interval:
+            for hostname in config.dns_test_hostnames:
+                result = check_dns(hostname)
+                dns_results.append(result)
+                status = "OK" if result.resolved else "FAIL"
+                time_str = f"{result.resolution_time_ms:.0f}ms" if result.resolution_time_ms else "N/A"
+                print(f"  DNS {hostname}: {status} ({time_str})")
+            last_dns_check = time.monotonic()
 
         # Route (less frequent)
         route_snap = None
-        if cycle == 1 or cycle % (config.route_interval_seconds // config.ping_interval_seconds) == 0:
+        ping_interval = max(1, config.ping_interval_seconds)
+        route_every = max(1, round(config.route_interval_seconds / ping_interval))
+        if cycle == 1 or cycle % route_every == 0:
             print("  Running tracert...")
             route_snap = trace_route(config.tracert_target, max_hops=config.tracert_max_hops)
             print(f"  Route: {len(route_snap.hops)} hops ({'complete' if route_snap.completed else 'incomplete'})")
@@ -98,7 +104,7 @@ def run_cli(config: AppConfig):
         print()
 
         # Wait
-        for _ in range(config.ping_interval_seconds):
+        for _ in range(max(1, config.ping_interval_seconds)):
             if not running:
                 break
             time.sleep(1)

@@ -481,14 +481,38 @@ def get_local_network_info() -> Dict[str, str]:
     return result
 
 
-def get_subnet_ips(local_ip: str) -> List[str]:
-    """Given a local IP, return the list of all host IPs in the /24 subnet."""
+def get_subnet_ips(
+    local_ip: str,
+    subnet_mask: str = "",
+    max_hosts: int = 254,
+) -> List[str]:
+    """Return local subnet host IPs, capped to avoid oversized scan bursts."""
     if not local_ip:
         return []
+
+    if subnet_mask:
+        try:
+            network = ipaddress.ip_network(f"{local_ip}/{subnet_mask}", strict=False)
+            hosts = [str(ip) for ip in network.hosts() if str(ip) != local_ip]
+            if len(hosts) <= max_hosts:
+                return hosts
+
+            # Avoid sweeping very large office/VPN subnets. Keeping the local
+            # /24 neighborhood preserves the previous upper bound.
+            prefix = ".".join(local_ip.split(".")[:3]) + "."
+            nearby_hosts = [ip for ip in hosts if ip.startswith(prefix)]
+            return nearby_hosts[:max_hosts]
+        except ValueError:
+            logger.debug("Invalid subnet data for LAN scan: %s/%s", local_ip, subnet_mask)
+
     parts = local_ip.split(".")
     if len(parts) == 4:
         prefix = ".".join(parts[:3])
-        return [f"{prefix}.{i}" for i in range(1, 255) if f"{prefix}.{i}" != local_ip]
+        return [
+            f"{prefix}.{i}"
+            for i in range(1, 255)
+            if f"{prefix}.{i}" != local_ip
+        ][:max_hosts]
     return []
 
 
@@ -506,9 +530,11 @@ def ping_ip(ip: str) -> None:
         pass
 
 
-def run_ping_sweep(ips: List[str]) -> None:
+def run_ping_sweep(ips: List[str], max_workers: int = 16) -> None:
     """Ping all subnet IPs concurrently to populate the system's ARP cache."""
-    with ThreadPoolExecutor(max_workers=32) as executor:
+    if not ips:
+        return
+    with ThreadPoolExecutor(max_workers=min(max_workers, len(ips))) as executor:
         executor.map(ping_ip, ips)
 
 
@@ -1003,7 +1029,7 @@ def scan_local_network(history_store=None) -> List[Dict[str, str]]:
     logger.info("Starting LAN scan on interface: %s", local_ip)
     
     # Sweep subnet and run SSDP discovery concurrently
-    ips = get_subnet_ips(local_ip)
+    ips = get_subnet_ips(local_ip, net_info.get("mask", ""))
     
     ssdp_names = {}
     with ThreadPoolExecutor(max_workers=2) as executor:

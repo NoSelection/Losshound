@@ -4,7 +4,7 @@ import csv
 import logging
 import re
 import socket
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from io import StringIO
 from typing import List, Dict, Set
 
@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 # Local hostname cache to avoid repeated slow lookups
 _HOSTNAME_CACHE: Dict[str, str] = {}
+_HOSTNAME_LOOKUP_TIMEOUT_SECONDS = 1.0
+_MAX_HOSTNAME_LOOKUP_WORKERS = 4
+_MAX_HOSTNAME_LOOKUPS_PER_REFRESH = 8
 
 
 def resolve_connection_hostname(ip: str) -> str:
@@ -120,12 +123,26 @@ def get_active_connections() -> List[Dict[str, str]]:
             "state": state,
         })
         
-    # Resolve hostnames for newly seen remote IPs in parallel (1s timeout)
+    # Resolve a small batch of newly seen remote IPs. The executor is
+    # intentionally not used as a context manager: after the timeout, the
+    # caller should get results promptly instead of waiting on slow DNS.
     if unique_ips:
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_ip = {executor.submit(resolve_connection_hostname, ip): ip for ip in unique_ips}
-            from concurrent.futures import wait
-            done, not_done = wait(future_to_ip.keys(), timeout=1.0)
+        lookup_ips = sorted(unique_ips)[:_MAX_HOSTNAME_LOOKUPS_PER_REFRESH]
+        for ip in unique_ips - set(lookup_ips):
+            _HOSTNAME_CACHE[ip] = ip
+
+        executor = ThreadPoolExecutor(
+            max_workers=min(_MAX_HOSTNAME_LOOKUP_WORKERS, len(lookup_ips))
+        )
+        try:
+            future_to_ip = {
+                executor.submit(resolve_connection_hostname, ip): ip
+                for ip in lookup_ips
+            }
+            done, not_done = wait(
+                future_to_ip.keys(),
+                timeout=_HOSTNAME_LOOKUP_TIMEOUT_SECONDS,
+            )
             for future in done:
                 ip = future_to_ip[future]
                 try:
@@ -135,7 +152,10 @@ def get_active_connections() -> List[Dict[str, str]]:
                     _HOSTNAME_CACHE[ip] = ip
             for future in not_done:
                 ip = future_to_ip[future]
+                future.cancel()
                 _HOSTNAME_CACHE[ip] = ip
+        finally:
+            executor.shutdown(wait=False, cancel_futures=True)
                 
     # Attach resolved domain names to connections list
     for conn in connections:

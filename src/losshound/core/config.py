@@ -60,7 +60,7 @@ class AppConfig:
     tracert_max_hops: int = 20
     ping_count: int = 4
     ping_timeout_ms: int = 2000
-    auto_benchmark_interval_minutes: int = 60
+    auto_benchmark_interval_minutes: int = 0
     close_to_tray: bool = False
     pdf_default_dir: Optional[str] = None
     # When True, on launch we add a narrow Windows Firewall rule (UDP inbound on

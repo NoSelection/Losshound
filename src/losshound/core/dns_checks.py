@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 import socket
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime
-from typing import Optional
 
 from losshound.core.models import DnsResult
 
@@ -14,13 +14,13 @@ logger = logging.getLogger(__name__)
 def check_dns(hostname: str, timeout: float = 5.0) -> DnsResult:
     """Test DNS resolution for a hostname and measure timing."""
     now = datetime.now()
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError
 
     def _resolve():
         return socket.getaddrinfo(hostname, None, socket.AF_INET)
 
     start = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    executor = ThreadPoolExecutor(max_workers=1)
+    try:
         future = executor.submit(_resolve)
         try:
             results = future.result(timeout=timeout)
@@ -44,6 +44,7 @@ def check_dns(hostname: str, timeout: float = 5.0) -> DnsResult:
                     error="No results returned",
                 )
         except (TimeoutError, socket.timeout):
+            future.cancel()
             return DnsResult(
                 hostname=hostname,
                 timestamp=now,
@@ -65,3 +66,5 @@ def check_dns(hostname: str, timeout: float = 5.0) -> DnsResult:
                 resolved=False,
                 error=str(exc),
             )
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)

@@ -9,6 +9,7 @@
     "tracert_max_hops": 20,
     "ping_count": 4,
     "ping_timeout_ms": 2000,
+    "auto_benchmark_interval_minutes": 0,
     "diagnosis": {
         "gateway_loss_threshold": 20.0,
         "public_loss_threshold": 20.0,

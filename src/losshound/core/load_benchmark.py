@@ -206,7 +206,7 @@ def _download_file(url: str, result_holder: dict, stop_event: threading.Event):
         start = time.perf_counter()
         total_bytes = 0
 
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             while not stop_event.is_set():
                 chunk = resp.read(8192)
                 if not chunk:
@@ -422,8 +422,12 @@ def run_load_benchmark(
     ping_thread.start()
 
     load_thread.join(timeout=30)
+    stop_load.set()
     stop_ping.set()
     ping_thread.join(timeout=5)
+    load_thread.join(timeout=2)
+    if load_thread.is_alive():
+        logger.warning("Load generator did not stop within cleanup window")
 
     valid_loaded = [r for r in loaded_rtts if r > 0]
     if not valid_loaded:

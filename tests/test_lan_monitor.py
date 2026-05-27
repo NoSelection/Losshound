@@ -63,6 +63,11 @@ def test_get_subnet_ips():
     assert ips[-1] == "192.168.1.254"
 
 
+def test_get_subnet_ips_honors_subnet_mask():
+    ips = get_subnet_ips("192.168.1.10", "255.255.255.252")
+    assert ips == ["192.168.1.9"]
+
+
 def test_lookup_vendor():
     assert lookup_vendor("1c:3b:f3:ea:bb:cc") == "HP"
     assert lookup_vendor("04-d9-f5-12-34-56") == "ASUS"
@@ -383,4 +388,3 @@ def test_scan_ssdp_ignores_public_location():
          patch("urllib.request.urlopen") as urlopen:
         assert scan_ssdp() == {}
         urlopen.assert_not_called()
-

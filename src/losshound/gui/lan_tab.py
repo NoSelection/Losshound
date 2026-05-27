@@ -170,18 +170,30 @@ class LANTab(QWidget):
         self._conn_worker = None
         self._conn_refresh_in_progress = False
  
-        # Refresh local connections table every 5 seconds (performance optimization)
+        # Refresh local connections only while this tab is visible. The timer
+        # is kept gentle so subprocess and reverse-DNS work do not compete
+        # with the user's connection.
         self._refresh_timer = QTimer(self)
         self._refresh_timer.timeout.connect(self._refresh_connections)
-        self._refresh_timer.start(5000)
+        self._refresh_timer.setInterval(10000)
  
         # Initial loads
         self._refresh_devices_table()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._refresh_timer.isActive():
+            self._refresh_timer.start()
         self._refresh_connections()
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._refresh_timer.stop()
 
     def shutdown(self):
         """Cleanly terminate the scan and connection workers on app shutdown."""
         from losshound.gui._shutdown import stop_qthread
+        self._refresh_timer.stop()
         stop_qthread(self._query_worker)
         stop_qthread(self._write_worker)
 

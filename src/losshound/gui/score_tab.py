@@ -292,9 +292,7 @@ class ScoreTab(QWidget):
             return  # already running, ignore the click
         self._set_busy(True, "Running score benchmark...")
         self._worker = _ScoreWorker()
-        self._worker.progress.connect(
-            lambda msg: self._progress_bar.setFormat(msg),
-        )
+        self._worker.progress.connect(self._progress_bar.setFormat)
         self._worker.finished.connect(self._on_score_done)
         self._worker.start()
 
