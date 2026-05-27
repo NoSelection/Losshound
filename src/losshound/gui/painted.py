@@ -7,6 +7,8 @@ QSS can express.
 """
 from __future__ import annotations
 
+import math
+import time
 from collections import deque
 from typing import Deque, Iterable, Optional
 
@@ -19,10 +21,12 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     Signal,
+    QTimer,
 )
 from PySide6.QtGui import (
     QBrush,
     QColor,
+    QCursor,
     QFont,
     QFontMetrics,
     QLinearGradient,
@@ -58,34 +62,218 @@ from losshound.gui.palette import (
 
 
 class TexturedSurface(QWidget):
-    """A QWidget that paints the dark window fill + continuous dotted texture.
+    """An animated, interactive QWidget that paints a dynamic halftone Quantum Atom backdrop.
 
     Used as the dashboard content background so dots run unbroken across
-    panel boundaries instead of resetting per cell. Panels stacked on top
-    contribute only their borders and titles.
+    panel boundaries. Responsive to mouse movement and moves at a smooth 30 FPS.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setAutoFillBackground(False)
+        self.setMouseTracking(True)
+
+        self._start_time = time.time()
+        self._mouse_x = 0
+        self._mouse_y = 0
+        self._mouse_target_x = 0
+        self._mouse_target_y = 0
+        self._mouse_hover = False
+
+        # 30 FPS update timer
+        self._timer = QTimer(self)
+        self._timer.setInterval(33)
+        self._timer.timeout.connect(self.update_animation)
+        self._timer.start()
+
+    def update_animation(self) -> None:
+        # Resolve cursor position relative to this widget, ignoring child intercepts
+        local_pos = self.mapFromGlobal(QCursor.pos())
+        w = self.width()
+        h = self.height()
+        
+        if self.rect().contains(local_pos):
+            self._mouse_hover = True
+            self._mouse_x = local_pos.x()
+            self._mouse_y = local_pos.y()
+        else:
+            self._mouse_hover = False
+
+        # Soft mouse interpolation
+        if self._mouse_hover:
+            self._mouse_target_x += (self._mouse_x - self._mouse_target_x) * 0.15
+            self._mouse_target_y += (self._mouse_y - self._mouse_target_y) * 0.15
+        else:
+            # Gentle floating idle movement
+            t = (time.time() - self._start_time) * 0.8
+            self._mouse_target_x = w / 2.0 + math.cos(t * 0.8) * (w / 3.0)
+            self._mouse_target_y = h / 2.0 + math.sin(t * 0.5) * (h / 4.0)
+
+        self.update()
 
     def paintEvent(self, event):  # type: ignore[override]
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect()
         painter.fillRect(rect, qc("bg_window"))
 
-        painter.drawPixmap(0, 0, flowing_dot_field(rect.width(), rect.height()))
+        w = rect.width()
+        h = rect.height()
+        if w < 10 or h < 10:
+            return
 
+        max_dim = max(w, h)
+        centerX = w / 2.0
+        centerY = h / 2.0
+        t_val = (time.time() - self._start_time) * 0.8
+
+        # Halftone grid parameters
+        cell = 9
+        dot_size = 2.4
+
+        try:
+            import numpy as np
+            # Vectorized coordinate computation for maximum performance
+            xs = np.arange(cell / 2.0, w, cell)
+            ys = np.arange(cell / 2.0, h, cell)
+            X, Y = np.meshgrid(xs, ys)
+
+            DX = X - centerX
+            DY = Y - centerY
+            D = np.sqrt(DX*DX + DY*DY)
+
+            # Central nucleus glow
+            nucleus_radius = max_dim * 0.08
+            N_GLOW = np.exp(-D / nucleus_radius) * 0.95
+
+            # Orbital loops (3 distinct angled ellipses)
+            ORBIT_PROXIMITY = np.zeros_like(D)
+            ELECTRON_PROXIMITY = np.zeros_like(D)
+
+            majorAxis = max_dim * 0.28
+            minorAxis = max_dim * 0.095
+
+            orbits = [
+                {"angle": math.pi / 6.0, "speedMult": 1.2, "index": 0},
+                {"angle": -math.pi / 6.0, "speedMult": 0.95, "index": 1},
+                {"angle": math.pi / 2.0, "speedMult": 1.5, "index": 2}
+            ]
+
+            for orbit in orbits:
+                cosA = math.cos(orbit["angle"])
+                sinA = math.sin(orbit["angle"])
+
+                RX = DX * cosA + DY * sinA
+                RY = -DX * sinA + DY * cosA
+
+                radialFactor = np.sqrt((RX/majorAxis)**2 + (RY/minorAxis)**2)
+                proximity = np.exp(-((radialFactor - 1.0)**2) / (0.12 + math.sin(t_val + orbit["index"]) * 0.04))
+
+                # Electron trace
+                orbitTime = t_val * orbit["speedMult"]
+                eX = math.cos(orbitTime) * majorAxis
+                eY = math.sin(orbitTime) * minorAxis
+
+                electronPx = eX * cosA - eY * sinA + centerX
+                electronPy = eX * sinA + eY * cosA + centerY
+
+                EDx = X - electronPx
+                EDy = Y - electronPy
+                distToElectron = np.sqrt(EDx*EDx + EDy*EDy)
+                electronHalo = np.exp(-distToElectron / (max_dim * 0.075)) * 0.7
+
+                ORBIT_PROXIMITY += proximity * 0.15
+                ELECTRON_PROXIMITY += electronHalo
+
+            # Mouse gravity trail
+            mDx = X - self._mouse_target_x
+            mDy = Y - self._mouse_target_y
+            distToMouse = np.sqrt(mDx*mDx + mDy*mDy)
+            mouseGlow = np.exp(-distToMouse / (max_dim * 0.18)) * 0.28
+
+            # Calculate individual contributions to guide colors
+            blue_weight = N_GLOW * 1.1 + ORBIT_PROXIMITY
+            green_weight = ELECTRON_PROXIMITY
+            mouse_weight = mouseGlow
+
+            STRENGTH = blue_weight + green_weight + mouse_weight
+            STRENGTH = (STRENGTH - 0.5) * 1.35 + 0.5 * 1.1
+            INTENSITY = np.clip(STRENGTH, 0.0, 1.0)
+
+            # Flatten coordinates and weights for iteration
+            flat_x = X.ravel()
+            flat_y = Y.ravel()
+            flat_intensity = INTENSITY.ravel()
+            flat_blue = blue_weight.ravel()
+            flat_green = green_weight.ravel()
+            flat_mouse = mouse_weight.ravel()
+
+            for idx in range(len(flat_x)):
+                intensity = flat_intensity[idx]
+                px = flat_x[idx]
+                py = flat_y[idx]
+
+                if intensity <= 0.005:
+                    # Render standard base dot pattern
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(228, 234, 244, 12))
+                    painter.drawRect(QRectF(px - 0.5, py - 0.5, 1.0, 1.0))
+                else:
+                    # Clean monochrome black & white halftone style (white dots with varying alpha)
+                    alpha = int(18 + 225 * intensity)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(255, 255, 255, alpha))
+
+                    radius = max(1.0, intensity * dot_size)
+                    painter.drawEllipse(QPointF(px, py), radius, radius)
+
+        except Exception:
+            # Safe non-numpy fallback with a larger cell size to protect framerate
+            fallback_cell = 14
+            for px in range(int(fallback_cell / 2), w, fallback_cell):
+                for py in range(int(fallback_cell / 2), h, fallback_cell):
+                    dx = px - centerX
+                    dy = py - centerY
+                    d = math.sqrt(dx*dx + dy*dy)
+
+                    nucleus_radius = max_dim * 0.08
+                    nGlow = math.exp(-d / nucleus_radius) * 0.95 if d > 0 else 0.95
+
+                    rx = dx
+                    ry = dy
+                    radialFactor = math.sqrt((rx / (max_dim * 0.28))**2 + (ry / (max_dim * 0.095))**2)
+                    proximity = math.exp(-((radialFactor - 1.0)**2) / 0.12)
+
+                    mDx = px - self._mouse_target_x
+                    mDy = py - self._mouse_target_y
+                    distToMouse = math.sqrt(mDx*mDx + mDy*mDy)
+                    mouseGlow = math.exp(-distToMouse / (max_dim * 0.18)) * 0.28
+
+                    strength = nGlow * 1.1 + proximity * 0.15 * 0.58 + mouseGlow
+                    strength = (strength - 0.5) * 1.35 + 0.5 * 1.1
+                    intensity = max(0.0, min(1.0, strength))
+
+                    if intensity <= 0.01:
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.setBrush(QColor(228, 234, 244, 12))
+                        painter.drawRect(QRectF(px - 0.5, py - 0.5, 1.0, 1.0))
+                    else:
+                        alpha = int(18 + 225 * intensity)
+                        painter.setPen(Qt.PenStyle.NoPen)
+                        painter.setBrush(QColor(255, 255, 255, alpha))
+                        radius = max(1.0, intensity * 2.4)
+                        painter.drawEllipse(QPointF(px, py), radius, radius)
+
+        # Draw scanning lines and vignette overlay on top
         scanline = QPen(QColor(255, 255, 255, 4))
         scanline.setWidth(1)
         scanline.setCosmetic(True)
         painter.setPen(scanline)
-        for y in range(0, rect.height(), 6):
-            painter.drawLine(0, y, rect.width(), y)
+        for y in range(0, h, 6):
+            painter.drawLine(0, y, w, y)
 
-        gradient = QLinearGradient(0, 0, 0, rect.height())
+        gradient = QLinearGradient(0, 0, 0, h)
         gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
         gradient.setColorAt(0.72, QColor(0, 0, 0, 12))
         gradient.setColorAt(1.0, QColor(0, 0, 0, 76))
