@@ -25,7 +25,7 @@ from losshound.gui.tray import TrayIcon
 from losshound.gui.wifi_tab import WifiTab
 from losshound.gui.lan_tab import LANTab
 from losshound.gui.branding import app_icon
-from losshound.gui.painted import LosshoundTabBar
+from losshound.gui.painted import LosshoundTabBar, TexturedSurface
 from losshound.gui.theme import get_dark_stylesheet
 from losshound.gui.widgets import LosshoundHeader, MonitorStatusBar
 from losshound.storage.history import HistoryStore
@@ -47,8 +47,8 @@ class MainWindow(QMainWindow):
         self.resize(1480, 880)
         self.setStyleSheet(get_dark_stylesheet())
 
-        # Central widget with tabs
-        central = QWidget()
+        # Central widget with tabs (animated halftone backdrop)
+        central = TexturedSurface()
         self.setCentralWidget(central)
         layout = QVBoxLayout(central)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -62,12 +62,20 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._header)
 
         self._tabs = QTabWidget()
+        from losshound.gui.palette import c
+        self._tabs.setStyleSheet(
+            f"QTabWidget::pane {{ background: transparent; border: 1px solid {c('border')}; }} "
+            f"QTabWidget {{ background: transparent; }} "
+            f"QStackedWidget {{ background: transparent; }} "
+            f"QWidget#dashboard-tab {{ background: transparent; }}"
+        )
         self._tabs.setTabBar(LosshoundTabBar(self._tabs))
         self._tabs.setDocumentMode(True)
         layout.addWidget(self._tabs)
 
         # Create tabs
         self._dashboard = DashboardTab()
+        self._dashboard.setObjectName("dashboard-tab")
         self._history_tab = HistoryTab(self._history)
         self._route_tab = RouteTab(self._history)
         self._settings_tab = SettingsTab(config)

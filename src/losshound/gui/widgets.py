@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
 from losshound.gui.branding import losshound_pixmap
 from losshound.gui.painted import (
     BracketedPanel,
-    HeaderHalo,
     LiveDot,
     Sparkline,
 )
@@ -51,10 +50,6 @@ class LosshoundHeader(QWidget):
         self.setObjectName("losshound-header")
         self.setFixedHeight(84)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-
-        # Stack: halo background overlay + foreground row.
-        self._halo = HeaderHalo(self)
-        self._halo.setGeometry(0, 0, 1, 1)  # resized in resizeEvent
 
         row = QHBoxLayout(self)
         row.setContentsMargins(24, 12, 24, 12)
@@ -125,16 +120,12 @@ class LosshoundHeader(QWidget):
             "▶  RESUME MONITOR" if paused else "▶  PAUSE MONITOR"
         )
 
-    def resizeEvent(self, event):  # type: ignore[override]
-        super().resizeEvent(event)
-        # Stretch the halo across the upper-middle of the header.
-        halo_w = int(self.width() * 0.55)
-        halo_x = (self.width() - halo_w) // 2
-        self._halo.setGeometry(halo_x, 0, halo_w, self.height())
+
 
     def paintEvent(self, event):  # type: ignore[override]
         painter = QPainter(self)
-        painter.fillRect(self.rect(), qc("bg_window"))
+        # Paint a semi-transparent dark overlay so dots flow behind it softly
+        painter.fillRect(self.rect(), QColor(2, 3, 3, 140))
         # Bottom separator line.
         pen = QPen(qc("border"))
         pen.setWidth(1)

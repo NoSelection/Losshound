@@ -27,7 +27,7 @@ from losshound.core.models import (
     DiagnosisCategory,
     Observation,
 )
-from losshound.gui.painted import AlertGlyph, BracketedPanel, LiveDot, TexturedSurface
+from losshound.gui.painted import AlertGlyph, BracketedPanel, LiveDot
 from losshound.gui.palette import (
     FONT_CHROME_FAMILIES,
     FONT_MONO_FAMILIES,
@@ -431,20 +431,23 @@ class DashboardTab(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
+        self.setStyleSheet("background: transparent;")
 
         # Scrollable so very small windows still work.
         scroll = QScrollArea(self)
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setStyleSheet("QScrollArea { background: transparent; border: none; }")
+        scroll.viewport().setStyleSheet("background: transparent;")
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-        # Continuous dotted field that all panels sit on top of.
-        content = TexturedSurface()
+        # Transparent content widget so the MainWindow's TexturedSurface backdrop shows through.
+        content = QWidget()
+        content.setStyleSheet("background: transparent;")
         scroll.setWidget(content)
 
         grid = QGridLayout(content)
