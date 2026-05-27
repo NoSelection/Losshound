@@ -1056,32 +1056,38 @@ def scan_local_network(history_store=None) -> List[Dict[str, str]]:
     if history_store:
         # Check database for alerts on new devices
         existing_devices = {d["mac_address"]: d for d in history_store.get_devices()}
-        history_store.set_all_devices_inactive()
-        
-        for dev in resolved_devices:
-            mac = dev["mac_address"]
-            ip = dev["ip_address"]
-            hostname = dev["hostname"]
-            vendor = dev["vendor"]
-            
-            # Check if this MAC was never seen before
-            if mac not in existing_devices:
-                # Log an alert in the database
-                title = "New LAN Device Detected"
-                msg = f"Device '{hostname or 'Unknown'}' ({ip}) with MAC {mac} ({vendor}) joined the network."
-                history_store.save_alert(
-                    timestamp=datetime.now(),
-                    category="lan_issue",
-                    severity="warning",
-                    title=title,
-                    message=msg
-                )
+        try:
+            with history_store._conn:
+                history_store.set_all_devices_inactive(commit=False)
                 
-            history_store.save_device(
-                mac=mac,
-                ip=ip,
-                hostname=hostname,
-                vendor=vendor
-            )
+                for dev in resolved_devices:
+                    mac = dev["mac_address"]
+                    ip = dev["ip_address"]
+                    hostname = dev["hostname"]
+                    vendor = dev["vendor"]
+                    
+                    # Check if this MAC was never seen before
+                    if mac not in existing_devices:
+                        # Log an alert in the database
+                        title = "New LAN Device Detected"
+                        msg = f"Device '{hostname or 'Unknown'}' ({ip}) with MAC {mac} ({vendor}) joined the network."
+                        history_store.save_alert(
+                            timestamp=datetime.now(),
+                            category="lan_issue",
+                            severity="warning",
+                            title=title,
+                            message=msg,
+                            commit=False
+                        )
+                        
+                    history_store.save_device(
+                        mac=mac,
+                        ip=ip,
+                        hostname=hostname,
+                        vendor=vendor,
+                        commit=False
+                    )
+        except Exception as exc:
+            logger.exception("Failed to save discovered devices to history store in batch transaction: %s", exc)
             
     return resolved_devices

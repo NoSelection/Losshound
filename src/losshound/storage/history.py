@@ -331,14 +331,15 @@ class HistoryStore:
 
     def save_alert(
         self, timestamp: datetime, category: str, severity: str,
-        title: str, message: str,
+        title: str, message: str, commit: bool = True,
     ) -> int:
         cursor = self._conn.execute(
             """INSERT INTO alerts (timestamp, category, severity, title, message)
                VALUES (?, ?, ?, ?, ?)""",
             (timestamp.isoformat(), category, severity, title, message),
         )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
         return cursor.lastrowid
 
     def resolve_alert(self, category: str, resolved_at: datetime) -> int:
@@ -426,8 +427,13 @@ class HistoryStore:
         }
 
     def save_device(
-        self, mac: str, ip: str, hostname: Optional[str], vendor: Optional[str],
-        status: Optional[str] = None
+        self,
+        mac: str,
+        ip: str,
+        hostname: Optional[str] = None,
+        vendor: Optional[str] = None,
+        status: Optional[str] = None,
+        commit: bool = True,
     ) -> None:
         """Insert or update a discovered LAN device."""
         now = datetime.now().isoformat()
@@ -452,7 +458,8 @@ class HistoryStore:
                    VALUES (?, ?, ?, ?, ?, ?, ?, 1)""",
                 (mac, ip, hostname, vendor, current_status, now, now)
             )
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     def get_devices(self) -> list[dict]:
         """Retrieve all discovered LAN devices."""
@@ -496,10 +503,11 @@ class HistoryStore:
         )
         self._conn.commit()
 
-    def set_all_devices_inactive(self) -> None:
+    def set_all_devices_inactive(self, commit: bool = True) -> None:
         """Mark all devices as inactive (used before starting a scan)."""
         self._conn.execute("UPDATE discovered_devices SET is_active = 0")
-        self._conn.commit()
+        if commit:
+            self._conn.commit()
 
     def clear_discovered_devices(self) -> None:
         """Clear all entries from the discovered_devices table."""
