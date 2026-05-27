@@ -114,6 +114,8 @@ class BackupData:
     nagle_disabled: bool
     nagle_interface_guid: Optional[str] = None
     adapter: Optional[AdapterBackup] = None
+    tcp_heuristics: str = "unknown"
+    system_responsiveness: Optional[int] = None
 
 
 @dataclass
@@ -141,8 +143,9 @@ def _sanitize_adapter_name(name: str) -> str:
     # Allow alphanumeric, spaces, hyphens, underscores, parentheses, brackets, braces, dots, and plus signs
     if re.match(r"^[a-zA-Z0-9_\-\s\(\)\[\]\.\{\}\+]+$", name):
         return name
-    # Clean if not matching: strip double quotes and shell control characters
-    return re.sub(r'["&|;<>]', '', name)
+    # Clean if not matching: strip double quotes and shell control characters, and double single quotes for PowerShell
+    cleaned = re.sub(r'["&|;<>]', '', name)
+    return cleaned.replace("'", "''")
 
 
 def _run(
@@ -451,6 +454,51 @@ class NetworkOptimizer:
     # TCP/IP stack
     # ------------------------------------------------------------------
 
+    def get_tcp_heuristics(self) -> str:
+        """Read the TCP Window Scaling heuristics state via ``netsh``."""
+        try:
+            result = _run("netsh interface tcp show heuristics", english=True)
+            table = _parse_netsh_table(result.stdout)
+            return table.get("window scaling heuristics", "unknown").strip().lower()
+        except Exception as exc:
+            logger.warning("Failed to read TCP heuristics: %s", exc)
+            return "unknown"
+
+    def disable_tcp_heuristics(self) -> OptimizeResult:
+        """Disable TCP Window Scaling heuristics (requires admin)."""
+        name = "Disable TCP heuristics"
+        cmd = "netsh interface tcp set heuristics disabled"
+        if not self.check_admin():
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True,
+                error="Administrator privileges required",
+                command=cmd,
+            )
+        before = self.get_tcp_heuristics()
+        try:
+            proc = _run(cmd, english=True)
+            ok = proc.returncode == 0
+            after = self.get_tcp_heuristics()
+            verified = after.lower() == "disabled"
+            return _make_result(
+                name=name, success=verified,
+                before=before, after=after,
+                desired="disabled",
+                needs_admin=True,
+                error=proc.stderr.strip() if not ok else None,
+                command=cmd,
+                verification=f"Heuristics check: {after}",
+                note="Prevents Windows from automatically modifying TCP auto-tuning values" if verified else "",
+            )
+        except Exception as exc:
+            return _make_result(
+                name=name, success=False,
+                before=before, after="",
+                needs_admin=True, error=str(exc),
+                command=cmd,
+            )
+
     def get_tcp_settings(self) -> TcpSettings:
         """Read current TCP global parameters via ``netsh``."""
         settings = TcpSettings()
@@ -509,10 +557,10 @@ class NetworkOptimizer:
             (
                 "Congestion provider",
                 "netsh int tcp set supplemental template=Internet "
-                "congestionprovider=ctcp",
+                "congestionprovider=cubic",
                 current.congestion_provider,
-                "ctcp",
-                "Switches to CTCP (Compound TCP) for better bandwidth utilisation",
+                "cubic",
+                "Switches to CUBIC congestion control for modern high-bandwidth performance",
             ),
             (
                 "ECN capability",
@@ -706,6 +754,13 @@ class NetworkOptimizer:
             ])
             pm_before_raw = pm_check_proc.stdout.strip()
 
+            # Detect if battery is present (indicates a laptop / portable device)
+            battery_check = _run([
+                "powershell", "-NoProfile", "-Command",
+                "Get-CimInstance -ClassName Win32_Battery -ErrorAction SilentlyContinue"
+            ])
+            is_laptop = bool(battery_check.stdout.strip())
+
             if pm_before_raw == "NOT_SUPPORTED" or not pm_before_raw:
                 results.append(_make_result(
                     name="Adapter power management",
@@ -716,6 +771,16 @@ class NetworkOptimizer:
                     command=pm_cmd,
                     command_exit_code=pm_check_proc.returncode,
                     note=f"Adapter '{adapter.name}' does not expose this setting",
+                ))
+            elif is_laptop:
+                results.append(_make_result(
+                    name="Adapter power management",
+                    success=False,
+                    before=pm_before_raw, after=pm_before_raw,
+                    needs_admin=True,
+                    error="Skipped on battery-powered device",
+                    command=pm_cmd,
+                    note="Skipped to prevent battery drain on laptop",
                 ))
             else:
                 pm_before = pm_before_raw
@@ -899,6 +964,162 @@ class NetworkOptimizer:
                 needs_admin=True, error=str(exc),
                 command=cmd,
             )
+
+    def get_system_responsiveness(self) -> int | None:
+        """Read the ``SystemResponsiveness`` value from the registry."""
+        key_path = (
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
+            r"\SystemProfile"
+        )
+        try:
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                value, _ = winreg.QueryValueEx(key, "SystemResponsiveness")
+                return int(value)
+        except OSError:
+            return None
+
+    def apply_system_responsiveness(self, value: int) -> OptimizeResult:
+        """Configure SystemResponsiveness in registry (requires admin)."""
+        name = "Set system responsiveness"
+        reg_path = (
+            r"HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
+            r"\SystemProfile\SystemResponsiveness"
+        )
+        cmd_desc = f"Set registry {reg_path} = {value}"
+        if not self.check_admin():
+            return _make_result(
+                name=name, success=False, before="", after="",
+                needs_admin=True,
+                error="Administrator privileges required",
+                command=cmd_desc,
+            )
+
+        before_val = self.get_system_responsiveness()
+        before_str = str(before_val) if before_val is not None else "default"
+        key_path = (
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
+            r"\SystemProfile"
+        )
+        try:
+            with winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE, key_path, 0,
+                winreg.KEY_SET_VALUE,
+            ) as key:
+                winreg.SetValueEx(
+                    key, "SystemResponsiveness", 0,
+                    winreg.REG_DWORD, value,
+                )
+
+            # Verify
+            after_val = self.get_system_responsiveness()
+            after_str = str(after_val) if after_val is not None else "default"
+            verified = after_val == value
+
+            return _make_result(
+                name=name, success=verified,
+                before=before_str, after=after_str,
+                desired=str(value),
+                needs_admin=True,
+                command=cmd_desc,
+                verification=f"Registry read-back: {after_str}",
+                reboot_required=True,
+                note=f"Prioritizes multimedia/gaming resources (set to {value}%); reboot recommended"
+                     if verified else f"Write succeeded but verification read: {after_str}",
+            )
+        except OSError as exc:
+            return _make_result(
+                name=name, success=False,
+                before=before_str, after="",
+                needs_admin=True, error=str(exc),
+                command=cmd_desc,
+            )
+
+    def benchmark_optimal_responsiveness(
+        self,
+        target: str | None = None,
+        progress_callback = None,
+    ) -> tuple[int, dict[int, tuple[float, float]]]:
+        """Test candidate SystemResponsiveness values (20, 10, 0) and find the best performing one.
+
+        Temporarily sets the SystemResponsiveness registry value to each candidate,
+        runs 10 pings to calculate average RTT and jitter, and scores using:
+        Score = Average RTT + 2 * Jitter. Lower score is better.
+
+        Restores the original setting after testing.
+
+        Returns
+        -------
+        best_candidate: int
+            The candidate with the lowest score.
+        stats: dict[int, tuple[float, float]]
+            Map of candidate -> (avg_latency_ms, jitter_ms).
+        """
+        if not self.check_admin():
+            raise PermissionError("Administrator privileges required for benchmarking responsiveness.")
+
+        from losshound.core.gateway import detect_gateway
+        from losshound.core.ping import ping
+
+        try:
+            from PySide6.QtCore import QThread
+            def is_interrupted():
+                t = QThread.currentThread()
+                return t.isInterruptionRequested() if t else False
+        except (ImportError, AttributeError, TypeError):
+            is_interrupted = lambda: False
+
+        ping_target = target or detect_gateway() or "8.8.8.8"
+
+        original_val = self.get_system_responsiveness()
+        if original_val is None:
+            original_val = 20  # Windows default
+
+        candidates = [20, 10, 0]
+        results: dict[int, tuple[float, float]] = {}
+
+        try:
+            for val in candidates:
+                if is_interrupted():
+                    raise InterruptedError("Interruption requested during responsiveness benchmark.")
+
+                if progress_callback:
+                    progress_callback(f"Testing SystemResponsiveness = {val} against {ping_target}...")
+
+                # Apply temporarily
+                self.apply_system_responsiveness(val)
+                # Wait briefly for OS thread scheduler / network stack to adjust
+                time.sleep(0.5)
+
+                if is_interrupted():
+                    raise InterruptedError("Interruption requested during responsiveness benchmark.")
+
+                # Warmup ping to establish routing/ARP entries
+                ping(ping_target, count=1, timeout_ms=1000)
+
+                if is_interrupted():
+                    raise InterruptedError("Interruption requested during responsiveness benchmark.")
+
+                # Run 10 pings
+                res = ping(ping_target, count=10, timeout_ms=1000)
+
+                avg_lat = res.rtt_avg if (res.rtt_avg is not None) else 999.0
+                jitter = res.rtt_jitter if (res.rtt_jitter is not None) else 999.0
+
+                results[val] = (avg_lat, jitter)
+        finally:
+            # Restore original
+            self.apply_system_responsiveness(original_val)
+
+        # Score candidates: Score = Avg Latency + 2 * Jitter
+        best_candidate = 20
+        best_score = float("inf")
+        for val, (avg_lat, jitter) in results.items():
+            score = avg_lat + 2 * jitter
+            if score < best_score:
+                best_score = score
+                best_candidate = val
+
+        return best_candidate, results
 
     def get_network_throttling_index(self) -> int | None:
         """Read the ``NetworkThrottlingIndex`` value from the registry."""
@@ -1266,6 +1487,9 @@ class NetworkOptimizer:
         # Snapshot adapter settings
         adapter_backup = self._backup_adapter_settings()
 
+        tcp_heuristics = self.get_tcp_heuristics()
+        system_responsiveness = self.get_system_responsiveness()
+
         backup = BackupData(
             timestamp=datetime.now(timezone.utc).isoformat(),
             tcp_settings=tcp,
@@ -1275,6 +1499,8 @@ class NetworkOptimizer:
             nagle_disabled=nagle_disabled,
             nagle_interface_guid=nagle_guid,
             adapter=adapter_backup,
+            tcp_heuristics=tcp_heuristics,
+            system_responsiveness=system_responsiveness,
         )
 
         # Persist to disk
@@ -1357,6 +1583,10 @@ class NetworkOptimizer:
                 data["adapter"] = AdapterBackup(**adapter_raw)
             else:
                 data["adapter"] = None
+            if "tcp_heuristics" not in data:
+                data["tcp_heuristics"] = "unknown"
+            if "system_responsiveness" not in data:
+                data["system_responsiveness"] = None
             return BackupData(**data)
         except Exception as exc:
             logger.warning("Failed to load backup: %s", exc)
@@ -1619,6 +1849,44 @@ class NetworkOptimizer:
                             command=im_cmd,
                         ))
 
+        # --- TCP Heuristics ---
+        if backup.tcp_heuristics and backup.tcp_heuristics != "unknown":
+            if not is_admin:
+                results.append(_need_admin("Restore TCP heuristics"))
+            else:
+                cmd = f"netsh interface tcp set heuristics {backup.tcp_heuristics}"
+                try:
+                    proc = _run(cmd, english=True)
+                    ok = proc.returncode == 0
+                    after = self.get_tcp_heuristics()
+                    verified = after.lower() == backup.tcp_heuristics.lower()
+                    results.append(_make_result(
+                        name="Restore TCP heuristics", success=verified,
+                        before="current", after=after,
+                        desired=backup.tcp_heuristics,
+                        needs_admin=True,
+                        error=proc.stderr.strip() if not ok else None,
+                        command=cmd,
+                        verification=f"Heuristics check: {after}",
+                        note="Restored to backed-up value" if verified else "",
+                    ))
+                except Exception as exc:
+                    results.append(_make_result(
+                        name="Restore TCP heuristics", success=False,
+                        before="current", after="",
+                        needs_admin=True, error=str(exc),
+                        command=cmd,
+                    ))
+
+        # --- System Responsiveness ---
+        if backup.system_responsiveness is not None:
+            if not is_admin:
+                results.append(_need_admin("Restore system responsiveness"))
+            else:
+                res = self.apply_system_responsiveness(backup.system_responsiveness)
+                res.name = "Restore system responsiveness"
+                results.append(res)
+
         return results
 
     # ------------------------------------------------------------------
@@ -1631,6 +1899,8 @@ class NetworkOptimizer:
         dns = self.get_current_dns()
         mtu = self.get_current_mtu()
         throttling = self.get_network_throttling_index()
+        heuristics = self.get_tcp_heuristics()
+        responsiveness = self.get_system_responsiveness()
 
         return {
             "admin": self.check_admin(),
@@ -1639,6 +1909,8 @@ class NetworkOptimizer:
             "dns_secondary": dns[1],
             "mtu": mtu,
             "network_throttling_index": throttling,
+            "tcp_heuristics": heuristics,
+            "system_responsiveness": responsiveness,
             "backup_exists": _BACKUP_FILE.is_file(),
         }
 
@@ -1707,6 +1979,12 @@ class NetworkOptimizer:
 
         # --- Nagle ---
         results.append(self.optimize_nagle())
+
+        # --- TCP Heuristics ---
+        results.append(self.disable_tcp_heuristics())
+
+        # --- System Responsiveness ---
+        results.append(self.apply_system_responsiveness(10))
 
         # --- MTU ---
         if not skip_mtu:

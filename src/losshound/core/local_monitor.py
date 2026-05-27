@@ -12,9 +12,6 @@ from losshound.core.lan_monitor import run_command_resilient, resolve_hostname_s
 
 logger = logging.getLogger(__name__)
 
-# Enforce 1s default timeout inside local_monitor module initialization
-socket.setdefaulttimeout(1.0)
-
 # Local hostname cache to avoid repeated slow lookups
 _HOSTNAME_CACHE: Dict[str, str] = {}
 
@@ -25,16 +22,12 @@ def resolve_connection_hostname(ip: str) -> str:
         return resolve_hostname_safe(ip)
         
     # Public IP: do standard DNS reverse lookup
-    original_timeout = socket.getdefaulttimeout()
     try:
-        socket.setdefaulttimeout(1.0)
         hostname, _, _ = socket.gethostbyaddr(ip)
         if hostname:
             return hostname
     except Exception:
         pass
-    finally:
-        socket.setdefaulttimeout(original_timeout)
     return ""
 
 
@@ -130,10 +123,19 @@ def get_active_connections() -> List[Dict[str, str]]:
     # Resolve hostnames for newly seen remote IPs in parallel (1s timeout)
     if unique_ips:
         with ThreadPoolExecutor(max_workers=10) as executor:
-            # map remote IPs to lookup function
-            results = list(executor.map(resolve_connection_hostname, unique_ips))
-            for ip, name in zip(unique_ips, results):
-                _HOSTNAME_CACHE[ip] = name if name else ip
+            future_to_ip = {executor.submit(resolve_connection_hostname, ip): ip for ip in unique_ips}
+            from concurrent.futures import wait
+            done, not_done = wait(future_to_ip.keys(), timeout=1.0)
+            for future in done:
+                ip = future_to_ip[future]
+                try:
+                    name = future.result()
+                    _HOSTNAME_CACHE[ip] = name if name else ip
+                except Exception:
+                    _HOSTNAME_CACHE[ip] = ip
+            for future in not_done:
+                ip = future_to_ip[future]
+                _HOSTNAME_CACHE[ip] = ip
                 
     # Attach resolved domain names to connections list
     for conn in connections:

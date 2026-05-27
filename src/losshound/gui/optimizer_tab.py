@@ -8,7 +8,7 @@ from functools import partial
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -133,6 +133,24 @@ class _StatusWorker(QThread):
             self.finished.emit({})
 
 
+class _AutoTuneResponsivenessWorker(QThread):
+    """Run System Responsiveness benchmarking in a background thread."""
+
+    finished = Signal(tuple)  # tuple[int, dict[int, tuple[float, float]]]
+    progress = Signal(str)
+
+    def run(self):
+        try:
+            opt = NetworkOptimizer()
+            best_val, results = opt.benchmark_optimal_responsiveness(
+                progress_callback=lambda msg: self.progress.emit(msg)
+            )
+            self.finished.emit((best_val, results))
+        except Exception as exc:
+            logger.error("Auto-tuning responsiveness failed: %s", exc)
+            self.finished.emit((20, {}))
+
+
 # ---------------------------------------------------------------------------
 # Optimizer Tab
 # ---------------------------------------------------------------------------
@@ -218,7 +236,6 @@ class OptimizerTab(QWidget):
         )
         self._bench_after_btn.clicked.connect(lambda: self._on_benchmark("after"))
         btn_layout.addWidget(self._bench_after_btn, 1, 1)
-
         self._compare_btn = QPushButton("Compare Before vs After")
         self._compare_btn.setStyleSheet(button_style("warning"))
         self._compare_btn.setMinimumHeight(42)
@@ -227,6 +244,52 @@ class OptimizerTab(QWidget):
         btn_layout.addWidget(self._compare_btn, 1, 2, 1, 2)  # span 2 columns
 
         main_layout.addWidget(btn_group)
+
+        # --- Responsiveness controls ---
+        resp_group = QGroupBox("System Responsiveness & Latency Tuning")
+        resp_layout = QHBoxLayout(resp_group)
+        resp_layout.setSpacing(12)
+
+        resp_layout.addWidget(QLabel("Responsiveness Profile:"))
+        self._resp_combo = QComboBox()
+        self._resp_combo.addItem("20% - Standard (Default)", 20)
+        self._resp_combo.addItem("10% - Optimized (Gaming/Multimedia)", 10)
+        self._resp_combo.addItem("0% - Pure Latency Priority", 0)
+        self._resp_combo.setMinimumHeight(36)
+        self._resp_combo.setStyleSheet("""
+            QComboBox {
+                background: #141822;
+                border: 1px solid #20293a;
+                border-radius: 0px;
+                padding: 4px 8px;
+                color: #d8dee9;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox QAbstractItemView {
+                background: #141822;
+                border: 1px solid #20293a;
+                selection-background-color: #20293a;
+                color: #d8dee9;
+            }
+        """)
+        resp_layout.addWidget(self._resp_combo)
+
+        self._resp_apply_btn = QPushButton("Apply Selected Profile")
+        self._resp_apply_btn.setMinimumHeight(36)
+        self._resp_apply_btn.setStyleSheet(button_style("primary"))
+        self._resp_apply_btn.clicked.connect(self._on_apply_responsiveness)
+        resp_layout.addWidget(self._resp_apply_btn)
+
+        self._resp_autotune_btn = QPushButton("Auto-Tune Profile")
+        self._resp_autotune_btn.setMinimumHeight(36)
+        self._resp_autotune_btn.setStyleSheet(button_style("warning"))
+        self._resp_autotune_btn.setToolTip("Benchmark latency and jitter for 20%, 10%, and 0% to find the optimal setting for your network stack")
+        self._resp_autotune_btn.clicked.connect(self._on_autotune_responsiveness)
+        resp_layout.addWidget(self._resp_autotune_btn)
+
+        main_layout.addWidget(resp_group)
 
         # --- Progress ---
         self._progress_bar = QProgressBar()
@@ -249,6 +312,8 @@ class OptimizerTab(QWidget):
             ("congestion", "Congestion Provider"),
             ("ecn", "ECN"),
             ("rss", "RSS"),
+            ("heuristics", "TCP Heuristics"),
+            ("responsiveness", "System Responsiveness"),
             ("dns", "DNS Servers"),
             ("mtu", "MTU"),
             ("throttling", "Network Throttling"),
@@ -385,6 +450,9 @@ class OptimizerTab(QWidget):
         self._bench_before_btn.setEnabled(not busy)
         self._bench_after_btn.setEnabled(not busy)
         self._compare_btn.setEnabled(not busy)
+        self._resp_combo.setEnabled(not busy)
+        self._resp_apply_btn.setEnabled(not busy)
+        self._resp_autotune_btn.setEnabled(not busy)
 
         if busy:
             self._progress_bar.setRange(0, 0)  # indeterminate
@@ -607,6 +675,26 @@ class OptimizerTab(QWidget):
             thr_text = f"enabled ({throttling})"
             thr_status = "warning"
         self._update_status_card("throttling", "Network Throttling", thr_text, thr_status)
+
+        # TCP Heuristics
+        heuristics = status.get("tcp_heuristics", "unknown")
+        heur_status = "healthy" if heuristics == "disabled" else "neutral"
+        self._update_status_card("heuristics", "TCP Heuristics", heuristics, heur_status)
+
+        # System Responsiveness
+        responsiveness = status.get("system_responsiveness")
+        if responsiveness is None:
+            resp_text = "default (20%)"
+            resp_status = "neutral"
+        else:
+            resp_text = f"{responsiveness}%"
+            resp_status = "healthy" if responsiveness == 10 else ("warning" if responsiveness == 0 else "neutral")
+        self._update_status_card("responsiveness", "System Responsiveness", resp_text, resp_status)
+
+        if responsiveness is not None:
+            idx = self._resp_combo.findData(responsiveness)
+            if idx >= 0:
+                self._resp_combo.setCurrentIndex(idx)
 
     # ------------------------------------------------------------------
     # Benchmark actions
@@ -917,3 +1005,89 @@ class OptimizerTab(QWidget):
                 self._populate_results_table(results)
         except Exception as exc:
             logger.warning("Failed to load optimization results: %s", exc)
+
+    def _on_apply_responsiveness(self):
+        if not NetworkOptimizer.check_admin():
+            QMessageBox.warning(
+                self, "Admin Required",
+                "Administrator privileges are required to change system responsiveness."
+            )
+            return
+
+        val = self._resp_combo.currentData()
+        reply = QMessageBox.question(
+            self, "Change Responsiveness",
+            f"Are you sure you want to change the System Responsiveness profile to {val}%?\n"
+            "This will write directly to HKLM registry.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        opt = NetworkOptimizer()
+        res = opt.apply_system_responsiveness(val)
+        if res.success:
+            QMessageBox.information(
+                self, "Success",
+                f"System Responsiveness successfully set to {val}%."
+            )
+        else:
+            QMessageBox.warning(
+                self, "Error",
+                f"Failed to change responsiveness: {res.error or 'Unknown error'}"
+            )
+        self._on_check_status()
+
+    def _on_autotune_responsiveness(self):
+        if not NetworkOptimizer.check_admin():
+            QMessageBox.warning(
+                self, "Admin Required",
+                "Administrator privileges are required to auto-tune system responsiveness."
+            )
+            return
+
+        self._set_busy(True, "Starting auto-tune responsiveness benchmark...")
+        self._worker = _AutoTuneResponsivenessWorker()
+        self._worker.progress.connect(
+            lambda msg: self._progress_bar.setFormat(msg)
+        )
+        self._worker.finished.connect(self._on_autotune_done)
+        self._worker.start()
+
+    def _on_autotune_done(self, result: tuple[int, dict[int, tuple[float, float]]]):
+        self._worker = None
+        best_val, results = result
+        self._set_busy(False, "Auto-tune benchmark complete")
+
+        if not results:
+            QMessageBox.warning(
+                self, "Auto-Tune Failed",
+                "System responsiveness benchmarking failed or was interrupted."
+            )
+            return
+
+        msg = "Responsiveness profile benchmark results:\n\n"
+        for val, (avg_lat, jitter) in results.items():
+            msg += f"  - Profile {val}%: Avg Latency = {avg_lat:.2f} ms, Jitter = {jitter:.2f} ms\n"
+
+        msg += f"\nThe optimal profile based on RTT and jitter is: {best_val}%.\n\nDo you want to apply this optimal profile?"
+
+        reply = QMessageBox.question(
+            self, "Apply Auto-Tune Result",
+            msg,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            opt = NetworkOptimizer()
+            res = opt.apply_system_responsiveness(best_val)
+            if res.success:
+                QMessageBox.information(
+                    self, "Success",
+                    f"Successfully applied the optimal profile: {best_val}%."
+                )
+            else:
+                QMessageBox.warning(
+                    self, "Error",
+                    f"Failed to apply the optimal profile: {res.error or 'Unknown error'}"
+                )
+            self._on_check_status()
