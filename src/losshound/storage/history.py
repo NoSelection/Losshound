@@ -127,6 +127,12 @@ class HistoryStore:
     def close(self):
         self._conn.close()
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
     def save_observation(self, obs: Observation) -> None:
         gw_loss = obs.gateway_ping.loss_percent if obs.gateway_ping else None
         gw_rtt = obs.gateway_ping.rtt_avg if obs.gateway_ping else None

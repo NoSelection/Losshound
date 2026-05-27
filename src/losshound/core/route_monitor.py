@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Optional
 
 from losshound.core.models import RouteHop, RouteSnapshot, RouteDiff
+from losshound.core.subprocess_runner import run_subprocess_interruptible
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,10 @@ def trace_route(
     process_timeout = max_hops * (timeout_ms / 1000) + 30
 
     try:
-        result = subprocess.run(
+        output, _, _ = run_subprocess_interruptible(
             ["cmd", "/c", cmd],
-            capture_output=True, text=True,
-            timeout=process_timeout,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            process_timeout,
         )
-        output = result.stdout
     except subprocess.TimeoutExpired:
         return RouteSnapshot(
             target=target, timestamp=now,

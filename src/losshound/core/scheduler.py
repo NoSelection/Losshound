@@ -112,6 +112,8 @@ class MonitorWorker(QObject):
             # Public IP pings
             pub_pings = []
             for target in self._config.public_ping_targets:
+                if self._stopped or QThread.currentThread().isInterruptionRequested():
+                    return
                 result = ping(
                     target,
                     count=self._config.ping_count,
@@ -122,6 +124,8 @@ class MonitorWorker(QObject):
             # DNS checks
             dns_results = []
             for hostname in self._config.dns_test_hostnames:
+                if self._stopped or QThread.currentThread().isInterruptionRequested():
+                    return
                 result = check_dns(hostname)
                 dns_results.append(result)
 
@@ -148,7 +152,11 @@ class MonitorWorker(QObject):
             self._history.save_diagnosis(diag)
             self.diagnosis_ready.emit(diag)
 
+        except (InterruptedError, KeyboardInterrupt):
+            logger.info("Ping cycle interrupted during thread shutdown.")
         except Exception as exc:
+            if self._stopped or (QThread.currentThread() and QThread.currentThread().isInterruptionRequested()):
+                return
             logger.exception("Error in ping cycle")
             self.error_occurred.emit(str(exc))
 
@@ -168,9 +176,15 @@ class MonitorWorker(QObject):
                 self._config.tracert_target,
                 max_hops=self._config.tracert_max_hops,
             )
+            if self._stopped or QThread.currentThread().isInterruptionRequested():
+                return
             self._last_route = snap
             self._history.save_route_snapshot(snap)
+        except (InterruptedError, KeyboardInterrupt):
+            logger.info("Route check interrupted during thread shutdown.")
         except Exception as exc:
+            if self._stopped or (QThread.currentThread() and QThread.currentThread().isInterruptionRequested()):
+                return
             logger.exception("Error in route check")
             self.error_occurred.emit(str(exc))
         finally:
@@ -217,16 +231,20 @@ class MonitorThread(QThread):
 
     def run(self):
         thread_safe_history = HistoryStore(self._history._db_path)
-        self._worker = MonitorWorker(self._config, thread_safe_history)
-        self._worker.observation_ready.connect(self.observation_ready.emit)
-        self._worker.diagnosis_ready.connect(self.diagnosis_ready.emit)
-        self._worker.error_occurred.connect(self.error_occurred.emit)
-        self._worker.start_timers()
-        self.exec()
+        try:
+            self._worker = MonitorWorker(self._config, thread_safe_history)
+            self._worker.observation_ready.connect(self.observation_ready.emit)
+            self._worker.diagnosis_ready.connect(self.diagnosis_ready.emit)
+            self._worker.error_occurred.connect(self.error_occurred.emit)
+            self._worker.start_timers()
+            self.exec()
+        finally:
+            thread_safe_history.close()
 
     def stop(self):
         if self._worker:
             self._worker.stop()
+        self.requestInterruption()
         self.quit()
         # Give the worker a generous window — a tracert in flight can take
         # 30s+. After that, terminate hard; the Job Object will kill any
