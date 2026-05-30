@@ -354,6 +354,89 @@ def panel_glow(width: int, height: int) -> QPixmap:
     return pixmap
 
 
+@lru_cache(maxsize=4)
+def ocean_halftone(width: int, height: int) -> QPixmap:
+    """Static high-fidelity halftone "ocean swell" backdrop.
+
+    Domain-warped layered sine waves sampled onto a fine dot grid produce
+    bright specular crests over dark troughs — a calm sea of dots beneath the
+    dashboard. Rendered once per size and cached, so it is effectively free to
+    blit every frame at any resolution (it never animates).
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+
+    pixmap = QPixmap(width, height)
+    pixmap.fill(qc("bg_window"))
+    if width < 4 or height < 4:
+        return pixmap
+
+    try:
+        import numpy as np
+    except Exception:
+        return pixmap  # plain background if numpy is unavailable
+
+    cell = 8
+    max_r = 4.0
+    cols = max(1, width // cell)
+    rows = max(1, height // cell)
+    xs = (np.arange(cols) + 0.5) * cell
+    ys = (np.arange(rows) + 0.5) * cell
+    aspect = width / height
+    XN = xs / width
+    YN = ys / height
+    U, V = np.meshgrid(XN * aspect, YN)
+
+    # Domain-warp the coordinates so the swell reads as organic water, then sum
+    # a few directional sine waves into an ocean of overlapping crests.
+    UU = U + 0.20 * np.sin(U * 3.1 + V * 2.3)
+    VV = V + 0.15 * np.cos(U * 2.2 - V * 3.7)
+    field = (
+        np.sin(UU * 8.5 + VV * 3.5)
+        + 0.70 * np.sin(UU * 5.0 - VV * 7.5 + 1.3)
+        + 0.50 * np.sin(UU * 13.5 + VV * 9.0 + 2.1)
+        + 0.32 * np.sin(UU * 21.0 - VV * 5.5 + 0.7)
+    )
+    B = (field - field.min()) / (field.max() - field.min() + 1e-6)
+    B = B ** 1.7                       # sharpen crests into specular highlights
+    B = np.maximum(B, 0.05)            # a faint dot grid survives in the troughs
+
+    # Damp brightness where the dashboard content sits so the data stays legible.
+    GXN, GYN = np.meshgrid(XN, YN)
+    central = np.exp(-0.5 * (((GXN - 0.5) / 0.46) ** 2 + ((GYN - 0.52) / 0.50) ** 2))
+    B = np.clip(B * (1.0 - 0.40 * central), 0.0, 1.0)
+
+    # Vectorised colour ramp: black -> deep blue -> steel -> light blue -> warm white.
+    ts = [0.0, 0.25, 0.5, 0.75, 1.0]
+    rc = np.interp(B, ts, [14, 38, 90, 180, 246]).astype(int).tolist()
+    gc = np.interp(B, ts, [19, 62, 132, 202, 242]).astype(int).tolist()
+    bc = np.interp(B, ts, [30, 96, 168, 224, 232]).astype(int).tolist()
+    Bl = B.tolist()
+    xs_l = xs.tolist()
+    ys_l = ys.tolist()
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setPen(Qt.PenStyle.NoPen)
+    for r in range(rows):
+        cy = ys_l[r]
+        brow, rr, gg, cc = Bl[r], rc[r], gc[r], bc[r]
+        for c in range(cols):
+            rad = max(0.8, max_r * brow[c])
+            painter.setBrush(QColor(rr[c], gg[c], cc[c]))
+            cx = xs_l[c]
+            painter.drawEllipse(cx - rad, cy - rad, rad * 2, rad * 2)
+
+    # Seat the field with a soft bottom vignette.
+    grad = QLinearGradient(0, 0, 0, height)
+    grad.setColorAt(0.0, QColor(0, 0, 0, 0))
+    grad.setColorAt(0.72, QColor(0, 0, 0, 18))
+    grad.setColorAt(1.0, QColor(0, 0, 0, 96))
+    painter.fillRect(0, 0, width, height, QBrush(grad))
+    painter.end()
+    return pixmap
+
+
 def panel_inner_pen() -> QPen:
     pen = QPen(qc("border"))
     pen.setWidth(1)

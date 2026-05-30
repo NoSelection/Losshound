@@ -52,6 +52,7 @@ from losshound.gui.palette import (
     halo_pixmap,
     label_font,
     mono_font,
+    ocean_halftone,
     qc,
 )
 
@@ -62,337 +63,56 @@ from losshound.gui.palette import (
 
 
 class TexturedSurface(QWidget):
-    """An animated, interactive QWidget that paints a dynamic halftone Quantum Atom backdrop.
+    """Static high-fidelity halftone "ocean swell" backdrop.
 
-    Used as the dashboard content background so dots run unbroken across
-    panel boundaries. Responsive to mouse movement and moves at a smooth 30 FPS.
+    The wave field is rendered once per size and cached (see
+    ``palette.ocean_halftone``), then simply blitted — there is no animation
+    timer, so the backdrop costs nothing per frame at any resolution. During a
+    live resize the cached pixmap is stretched to fit and a crisp one is
+    regenerated once the drag settles.
     """
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setAutoFillBackground(False)
-        self.setMouseTracking(True)
 
-        self._start_time = time.time()
-        self._mouse_x = 0.0
-        self._mouse_y = 0.0
-        self._mouse_target_x = 0.0
-        self._mouse_target_y = 0.0
-        self._mouse_hover = False
-        self._mouse_glow_factor = 0.0
-        self._mouse_last_move_time = time.time()
-        self._last_mouse_x = 0.0
-        self._last_mouse_y = 0.0
+        self._bg_pixmap = None
 
-        # Optimization & caching fields
-        self._base_grid_pixmap = None
-        self._X = None
-        self._Y = None
-        self._DX = None
-        self._DY = None
-        self._D = None
-        self._has_numpy = False
-
-        # Pre-allocate brushes for all alpha levels to avoid object creation in paintEvent loop
-        self._brushes = [QBrush(QColor(255, 255, 255, a)) for a in range(256)]
-
-        # 30 FPS update timer
-        self._timer = QTimer(self)
-        self._timer.setInterval(33)
-        self._timer.timeout.connect(self.update_animation)
-        self._timer.start()
-
-        # Resize debounce timer (prevents lag during drag/resizing)
+        # Regenerate the crisp wave field shortly after a resize settles.
         self._resize_timer = QTimer(self)
         self._resize_timer.setSingleShot(True)
-        self._resize_timer.timeout.connect(self._recreate_grid)
+        self._resize_timer.timeout.connect(self._rebuild)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self._base_grid_pixmap is None:
-            self._recreate_grid()
+        if self._bg_pixmap is None:
+            self._rebuild()
         else:
-            # Debounce grid recreation (old pixmap scales smoothly in paintEvent in the meantime)
-            self._resize_timer.start(80)
+            # Old pixmap stretches to fit until a crisp one is regenerated.
+            self._resize_timer.start(120)
 
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self._timer.start()
-
-    def hideEvent(self, event) -> None:
-        super().hideEvent(event)
-        self._timer.stop()
-
-    def changeEvent(self, event) -> None:
-        super().changeEvent(event)
-        from PySide6.QtCore import QEvent
-        if event.type() == QEvent.Type.WindowStateChange:
-            if self.window().isMinimized():
-                self._timer.stop()
-            else:
-                self._timer.start()
-
-    def _recreate_grid(self) -> None:
-        rect = self.rect()
-        w = rect.width()
-        h = rect.height()
-        if w < 10 or h < 10:
-            self._base_grid_pixmap = None
-            self._X = None
-            self._Y = None
-            self._DX = None
-            self._DY = None
-            self._D = None
-            return
-
-        # Halftone grid parameters
-        cell = 11  # Coarser spacing (from 9) for tactile aesthetic and lower draw count
-
-        try:
-            import numpy as np
-            xs = np.arange(cell / 2.0, w, cell)
-            ys = np.arange(cell / 2.0, h, cell)
-            self._X, self._Y = np.meshgrid(xs, ys)
-
-            centerX = w / 2.0
-            centerY = h / 2.0
-            self._DX = self._X - centerX
-            self._DY = self._Y - centerY
-            self._D = np.sqrt(self._DX*self._DX + self._DY*self._DY)
-            self._has_numpy = True
-        except Exception:
-            self._has_numpy = False
-            self._X = None
-            self._Y = None
-
-        # Pre-render static base dot grid to a QPixmap
-        self._base_grid_pixmap = QPixmap(w, h)
-        self._base_grid_pixmap.fill(Qt.GlobalColor.transparent)
-
-        painter = QPainter(self._base_grid_pixmap)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
-        
-        # Use pen instead of brush/drawRect to avoid object instantiations inside the loop
-        pen = QPen(QColor(228, 234, 244, 12))
-        pen.setWidth(1)
-        painter.setPen(pen)
-
-        if self._has_numpy:
-            flat_x = self._X.ravel()
-            flat_y = self._Y.ravel()
-            for idx in range(len(flat_x)):
-                painter.drawPoint(int(flat_x[idx]), int(flat_y[idx]))
-        else:
-            fallback_cell = 14
-            for px in range(int(fallback_cell / 2), w, fallback_cell):
-                for py in range(int(fallback_cell / 2), h, fallback_cell):
-                    painter.drawPoint(px, py)
-
-        painter.end()
-
-    def update_animation(self) -> None:
-        # Resolve cursor position relative to this widget, ignoring child intercepts
-        local_pos = self.mapFromGlobal(QCursor.pos())
+    def _rebuild(self) -> None:
         w = self.width()
         h = self.height()
-
-        if self.rect().contains(local_pos):
-            self._mouse_hover = True
-            self._mouse_x = local_pos.x()
-            self._mouse_y = local_pos.y()
-        else:
-            self._mouse_hover = False
-
-        # Check if mouse moved
-        moved = False
-        if self._mouse_hover:
-            dx = self._mouse_x - self._last_mouse_x
-            dy = self._mouse_y - self._last_mouse_y
-            if math.sqrt(dx*dx + dy*dy) > 0.5:
-                moved = True
-            self._last_mouse_x = self._mouse_x
-            self._last_mouse_y = self._mouse_y
-
-        if moved:
-            self._mouse_last_move_time = time.time()
-
-        # Soft mouse interpolation and glow calculations
-        if self._mouse_hover:
-            self._mouse_target_x += (self._mouse_x - self._mouse_target_x) * 0.15
-            self._mouse_target_y += (self._mouse_y - self._mouse_target_y) * 0.15
-
-            # Calculate target glow based on movement recency
-            time_since_move = time.time() - self._mouse_last_move_time
-            if time_since_move < 1.0:
-                target_glow = 1.0
-            else:
-                # Decay to a low idle glow (e.g., 0.15) over 1.5 seconds
-                target_glow = max(0.15, 1.0 - (time_since_move - 1.0) / 1.5)
-
-            # Ease towards target glow
-            self._mouse_glow_factor += (target_glow - self._mouse_glow_factor) * 0.1
-        else:
-            # Gentle floating idle movement
-            t = (time.time() - self._start_time) * 0.8
-            self._mouse_target_x = w / 2.0 + math.cos(t * 0.8) * (w / 3.0)
-            self._mouse_target_y = h / 2.0 + math.sin(t * 0.5) * (h / 4.0)
-
-            # Fade out mouse glow when not hovering
-            self._mouse_glow_factor += (0.0 - self._mouse_glow_factor) * 0.08
-
+        if w < 2 or h < 2:
+            self._bg_pixmap = None
+            return
+        self._bg_pixmap = ocean_halftone(w, h)
         self.update()
 
     def paintEvent(self, event):  # type: ignore[override]
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = self.rect()
-        painter.fillRect(rect, qc("bg_window"))
-
-        w = rect.width()
-        h = rect.height()
-        if w < 10 or h < 10:
+        if rect.width() < 1 or rect.height() < 1:
             return
-
-        # 1. Draw the pre-rendered static background grid pixmap (scales smoothly on dynamic resize)
-        if self._base_grid_pixmap and not self._base_grid_pixmap.isNull():
-            painter.drawPixmap(rect, self._base_grid_pixmap)
-
-        max_dim = max(w, h)
-        centerX = w / 2.0
-        centerY = h / 2.0
-        t_val = (time.time() - self._start_time) * 0.8
-
-        dot_size = 2.4
-
-        if self._has_numpy and self._X is not None:
-            try:
-                import numpy as np
-
-                # Central nucleus glow
-                nucleus_radius = max_dim * 0.08
-                N_GLOW = np.exp(-self._D / nucleus_radius) * 0.95
-
-                # Orbital loops (3 distinct angled ellipses)
-                ORBIT_PROXIMITY = np.zeros_like(self._D)
-                ELECTRON_PROXIMITY = np.zeros_like(self._D)
-
-                majorAxis = max_dim * 0.28
-                minorAxis = max_dim * 0.095
-
-                orbits = [
-                    {"angle": math.pi / 6.0, "speedMult": 1.2, "index": 0},
-                    {"angle": -math.pi / 6.0, "speedMult": 0.95, "index": 1},
-                    {"angle": math.pi / 2.0, "speedMult": 1.5, "index": 2}
-                ]
-
-                for orbit in orbits:
-                    cosA = math.cos(orbit["angle"])
-                    sinA = math.sin(orbit["angle"])
-
-                    RX = self._DX * cosA + self._DY * sinA
-                    RY = -self._DX * sinA + self._DY * cosA
-
-                    radialFactor = np.sqrt((RX/majorAxis)**2 + (RY/minorAxis)**2)
-                    proximity = np.exp(-((radialFactor - 1.0)**2) / (0.12 + math.sin(t_val + orbit["index"]) * 0.04))
-
-                    # Electron trace
-                    orbitTime = t_val * orbit["speedMult"]
-                    eX = math.cos(orbitTime) * majorAxis
-                    eY = math.sin(orbitTime) * minorAxis
-
-                    electronPx = eX * cosA - eY * sinA + centerX
-                    electronPy = eX * sinA + eY * cosA + centerY
-
-                    EDx = self._X - electronPx
-                    EDy = self._Y - electronPy
-                    distToElectron = np.sqrt(EDx*EDx + EDy*EDy)
-                    electronHalo = np.exp(-distToElectron / (max_dim * 0.075)) * 0.7
-
-                    ORBIT_PROXIMITY += proximity * 0.15
-                    ELECTRON_PROXIMITY += electronHalo
-
-                # Mouse gravity trail
-                mDx = self._X - self._mouse_target_x
-                mDy = self._Y - self._mouse_target_y
-                distToMouse = np.sqrt(mDx*mDx + mDy*mDy)
-                mouseGlow = np.exp(-distToMouse / (max_dim * 0.18)) * (0.28 * self._mouse_glow_factor)
-
-                # Calculate individual contributions to guide colors
-                blue_weight = N_GLOW * 1.1 + ORBIT_PROXIMITY
-                green_weight = ELECTRON_PROXIMITY
-                mouse_weight = mouseGlow
-
-                STRENGTH = blue_weight + green_weight + mouse_weight
-                STRENGTH = (STRENGTH - 0.5) * 1.35 + 0.5 * 1.1
-                INTENSITY = np.clip(STRENGTH, 0.0, 1.0)
-
-                # Vectorized active dot filtering: only loop over dots with intensity > 0.005
-                active_indices = np.where(INTENSITY > 0.005)
-                active_x = self._X[active_indices]
-                active_y = self._Y[active_indices]
-                active_intensity = INTENSITY[active_indices]
-
-                painter.setPen(Qt.PenStyle.NoPen)
-                for idx in range(len(active_intensity)):
-                    intensity = active_intensity[idx]
-                    alpha = int(18 + 225 * intensity)
-                    radius = max(1.0, intensity * dot_size)
-                    diameter = radius * 2.0
-
-                    painter.setBrush(self._brushes[alpha])
-                    # Avoid QPointF creation by calling direct float coordinates overload (cx - r, cy - r, w, h)
-                    painter.drawEllipse(active_x[idx] - radius, active_y[idx] - radius, diameter, diameter)
-
-            except Exception:
-                pass  # Fallback will handle it
-        else:
-            # Safe non-numpy fallback with a larger cell size to protect framerate
-            fallback_cell = 14
-            for px in range(int(fallback_cell / 2), w, fallback_cell):
-                for py in range(int(fallback_cell / 2), h, fallback_cell):
-                    dx = px - centerX
-                    dy = py - centerY
-                    d = math.sqrt(dx*dx + dy*dy)
-
-                    nucleus_radius = max_dim * 0.08
-                    nGlow = math.exp(-d / nucleus_radius) * 0.95 if d > 0 else 0.95
-
-                    rx = dx
-                    ry = dy
-                    radialFactor = math.sqrt((rx / (max_dim * 0.28))**2 + (ry / (max_dim * 0.095))**2)
-                    proximity = math.exp(-((radialFactor - 1.0)**2) / 0.12)
-
-                    mDx = px - self._mouse_target_x
-                    mDy = py - self._mouse_target_y
-                    distToMouse = math.sqrt(mDx*mDx + mDy*mDy)
-                    mouseGlow = math.exp(-distToMouse / (max_dim * 0.18)) * (0.28 * self._mouse_glow_factor)
-
-                    strength = nGlow * 1.1 + proximity * 0.15 * 0.58 + mouseGlow
-                    strength = (strength - 0.5) * 1.35 + 0.5 * 1.1
-                    intensity = max(0.0, min(1.0, strength))
-
-                    if intensity > 0.01:
-                        alpha = int(18 + 225 * intensity)
-                        radius = max(1.0, intensity * 2.4)
-                        diameter = radius * 2.0
-                        painter.setPen(Qt.PenStyle.NoPen)
-                        painter.setBrush(self._brushes[alpha])
-                        painter.drawEllipse(px - radius, py - radius, diameter, diameter)
-
-        # Draw scanning lines and vignette overlay on top
-        scanline = QPen(QColor(255, 255, 255, 4))
-        scanline.setWidth(1)
-        scanline.setCosmetic(True)
-        painter.setPen(scanline)
-        for y in range(0, h, 6):
-            painter.drawLine(0, y, w, y)
-
-        gradient = QLinearGradient(0, 0, 0, h)
-        gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
-        gradient.setColorAt(0.72, QColor(0, 0, 0, 12))
-        gradient.setColorAt(1.0, QColor(0, 0, 0, 76))
-        painter.fillRect(rect, QBrush(gradient))
+        if self._bg_pixmap is None or self._bg_pixmap.isNull():
+            painter.fillRect(rect, qc("bg_window"))
+            self._rebuild()
+            if self._bg_pixmap is None or self._bg_pixmap.isNull():
+                return
+        # 1:1 when sizes match; only stretched mid-resize before _rebuild fires.
+        painter.drawPixmap(rect, self._bg_pixmap)
 
 
 # ---------------------------------------------------------------------------
