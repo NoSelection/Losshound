@@ -45,3 +45,14 @@ about.txt
 
 # Local design references
 .design-reference/
+
+# Internal planning docs — not for public release
+docs/superpowers/
+
+# Dev-only iteration artifacts (texture sources, screenshot probes, HUD tooling)
+assets/_*
+assets/header-halo-test.png
+scripts/_*
+
+# Screenshot tool default output (committed copy lives in assets/)
+/dashboard_preview.png

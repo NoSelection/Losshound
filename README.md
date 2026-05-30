@@ -48,7 +48,9 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 
 ## Screenshots
 
-*Screenshots to be added*
+<p align="center">
+  <img src="assets/dashboard_preview.png" alt="Losshound dashboard" width="100%">
+</p>
 
 ## Installation
 
