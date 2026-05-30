@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import sys
 
+from losshound import __version__
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -167,7 +169,7 @@ def _run_gui(config):
 
     app = QApplication(sys.argv)
     app.setApplicationName("Losshound")
-    app.setApplicationVersion("0.1.0")
+    app.setApplicationVersion(__version__)
     app.setWindowIcon(app_icon())
 
     window = MainWindow(config)

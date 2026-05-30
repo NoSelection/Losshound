@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from losshound import __version__
 from losshound.gui.branding import losshound_pixmap
 from losshound.gui.painted import (
     BracketedPanel,
@@ -690,7 +691,7 @@ class MonitorStatusBar(QFrame):
         row.addWidget(self._db_label)
         row.addWidget(_footer_separator())
 
-        self._version_label = QLabel("v1.1.0")
+        self._version_label = QLabel(f"v{__version__}")
         self._version_label.setStyleSheet(
             f"color: {c('text_dim')}; "
             f"font-family: {FONT_MONO_FAMILIES}; "
