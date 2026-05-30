@@ -54,6 +54,12 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 
 ## Installation
 
+### Download (recommended)
+
+Grab the latest **`Losshound.exe`** from the [Releases](https://github.com/NoSelection/Losshound/releases) page. It's a single portable file — no installer, no dependencies, nothing written to Program Files or the registry. Just run it.
+
+> On first launch, Windows SmartScreen may warn about the unsigned binary — click **More info → Run anyway**. (Signing requires a paid certificate.)
+
 ### From source
 
 ```bash
@@ -262,12 +268,14 @@ pytest
 
 ### Packaging with PyInstaller
 
+A ready-to-use spec is included that produces a single, portable `Losshound.exe`:
+
 ```bash
 pip install pyinstaller
-pyinstaller --name Losshound --windowed --add-data "config.default.json;." src/losshound/app.py
+pyinstaller Losshound.spec
 ```
 
-The built application will be in `dist/Losshound/`.
+The built executable will be at `dist/Losshound.exe` — copy it anywhere and run; no installation required.
 
 ## Data storage
 
@@ -278,6 +286,16 @@ All data is stored locally:
 - **Logs**: `%LOCALAPPDATA%\Losshound\losshound.log`
 - **Optimizer backup**: `%LOCALAPPDATA%\Losshound\optimizer_backup.json`
 - **Benchmark history**: `%LOCALAPPDATA%\Losshound\benchmark_history.json`
+
+## Uninstall
+
+Losshound is portable — nothing is installed in Program Files, the registry, or the Start Menu. To remove it completely:
+
+1. **If you used the Optimizer**, first revert any network changes — open the Optimizer tab and click **Restore**, or run `losshound restore`.
+2. **Delete the executable** (`Losshound.exe`) from wherever you put it.
+3. **Delete the data folder** — `%LOCALAPPDATA%\Losshound\` (history database, settings, logs). Paste that path into File Explorer's address bar to open it.
+
+That's everything — no leftovers.
 
 ## Known limitations
 

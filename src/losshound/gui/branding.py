@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -22,7 +23,9 @@ def losshound_pixmap(size: int = 64) -> QPixmap:
 
 
 def _asset_logo_path() -> Path | None:
-    path = Path(__file__).resolve().parents[3] / "assets" / "losshound-logo.png"
+    base = getattr(sys, "_MEIPASS", None)
+    root = Path(base) if base is not None else Path(__file__).resolve().parents[3]
+    path = root / "assets" / "losshound-logo.png"
     return path if path.exists() else None
 
 

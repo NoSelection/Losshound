@@ -5,6 +5,7 @@ Single source of truth for colour, typography, and texture so QSS in
 """
 from __future__ import annotations
 
+import sys
 from functools import lru_cache
 from math import exp, sin
 from pathlib import Path
@@ -24,7 +25,14 @@ from PySide6.QtGui import (
 
 
 def _assets_dir() -> Path:
-    """Locate the project ``assets/`` directory."""
+    """Locate the project ``assets/`` directory.
+
+    Works in a source checkout and in a PyInstaller bundle, where data files
+    are unpacked under ``sys._MEIPASS``.
+    """
+    base = getattr(sys, "_MEIPASS", None)
+    if base is not None:
+        return Path(base) / "assets"
     return Path(__file__).resolve().parents[3] / "assets"
 
 
