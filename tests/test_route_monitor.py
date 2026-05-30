@@ -65,3 +65,24 @@ def test_diff_routes_significant():
     rd = diff_routes(s1, s2)
     assert len(rd.changed_hops) == 2
     assert rd.is_significant
+
+
+def test_trace_route_builds_arg_list():
+    from unittest.mock import patch
+    from losshound.core.route_monitor import trace_route
+
+    with patch("losshound.core.route_monitor.run_subprocess_interruptible") as mock_run:
+        mock_run.return_value = ("Hop 1 192.168.1.1 1ms", "", 0)
+        trace_route("8.8.8.8", max_hops=20, timeout_ms=3000)
+        
+        mock_run.assert_called_once()
+        args = mock_run.call_args[0][0]
+        assert isinstance(args, list)
+        assert args[0] == "tracert"
+        assert "-d" in args
+        assert "8.8.8.8" in args
+        # Check there is no cmd or shell wrapping
+        assert "cmd" not in args
+        assert "cmd.exe" not in args
+        assert "/c" not in args
+

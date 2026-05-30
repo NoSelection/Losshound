@@ -171,6 +171,10 @@ def _ping_continuous(
     Uses subprocess ping one-at-a-time for reliability on Windows.
     """
     import subprocess
+    from losshound.core.validation import validate_target
+
+    if not validate_target(target):
+        return
 
     deadline = time.monotonic() + duration_seconds
     _CREATE_NO_WINDOW = 0x08000000
@@ -178,12 +182,12 @@ def _ping_continuous(
     while time.monotonic() < deadline and not stop_event.is_set():
         try:
             proc = subprocess.run(
-                ["cmd", "/c", f"chcp 437 >nul && ping -n 1 -w 2000 {target}"],
+                ["ping", "-n", "1", "-w", "2000", target],
                 capture_output=True, text=True, timeout=5,
                 creationflags=_CREATE_NO_WINDOW,
             )
             import re
-            match = re.search(r"time[=<](\d+)ms", proc.stdout)
+            match = re.search(r"[=<]\s*(\d+)\s*ms", proc.stdout, re.IGNORECASE)
             if match:
                 results.append(float(match.group(1)))
             else:

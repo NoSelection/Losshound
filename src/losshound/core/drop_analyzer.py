@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
+from losshound.core.validation import validate_target
+
 logger = logging.getLogger(__name__)
 
 _CREATE_NO_WINDOW: int = 0x08000000
@@ -107,15 +109,18 @@ class DropAnalysisReport:
 
 def _quick_ping(target: str, timeout_ms: int = 1500) -> tuple[bool, Optional[float]]:
     """Send a single ping and return (reachable, rtt_ms)."""
+    if not validate_target(target):
+        return False, None
     try:
         proc = subprocess.run(
-            ["cmd", "/c", f"chcp 437 >nul && ping -n 1 -w {timeout_ms} {target}"],
+            ["ping", "-n", "1", "-w", str(timeout_ms), target],
             capture_output=True, text=True, timeout=(timeout_ms / 1000) + 3,
             creationflags=_CREATE_NO_WINDOW,
         )
         out = proc.stdout
-        if "TTL=" in out or "ttl=" in out:
-            m = re.search(r"time[=<](\d+)ms", out)
+        if "ttl=" in out.lower():
+            # Locale-independent check for time=Xms or time<1ms
+            m = re.search(r"[=<]\s*(\d+)\s*ms", out, re.IGNORECASE)
             rtt = float(m.group(1)) if m else 0.0
             return True, rtt
         return False, None
@@ -125,13 +130,18 @@ def _quick_ping(target: str, timeout_ms: int = 1500) -> tuple[bool, Optional[flo
 
 def _quick_dns(hostname: str = "google.com") -> bool:
     """Attempt a quick DNS lookup via nslookup."""
+    if not validate_target(hostname):
+        return False
     try:
         proc = subprocess.run(
-            ["cmd", "/c", f"chcp 437 >nul && nslookup {hostname}"],
+            ["nslookup", hostname],
             capture_output=True, text=True, timeout=5,
             creationflags=_CREATE_NO_WINDOW,
         )
-        return "Address" in proc.stdout and proc.returncode == 0
+        out_lower = proc.stdout.lower()
+        has_address = any(kw in out_lower for kw in ("address", "adres", "adresse"))
+        can_find = any(kw in out_lower for kw in ("can't find", "cannot find", "bulunamıyor", "nicht gefunden"))
+        return proc.returncode == 0 and has_address and not can_find
     except Exception:
         return False
 
@@ -147,30 +157,33 @@ def _get_active_nic_info() -> tuple[str, bool, float]:
     """
     try:
         proc = subprocess.run(
-            ["cmd", "/c", "chcp 437 >nul && netsh interface show interface"],
+            ["netsh", "interface", "show", "interface"],
             capture_output=True, text=True, timeout=10,
             creationflags=_CREATE_NO_WINDOW,
         )
+        # Check for connected interfaces
         for line in proc.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 4 and parts[1].lower() == "connected":
-                iface_type = parts[2].lower()  # "dedicated" (ethernet) or other
-                name = " ".join(parts[3:])
-                is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
-                conn_type = "ethernet" if is_ethernet else "wifi"
-
-                # Get speed
-                speed = _get_link_speed(name)
-                return conn_type, True, speed
+            if len(parts) >= 4:
+                state = parts[1].lower()
+                if any(x in state for x in ("connected", "bağlı", "verbunden", "conectado")):
+                    iface_type = parts[2].lower()  # "dedicated" (ethernet) or other
+                    name = " ".join(parts[3:])
+                    is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
+                    conn_type = "ethernet" if is_ethernet else "wifi"
+                    speed = _get_link_speed(name)
+                    return conn_type, True, speed
 
         # Check for disconnected interfaces
         for line in proc.stdout.splitlines():
             parts = line.split()
-            if len(parts) >= 4 and parts[1].lower() == "disconnected":
-                name = " ".join(parts[3:])
-                is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
-                conn_type = "ethernet" if is_ethernet else "wifi"
-                return conn_type, False, 0.0
+            if len(parts) >= 4:
+                state = parts[1].lower()
+                if any(x in state for x in ("disconnected", "bağlantısız", "nicht verbunden", "desconectado")):
+                    name = " ".join(parts[3:])
+                    is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
+                    conn_type = "ethernet" if is_ethernet else "wifi"
+                    return conn_type, False, 0.0
 
     except Exception as exc:
         logger.debug("NIC info failed: %s", exc)
@@ -182,14 +195,12 @@ def _get_link_speed(interface_name: str) -> float:
     """Get the negotiated link speed for a network interface."""
     try:
         proc = subprocess.run(
-            ["cmd", "/c", f'chcp 437 >nul && netsh interface ipv4 show subinterfaces'],
+            ["netsh", "interface", "ipv4", "show", "subinterfaces"],
             capture_output=True, text=True, timeout=10,
             creationflags=_CREATE_NO_WINDOW,
         )
         for line in proc.stdout.splitlines():
             if interface_name.lower() in line.lower():
-                # Format: MTU  MediaSenseState   Bytes In  Bytes Out  Interface
-                # Look for link speed from wmic instead
                 break
     except Exception:
         pass
@@ -197,7 +208,7 @@ def _get_link_speed(interface_name: str) -> float:
     # Fallback: wmic
     try:
         proc = subprocess.run(
-            ["cmd", "/c", "chcp 437 >nul && wmic nic where NetEnabled=true get Name,Speed /format:csv"],
+            ["wmic", "nic", "where", "NetEnabled=true", "get", "Name,Speed", "/format:csv"],
             capture_output=True, text=True, timeout=10,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -222,12 +233,16 @@ def _check_media_status() -> bool:
     """Check if the Ethernet cable is physically connected (media sense)."""
     try:
         proc = subprocess.run(
-            ["cmd", "/c", "chcp 437 >nul && ipconfig /all"],
+            ["ipconfig", "/all"],
             capture_output=True, text=True, timeout=10,
             creationflags=_CREATE_NO_WINDOW,
         )
-        # If "Media disconnected" appears, the cable is unplugged
-        return "Media disconnected" not in proc.stdout
+        out_lower = proc.stdout.lower()
+        has_disconnected = any(
+            x in out_lower
+            for x in ("media disconnected", "medium getrennt", "bağlantısı kesildi", "desconectado", "déconnecté", "disconnected")
+        )
+        return not has_disconnected
     except Exception:
         return True  # assume connected on error
 
@@ -256,20 +271,23 @@ def _get_network_events(hours: int = 3) -> list[NetworkEvent]:
 
     # System log — look for network adapter events
     try:
-        cmd = (
-            f'wevtutil qe System '
-            f'/q:"*[System[TimeCreated[timediff(@SystemTime) <= {ms}] '
-            f'and (Provider[@Name=\'Microsoft-Windows-NDIS\'] '
-            f'or Provider[@Name=\'Tcpip\'] '
-            f'or Provider[@Name=\'e1dexpress\'] '
-            f'or Provider[@Name=\'Microsoft-Windows-DHCPv4-Client\'] '
-            f'or Provider[@Name=\'Microsoft-Windows-Dhcp-Client\'] '
-            f'or Provider[@Name=\'Dhcp\']'
-            f')]]" '
-            f'/c:50 /rd:true /f:text'
+        query = (
+            f"*[System[TimeCreated[timediff(@SystemTime) <= {ms}] "
+            f"and (Provider[@Name='Microsoft-Windows-NDIS'] "
+            f"or Provider[@Name='Tcpip'] "
+            f"or Provider[@Name='e1dexpress'] "
+            f"or Provider[@Name='Microsoft-Windows-DHCPv4-Client'] "
+            f"or Provider[@Name='Microsoft-Windows-Dhcp-Client'] "
+            f"or Provider[@Name='Dhcp']"
+            f")]]"
         )
+        args = [
+            "wevtutil", "qe", "System",
+            f"/q:{query}",
+            "/c:50", "/rd:true", "/f:text"
+        ]
         proc = subprocess.run(
-            ["cmd", "/c", f"chcp 437 >nul && {cmd}"],
+            args,
             capture_output=True, text=True, timeout=15,
             creationflags=_CREATE_NO_WINDOW,
         )
@@ -280,13 +298,13 @@ def _get_network_events(hours: int = 3) -> list[NetworkEvent]:
 
     # WLAN log
     try:
-        cmd = (
-            f'wevtutil qe "Microsoft-Windows-WLAN-AutoConfig/Operational" '
-            f'/q:"*[System[TimeCreated[timediff(@SystemTime) <= {ms}]]]" '
-            f'/c:50 /rd:true /f:text'
-        )
+        args = [
+            "wevtutil", "qe", "Microsoft-Windows-WLAN-AutoConfig/Operational",
+            f"/q:*[System[TimeCreated[timediff(@SystemTime) <= {ms}]]]",
+            "/c:50", "/rd:true", "/f:text"
+        ]
         proc = subprocess.run(
-            ["cmd", "/c", f"chcp 437 >nul && {cmd}"],
+            args,
             capture_output=True, text=True, timeout=15,
             creationflags=_CREATE_NO_WINDOW,
         )

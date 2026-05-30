@@ -67,6 +67,7 @@ class AppConfig:
     # 5353/5355/1900/137, scoped to this exe only) so multicast LAN-discovery
     # responses are not dropped on Public network profiles.
     lan_discovery_firewall_enabled: bool = True
+    lan_http_scan_enabled: bool = False
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     diagnosis: DiagnosisConfig = field(default_factory=DiagnosisConfig)
     log_level: str = "INFO"

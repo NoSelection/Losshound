@@ -153,45 +153,30 @@ def _sanitize_adapter_name(name: str) -> str:
     return cleaned.replace("'", "''")
 
 
+def _parse_bool_setting(val: str) -> str:
+    """Robust locale-independent parser for enabled/disabled settings."""
+    val_lower = val.lower()
+    if any(x in val_lower for x in ("dis", "devre", "deaktiv", "off", "no", "false", "0")):
+        return "disabled"
+    if any(x in val_lower for x in ("en", "akt", "on", "yes", "true", "1", "etk")):
+        return "enabled"
+    return val.strip().lower()
+
+
 def _run(
-    cmd: str | list[str],
+    cmd: list[str],
     *,
-    shell: bool = False,
     timeout: float = 30,
-    english: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute a subprocess with common defaults.
-
-    Parameters
-    ----------
-    cmd:
-        Command to run.  If *shell* is ``True`` this should be a string,
-        otherwise a list.
-    shell:
-        Whether to use shell execution.
-    timeout:
-        Maximum number of seconds to wait.
-    english:
-        If ``True``, prepend ``chcp 437 >nul &&`` (via cmd /c) so that
-        the output is in English regardless of system locale.
-    """
-    if english:
-        if isinstance(cmd, list):
-            cmd = " ".join(cmd)
-        cmd = f"chcp 437 >nul && {cmd}"
-        args: str | list[str] = ["cmd", "/c", cmd]
-        shell = False
-    else:
-        args = cmd
-
+    """Execute a subprocess with common defaults using list arguments (no shell)."""
     return subprocess.run(
-        args,
+        cmd,
         capture_output=True,
         text=True,
         timeout=timeout,
         creationflags=_CREATE_NO_WINDOW,
-        shell=shell,
     )
+
 
 
 def _parse_netsh_table(output: str) -> dict[str, str]:
@@ -391,7 +376,7 @@ class NetworkOptimizer:
         """
         try:
             result = _run(
-                "netsh interface ip show dnsservers", english=True,
+                ["netsh", "interface", "ip", "show", "dnsservers"],
             )
             servers: list[str] = re.findall(
                 r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", result.stdout,
@@ -406,7 +391,7 @@ class NetworkOptimizer:
     def apply_dns(self, primary: str, secondary: str) -> OptimizeResult:
         """Set DNS servers on the active network adapter (requires admin)."""
         name = "Set DNS servers"
-        cmd_primary = ""
+        cmd_primary_args = []
         if not self.check_admin():
             return _make_result(
                 name=name, success=False,
@@ -415,24 +400,66 @@ class NetworkOptimizer:
                 error="Administrator privileges required",
             )
 
+        from losshound.core.dns_bench import query_dns_server
+        from losshound.core.validation import validate_target
+
         before_primary, before_secondary = self.get_current_dns()
         adapter = self._active_adapter_name()
         before_str = f"{before_primary}, {before_secondary}"
         desired_str = f"{primary}, {secondary}"
-        cmd_primary = (
-            f'netsh interface ip set dnsservers name="{adapter}" '
-            f"static {primary} primary validate=no"
-        )
+
+        # Target Validation Check
+        if not validate_target(primary):
+            return _make_result(
+                name=name, success=False,
+                before=before_str, after="",
+                needs_admin=True,
+                error=f"Invalid primary DNS target: {primary!r}",
+            )
+        if secondary and not validate_target(secondary):
+            return _make_result(
+                name=name, success=False,
+                before=before_str, after="",
+                needs_admin=True,
+                error=f"Invalid secondary DNS target: {secondary!r}",
+            )
+
+        # Pre-test DNS servers before applying them to leave DNS untouched on failure
+        t_primary = query_dns_server(primary, "google.com", timeout=2.0)
+        if t_primary is None:
+            return _make_result(
+                name=name, success=False,
+                before=before_str, after="",
+                needs_admin=True,
+                error=f"DNS validation failed: primary server {primary} did not respond to UDP query",
+                desired=desired_str,
+            )
+
+        if secondary:
+            t_secondary = query_dns_server(secondary, "google.com", timeout=2.0)
+            if t_secondary is None:
+                return _make_result(
+                    name=name, success=False,
+                    before=before_str, after="",
+                    needs_admin=True,
+                    error=f"DNS validation failed: secondary server {secondary} did not respond to UDP query",
+                    desired=desired_str,
+                )
+
+        cmd_primary_args = [
+            "netsh", "interface", "ip", "set", "dnsservers",
+            f"name={adapter}", "static", primary, "primary", "validate=no"
+        ]
 
         try:
-            proc = _run(cmd_primary, english=True)
-            cmd_secondary = ""
+            proc = _run(cmd_primary_args)
+            cmd_secondary_args = []
             if secondary:
-                cmd_secondary = (
-                    f'netsh interface ip add dnsservers name="{adapter}" '
-                    f"{secondary} index=2 validate=no"
-                )
-                _run(cmd_secondary, english=True)
+                cmd_secondary_args = [
+                    "netsh", "interface", "ip", "add", "dnsservers",
+                    f"name={adapter}", secondary, "index=2", "validate=no"
+                ]
+                _run(cmd_secondary_args)
 
             # Verify
             after_primary, after_secondary = self.get_current_dns()
@@ -440,11 +467,15 @@ class NetworkOptimizer:
             verified = after_primary == primary
             verification = f"Verified DNS: {after_primary}, {after_secondary}"
 
+            cmd_str = " ".join(cmd_primary_args)
+            if cmd_secondary_args:
+                cmd_str += " && " + " ".join(cmd_secondary_args)
+
             return _make_result(
                 name=name, success=verified,
                 before=before_str, after=after_str,
                 needs_admin=True,
-                command=cmd_primary + (" && " + cmd_secondary if cmd_secondary else ""),
+                command=cmd_str,
                 command_exit_code=proc.returncode,
                 verification=verification,
                 note=f"DNS set to {primary}" + (f", {secondary}" if secondary else "")
@@ -457,7 +488,7 @@ class NetworkOptimizer:
                 name=name, success=False,
                 before=before_str, after="",
                 needs_admin=True, error=str(exc),
-                command=cmd_primary,
+                command=" ".join(cmd_primary_args),
             )
 
     # ------------------------------------------------------------------
@@ -467,9 +498,13 @@ class NetworkOptimizer:
     def get_tcp_heuristics(self) -> str:
         """Read the TCP Window Scaling heuristics state via ``netsh``."""
         try:
-            result = _run("netsh interface tcp show heuristics", english=True)
-            table = _parse_netsh_table(result.stdout)
-            return table.get("window scaling heuristics", "unknown").strip().lower()
+            result = _run(["netsh", "interface", "tcp", "show", "heuristics"])
+            for line in result.stdout.splitlines():
+                if ":" in line:
+                    key, _, value = line.partition(":")
+                    if "heuristics" in key.lower():
+                        return _parse_bool_setting(value)
+            return "unknown"
         except Exception as exc:
             logger.warning("Failed to read TCP heuristics: %s", exc)
             return "unknown"
@@ -477,17 +512,17 @@ class NetworkOptimizer:
     def disable_tcp_heuristics(self) -> OptimizeResult:
         """Disable TCP Window Scaling heuristics (requires admin)."""
         name = "Disable TCP heuristics"
-        cmd = "netsh interface tcp set heuristics disabled"
+        cmd_args = ["netsh", "interface", "tcp", "set", "heuristics", "disabled"]
         if not self.check_admin():
             return _make_result(
                 name=name, success=False, before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
-                command=cmd,
+                command=" ".join(cmd_args),
             )
         before = self.get_tcp_heuristics()
         try:
-            proc = _run(cmd, english=True)
+            proc = _run(cmd_args)
             ok = proc.returncode == 0
             after = self.get_tcp_heuristics()
             verified = after.lower() == "disabled"
@@ -497,7 +532,7 @@ class NetworkOptimizer:
                 desired="disabled",
                 needs_admin=True,
                 error=proc.stderr.strip() if not ok else None,
-                command=cmd,
+                command=" ".join(cmd_args),
                 verification=f"Heuristics check: {after}",
                 note="Prevents Windows from automatically modifying TCP auto-tuning values" if verified else "",
             )
@@ -506,36 +541,70 @@ class NetworkOptimizer:
                 name=name, success=False,
                 before=before, after="",
                 needs_admin=True, error=str(exc),
-                command=cmd,
+                command=" ".join(cmd_args),
             )
 
     def get_tcp_settings(self) -> TcpSettings:
-        """Read current TCP global parameters via ``netsh``."""
+        """Read current TCP global parameters via PowerShell or netsh."""
         settings = TcpSettings()
+        
+        # 1. Try to read from PowerShell JSON (locale-independent)
         try:
-            result = _run(
-                "netsh interface tcp show global", english=True,
-            )
-            table = _parse_netsh_table(result.stdout)
-
-            settings.auto_tuning_level = table.get(
-                "receive window auto-tuning level", "unknown",
-            )
-            settings.congestion_provider = table.get(
-                "add-on congestion control provider", table.get(
-                    "supplemental congestion control provider", "unknown",
-                ),
-            )
-            settings.ecn_capability = table.get("ecn capability", "unknown")
-            settings.rss = table.get(
-                "receive-side scaling state", "unknown",
-            )
-            settings.dca = table.get(
-                "direct cache access (dca)", "unknown",
-            )
-            settings.timestamps = table.get("timestamps", "unknown")
+            cmd = [
+                "powershell", "-NoProfile", "-Command",
+                "Get-NetTCPSetting -SettingName Internet | ForEach-Object { "
+                "[PSCustomObject]@{ "
+                "CongestionProvider = $PSItem.CongestionProvider.ToString(); "
+                "AutoTuningLevelLocal = $PSItem.AutoTuningLevelLocal.ToString(); "
+                "EcnCapability = $PSItem.EcnCapability.ToString(); "
+                "Timestamps = $PSItem.Timestamps.ToString(); "
+                "ScalingHeuristics = $PSItem.ScalingHeuristics.ToString() "
+                "} } | ConvertTo-Json"
+            ]
+            result = _run(cmd)
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                settings.auto_tuning_level = data.get("AutoTuningLevelLocal", "unknown").lower()
+                settings.congestion_provider = data.get("CongestionProvider", "unknown").lower()
+                settings.ecn_capability = data.get("EcnCapability", "unknown").lower()
+                settings.timestamps = data.get("Timestamps", "unknown").lower()
         except Exception as exc:
-            logger.warning("Failed to read TCP settings: %s", exc)
+            logger.warning("Failed to read TCP settings via PowerShell: %s", exc)
+
+        # 2. Try to get RSS and DCA from netsh (global parameters),
+        # falling back to our robust locale-independent parser if needed.
+        # Also fall back to netsh for auto-tuning, congestion_provider, ecn_capability, timestamps
+        # if they are still "unknown".
+        try:
+            result = _run(["netsh", "interface", "tcp", "show", "global"])
+
+            for line in result.stdout.splitlines():
+                if ":" not in line:
+                    continue
+                key, _, value = line.partition(":")
+                key = key.strip().lower()
+                value = value.strip()
+                
+                # Check for keys using keywords
+                if "rss" in key or "scaling" in key:
+                    settings.rss = _parse_bool_setting(value)
+                elif "dca" in key or "direct cache" in key:
+                    settings.dca = _parse_bool_setting(value)
+                elif "auto-tuning" in key or "tuning" in key:
+                    if settings.auto_tuning_level == "unknown":
+                        settings.auto_tuning_level = value.strip().lower()
+                elif "congestion" in key or "addon" in key or "add-on" in key:
+                    if settings.congestion_provider == "unknown":
+                        settings.congestion_provider = value.lower()
+                elif "ecn" in key:
+                    if settings.ecn_capability == "unknown":
+                        settings.ecn_capability = _parse_bool_setting(value)
+                elif "timestamp" in key or "rfc 1323" in key:
+                    if settings.timestamps == "unknown":
+                        settings.timestamps = _parse_bool_setting(value)
+        except Exception as exc:
+            logger.warning("Failed to read TCP settings via netsh: %s", exc)
+
         return settings
 
     def optimize_tcp(self) -> list[OptimizeResult]:
@@ -555,47 +624,46 @@ class NetworkOptimizer:
 
         current = self.get_tcp_settings()
 
-        # (label, command, current_value, desired_value, note_on_apply)
-        tweaks: list[tuple[str, str, str, str, str]] = [
+        # (label, command_list, current_value, desired_value, note_on_apply)
+        tweaks: list[tuple[str, list[str], str, str, str]] = [
             (
                 "TCP auto-tuning",
-                "netsh int tcp set global autotuninglevel=normal",
+                ["netsh", "int", "tcp", "set", "global", "autotuninglevel=normal"],
                 current.auto_tuning_level,
                 "normal",
                 "Sets receive window auto-tuning to Normal for optimal throughput",
             ),
             (
                 "Congestion provider",
-                "netsh int tcp set supplemental template=Internet "
-                "congestionprovider=cubic",
+                ["netsh", "int", "tcp", "set", "supplemental", "template=Internet", "congestionprovider=cubic"],
                 current.congestion_provider,
                 "cubic",
                 "Switches to CUBIC congestion control for modern high-bandwidth performance",
             ),
             (
                 "ECN capability",
-                "netsh int tcp set global ecncapability=enabled",
+                ["netsh", "int", "tcp", "set", "global", "ecncapability=enabled"],
                 current.ecn_capability,
                 "enabled",
                 "Enables Explicit Congestion Notification to reduce packet loss",
             ),
             (
                 "RSS",
-                "netsh int tcp set global rss=enabled",
+                ["netsh", "int", "tcp", "set", "global", "rss=enabled"],
                 current.rss,
                 "enabled",
                 "Enables Receive-Side Scaling for multi-core packet processing",
             ),
             (
                 "DCA",
-                "netsh int tcp set global dca=enabled",
+                ["netsh", "int", "tcp", "set", "global", "dca=enabled"],
                 current.dca,
                 "enabled",
                 "Enables Direct Cache Access to reduce CPU cache misses",
             ),
             (
                 "TCP timestamps",
-                "netsh int tcp set global timestamps=enabled",
+                ["netsh", "int", "tcp", "set", "global", "timestamps=enabled"],
                 current.timestamps,
                 "enabled",
                 "Enables RFC 1323 timestamps for better RTT measurement",
@@ -604,7 +672,7 @@ class NetworkOptimizer:
 
         for label, command, before, desired, apply_note in tweaks:
             try:
-                proc = _run(command, english=True)
+                proc = _run(command)
                 ok = proc.returncode == 0
                 error = proc.stderr.strip() if not ok else None
                 # Some commands succeed with non-zero return codes but write
@@ -638,7 +706,7 @@ class NetworkOptimizer:
                     before=before, after=actual_after if ok else before,
                     desired=desired,
                     needs_admin=True, error=error,
-                    command=command,
+                    command=" ".join(command),
                     command_exit_code=proc.returncode,
                     verification=verification,
                     note=apply_note if ok else "",
@@ -649,7 +717,7 @@ class NetworkOptimizer:
                     name=label, success=False,
                     before=before, after="",
                     needs_admin=True, error=str(exc),
-                    command=command,
+                    command=" ".join(command),
                 ))
 
         return results
@@ -744,13 +812,12 @@ class NetworkOptimizer:
         # Fallback: parse netsh
         try:
             result = _run(
-                "netsh interface show interface", english=True,
+                ["netsh", "interface", "show", "interface"],
             )
             for line in result.stdout.splitlines():
-                if "Connected" in line:
-                    parts = line.split()
-                    if len(parts) >= 4:
-                        return _sanitize_adapter_name(" ".join(parts[3:]))
+                parts = line.split()
+                if len(parts) >= 4 and any(x in parts[1].lower() for x in ("connected", "bağlı", "verbunden", "conectado")):
+                    return _sanitize_adapter_name(" ".join(parts[3:]))
         except Exception:
             pass
         return "Ethernet"
@@ -1223,16 +1290,16 @@ class NetworkOptimizer:
 
     def flush_dns_cache(self) -> OptimizeResult:
         """Flush the Windows DNS resolver cache."""
-        cmd = "ipconfig /flushdns"
+        cmd_args = ["ipconfig", "/flushdns"]
         try:
-            proc = _run(cmd, english=True)
-            ok = "successfully" in proc.stdout.lower() or proc.returncode == 0
+            proc = _run(cmd_args)
+            ok = proc.returncode == 0
             return _make_result(
                 name="Flush DNS cache", success=ok,
                 before="cached", after="flushed" if ok else "cached",
                 needs_admin=False,
                 error=proc.stderr.strip() or None if not ok else None,
-                command=cmd,
+                command=" ".join(cmd_args),
                 command_exit_code=proc.returncode,
                 note="DNS resolver cache cleared" if ok else "",
             )
@@ -1241,29 +1308,29 @@ class NetworkOptimizer:
                 name="Flush DNS cache", success=False,
                 before="cached", after="",
                 needs_admin=False, error=str(exc),
-                command=cmd,
+                command=" ".join(cmd_args),
             )
 
     def flush_arp_cache(self) -> OptimizeResult:
         """Flush the ARP cache (requires admin)."""
         name = "Flush ARP cache"
-        cmd = "netsh interface ip delete arpcache"
+        cmd_args = ["netsh", "interface", "ip", "delete", "arpcache"]
         if not self.check_admin():
             return _make_result(
                 name=name, success=False, before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
-                command=cmd,
+                command=" ".join(cmd_args),
             )
         try:
-            proc = _run(cmd, english=True)
+            proc = _run(cmd_args)
             ok = proc.returncode == 0
             return _make_result(
                 name=name, success=ok,
                 before="cached", after="flushed" if ok else "cached",
                 needs_admin=True,
                 error=proc.stderr.strip() or None if not ok else None,
-                command=cmd,
+                command=" ".join(cmd_args),
                 command_exit_code=proc.returncode,
                 note="ARP cache cleared; stale MAC mappings removed" if ok else "",
             )
@@ -1272,7 +1339,7 @@ class NetworkOptimizer:
                 name=name, success=False,
                 before="cached", after="",
                 needs_admin=True, error=str(exc),
-                command=cmd,
+                command=" ".join(cmd_args),
             )
 
     def get_system_responsiveness(self) -> int | None:
@@ -1646,7 +1713,7 @@ class NetworkOptimizer:
         try:
             adapter = self._active_adapter_name()
             result = _run(
-                f'netsh interface ipv4 show subinterfaces', english=True,
+                ["netsh", "interface", "ipv4", "show", "subinterfaces"],
             )
             for line in result.stdout.splitlines():
                 if adapter.lower() in line.lower():
@@ -1666,8 +1733,13 @@ class NetworkOptimizer:
         Uses ``ping -f -l <size>`` to test.  The returned value includes
         the 28-byte IP+ICMP header overhead.
         """
-        low = 500
-        high = 1500
+        from losshound.core.validation import validate_target
+        if not validate_target(target):
+            logger.warning("Invalid MTU target: %r", target)
+            return None
+
+        low = 1252  # payload size (MTU 1280 - 28)
+        high = 1472  # payload size (MTU 1500 - 28)
         best: Optional[int] = None
 
         while low <= high:
@@ -1675,32 +1747,32 @@ class NetworkOptimizer:
             # ``ping -f -l`` sends a payload of *mid* bytes.
             # The actual MTU = payload + 28 (20 IP + 8 ICMP header).
             try:
-                proc = _run(
-                    f"chcp 437 >nul && ping -n 1 -f -l {mid} -w 2000 {target}",
-                    english=False,  # already included chcp in command
-                )
+                proc = _run(["ping", "-n", "1", "-f", "-l", str(mid), "-w", "2000", target])
                 stdout = proc.stdout
             except Exception:
                 break
 
-            # If the reply contains "fragmented" or "DF set" it means the
-            # packet was too large.
+            stdout_lower = stdout.lower()
+            # Check for a successful reply (ttl= is universal across languages)
+            has_reply = "ttl=" in stdout_lower or "reply from" in stdout_lower or "antwort von" in stdout_lower or "réponse de" in stdout_lower or "respuesta de" in stdout_lower or "cevap" in stdout_lower
+            
+            # Check for fragmentation needed
             needs_frag = (
-                "must be fragmented" in stdout.lower()
-                or "packet needs to be fragmented" in stdout.lower()
-                or "df set" in stdout.lower()
-            )
+                "fragment" in stdout_lower
+                or "df" in stdout_lower
+                or "parça" in stdout_lower
+                or "parca" in stdout_lower
+                or "must be" in stdout_lower
+            ) and not has_reply
 
-            if needs_frag:
+            if has_reply:
+                best = mid
+                low = mid + 1
+            elif needs_frag:
                 high = mid - 1
             else:
-                # Check for a successful reply
-                if "reply from" in stdout.lower() or "ttl=" in stdout.lower():
-                    best = mid
-                    low = mid + 1
-                else:
-                    # Timeout or other failure — shrink
-                    high = mid - 1
+                # Timeout or other failure — shrink
+                high = mid - 1
 
         if best is None:
             logger.warning("MTU discovery was inconclusive; leaving current MTU unchanged")
@@ -1714,22 +1786,22 @@ class NetworkOptimizer:
         """Set the MTU on the active adapter (requires admin)."""
         name = "Set MTU"
         adapter = self._active_adapter_name()
-        cmd = (
-            f'netsh interface ipv4 set subinterface "{adapter}" '
-            f"mtu={mtu} store=persistent"
-        )
+        cmd_args = [
+            "netsh", "interface", "ipv4", "set", "subinterface",
+            adapter, f"mtu={mtu}", "store=persistent"
+        ]
         if not self.check_admin():
             return _make_result(
                 name=name, success=False,
                 before="", after="",
                 needs_admin=True,
                 error="Administrator privileges required",
-                command=cmd,
+                command=" ".join(cmd_args),
             )
 
         before_mtu = self.get_current_mtu()
         try:
-            proc = _run(cmd, english=True)
+            proc = _run(cmd_args)
             ok = proc.returncode == 0 or "ok" in proc.stdout.lower()
             error = proc.stderr.strip() or None if not ok else None
 
@@ -1742,7 +1814,7 @@ class NetworkOptimizer:
                 before=str(before_mtu), after=str(after_mtu) if ok else str(before_mtu),
                 desired=str(mtu),
                 needs_admin=True, error=error,
-                command=cmd,
+                command=" ".join(cmd_args),
                 command_exit_code=proc.returncode,
                 verification=verification,
                 note=f"MTU optimised via ping fragmentation test"
@@ -1765,6 +1837,23 @@ class NetworkOptimizer:
 
     def create_backup(self) -> BackupData:
         """Snapshot all current settings so they can be restored later."""
+        # Check if backup file exists and is valid
+        if _BACKUP_FILE.is_file():
+            existing = self._load_backup()
+            if existing is not None:
+                logger.info("Pristine backup already exists, preserving it: %s", _BACKUP_FILE)
+                return existing
+            else:
+                # Corrupt backup exists, back it aside
+                corrupt_path = _BACKUP_FILE.with_suffix(".json.corrupt")
+                try:
+                    if corrupt_path.is_file():
+                        corrupt_path.unlink()
+                    _BACKUP_FILE.rename(corrupt_path)
+                    logger.warning("Corrupt backup file found at %s. Moved to %s.", _BACKUP_FILE, corrupt_path)
+                except Exception as exc:
+                    logger.error("Failed to move corrupt backup file %s: %s", _BACKUP_FILE, exc)
+
         tcp = self.get_tcp_settings()
         dns = self.get_current_dns()
         mtu = self.get_current_mtu()
@@ -1971,8 +2060,20 @@ class NetworkOptimizer:
         data = asdict(backup)
         # tuple -> list for JSON, will be restored on load
         data["dns_servers"] = list(data["dns_servers"])
-        with open(_BACKUP_FILE, "w", encoding="utf-8") as fh:
-            json.dump(data, fh, indent=2)
+        tmp_file = _BACKUP_FILE.with_suffix(".tmp")
+        try:
+            with open(tmp_file, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp_file, _BACKUP_FILE)
+        except Exception as exc:
+            if tmp_file.is_file():
+                try:
+                    tmp_file.unlink()
+                except Exception:
+                    pass
+            raise exc
 
     @staticmethod
     def _load_backup() -> BackupData | None:
@@ -2056,48 +2157,47 @@ class NetworkOptimizer:
             results.append(_need_admin("Restore MTU"))
 
         # --- All TCP global settings ---
-        tcp_tweaks: list[tuple[str, str, str]] = [
+        tcp_tweaks: list[tuple[str, list[str], str]] = [
             (
                 "Restore TCP auto-tuning",
-                "netsh int tcp set global autotuninglevel={}",
+                ["netsh", "int", "tcp", "set", "global", f"autotuninglevel={backup.tcp_settings.auto_tuning_level}"],
                 backup.tcp_settings.auto_tuning_level,
             ),
             (
                 "Restore congestion provider",
-                "netsh int tcp set supplemental template=Internet congestionprovider={}",
+                ["netsh", "int", "tcp", "set", "supplemental", "template=Internet", f"congestionprovider={backup.tcp_settings.congestion_provider}"],
                 backup.tcp_settings.congestion_provider,
             ),
             (
                 "Restore ECN",
-                "netsh int tcp set global ecncapability={}",
+                ["netsh", "int", "tcp", "set", "global", f"ecncapability={backup.tcp_settings.ecn_capability}"],
                 backup.tcp_settings.ecn_capability,
             ),
             (
                 "Restore RSS",
-                "netsh int tcp set global rss={}",
+                ["netsh", "int", "tcp", "set", "global", f"rss={backup.tcp_settings.rss}"],
                 backup.tcp_settings.rss,
             ),
             (
                 "Restore DCA",
-                "netsh int tcp set global dca={}",
+                ["netsh", "int", "tcp", "set", "global", f"dca={backup.tcp_settings.dca}"],
                 backup.tcp_settings.dca,
             ),
             (
                 "Restore TCP timestamps",
-                "netsh int tcp set global timestamps={}",
+                ["netsh", "int", "tcp", "set", "global", f"timestamps={backup.tcp_settings.timestamps}"],
                 backup.tcp_settings.timestamps,
             ),
         ]
 
-        for label, cmd_template, value in tcp_tweaks:
+        for label, cmd_args, value in tcp_tweaks:
             if not value or value == "unknown":
                 continue
             if not is_admin:
                 results.append(_need_admin(label))
                 continue
-            cmd = cmd_template.format(value)
             try:
-                proc = _run(cmd, english=True)
+                proc = _run(cmd_args)
                 ok = proc.returncode == 0
                 error = proc.stderr.strip() if not ok else None
                 if not ok and not error:
@@ -2108,7 +2208,7 @@ class NetworkOptimizer:
                     before="current", after=value if ok else "current",
                     desired=value,
                     needs_admin=True, error=error,
-                    command=cmd,
+                    command=" ".join(cmd_args),
                     command_exit_code=proc.returncode,
                     note=f"Restored to backed-up value" if ok else "",
                 ))
@@ -2117,7 +2217,7 @@ class NetworkOptimizer:
                     name=label, success=False,
                     before="current", after="",
                     needs_admin=True, error=str(exc),
-                    command=cmd,
+                    command=" ".join(cmd_args),
                 ))
 
         # --- Network throttling ---
@@ -2419,9 +2519,9 @@ class NetworkOptimizer:
             if not is_admin:
                 results.append(_need_admin("Restore TCP heuristics"))
             else:
-                cmd = f"netsh interface tcp set heuristics {backup.tcp_heuristics}"
+                cmd_args = ["netsh", "interface", "tcp", "set", "heuristics", backup.tcp_heuristics]
                 try:
-                    proc = _run(cmd, english=True)
+                    proc = _run(cmd_args)
                     ok = proc.returncode == 0
                     after = self.get_tcp_heuristics()
                     verified = after.lower() == backup.tcp_heuristics.lower()
@@ -2431,7 +2531,7 @@ class NetworkOptimizer:
                         desired=backup.tcp_heuristics,
                         needs_admin=True,
                         error=proc.stderr.strip() if not ok else None,
-                        command=cmd,
+                        command=" ".join(cmd_args),
                         verification=f"Heuristics check: {after}",
                         note="Restored to backed-up value" if verified else "",
                     ))
@@ -2440,7 +2540,7 @@ class NetworkOptimizer:
                         name="Restore TCP heuristics", success=False,
                         before="current", after="",
                         needs_admin=True, error=str(exc),
-                        command=cmd,
+                        command=" ".join(cmd_args),
                     ))
 
         # --- System Responsiveness ---
@@ -2451,6 +2551,14 @@ class NetworkOptimizer:
                 res = self.apply_system_responsiveness(backup.system_responsiveness)
                 res.name = "Restore system responsiveness"
                 results.append(res)
+
+        # Clear the backup after successful restore (every step succeeded or was unsupported)
+        all_succeeded = all(res.success or res.status == "Unsupported" for res in results)
+        if all_succeeded and _BACKUP_FILE.is_file():
+            try:
+                _BACKUP_FILE.unlink()
+            except Exception as exc:
+                logger.warning("Failed to delete backup file after restore: %s", exc)
 
         return results
 

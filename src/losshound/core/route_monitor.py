@@ -8,6 +8,7 @@ from typing import Optional
 
 from losshound.core.models import RouteHop, RouteSnapshot, RouteDiff
 from losshound.core.subprocess_runner import run_subprocess_interruptible
+from losshound.core.validation import validate_target
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +22,20 @@ def trace_route(
 ) -> RouteSnapshot:
     """Run tracert and parse the output into a RouteSnapshot."""
     now = datetime.now()
-    cmd = f'chcp 437 >nul && tracert -d -w {timeout_ms} -h {max_hops} {target}'
+    
+    if not validate_target(target):
+        logger.warning("Invalid tracert target: %r", target)
+        return RouteSnapshot(
+            target=target, timestamp=now,
+            completed=False, error="Invalid target",
+        )
+
+    args = ["tracert", "-d", "-w", str(timeout_ms), "-h", str(max_hops), target]
     process_timeout = max_hops * (timeout_ms / 1000) + 30
 
     try:
         output, _, _ = run_subprocess_interruptible(
-            ["cmd", "/c", cmd],
+            args,
             process_timeout,
         )
     except subprocess.TimeoutExpired:

@@ -8,6 +8,19 @@ from losshound.core.models import PingResult
 
 class TestOptimizerExtensions(unittest.TestCase):
 
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        import losshound.core.optimizer
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.old_backup_file = losshound.core.optimizer._BACKUP_FILE
+        losshound.core.optimizer._BACKUP_FILE = Path(self.temp_dir.name) / "optimizer_backup.json"
+
+    def tearDown(self):
+        import losshound.core.optimizer
+        losshound.core.optimizer._BACKUP_FILE = self.old_backup_file
+        self.temp_dir.cleanup()
+
     @patch("losshound.core.optimizer._run")
     def test_get_tcp_heuristics(self, mock_run):
         mock_run.return_value.stdout = (
@@ -242,3 +255,106 @@ class TestOptimizerExtensions(unittest.TestCase):
         self.assertIn("1 skipped (requires Administrator)", report.summary)
         self.assertIn("1 skipped", report.summary)
         self.assertIn("already optimal", report.summary)
+
+    @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_settings")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_current_dns")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_current_mtu")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_network_throttling_index")
+    @patch("losshound.core.optimizer.NetworkOptimizer._backup_adapter_settings")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_heuristics")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_system_responsiveness")
+    @patch("winreg.OpenKey")
+    @patch("winreg.QueryValueEx")
+    @patch("winreg.EnumKey")
+    def test_optimize_twice_preserves_backup(self, mock_enum, mock_query, mock_open_key, mock_get_resp, mock_get_heuristics, mock_backup_adapter, mock_get_throttling, mock_get_mtu, mock_get_dns, mock_get_tcp, mock_check_admin):
+        mock_check_admin.return_value = True
+        mock_get_tcp.return_value = TcpSettings(auto_tuning_level="normal")
+        mock_get_dns.return_value = ("1.1.1.1", "8.8.8.8")
+        mock_get_mtu.return_value = 1500
+        mock_get_throttling.return_value = 10
+        mock_backup_adapter.return_value = AdapterBackup("Ethernet", True, True, False, False, "0")
+        mock_get_heuristics.return_value = "disabled"
+        mock_get_resp.return_value = 10
+        mock_enum.side_effect = ["mock-guid-123", OSError()]
+        mock_query.side_effect = [
+            (["192.168.1.1"], winreg.REG_SZ),  # DhcpDefaultGateway
+            (1, winreg.REG_DWORD),             # TCPNoDelay
+            (0, winreg.REG_DWORD),             # TcpDelAckTicks
+            (1024, winreg.REG_DWORD),          # FastSendDatagramThreshold
+        ]
+
+        opt = NetworkOptimizer()
+        backup1 = opt.create_backup()
+        self.assertEqual(backup1.tcp_settings.auto_tuning_level, "normal")
+
+        # Now, modify the active status to simulate changes post-optimization
+        mock_get_tcp.return_value = TcpSettings(auto_tuning_level="disabled")
+        backup2 = opt.create_backup()
+        # The backup must NOT be overwritten, so backup2 should still have "normal"
+        self.assertEqual(backup2.tcp_settings.auto_tuning_level, "normal")
+
+    @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_current_dns")
+    @patch("losshound.core.optimizer.NetworkOptimizer._active_adapter_name")
+    @patch("losshound.core.dns_bench.query_dns_server")
+    @patch("losshound.core.optimizer._run")
+    def test_dns_apply_dead_resolver_aborts(self, mock_run, mock_query, mock_adapter, mock_get_dns, mock_check_admin):
+        mock_check_admin.return_value = True
+        mock_get_dns.return_value = ("1.1.1.1", "8.8.8.8")
+        mock_adapter.return_value = "Ethernet"
+        
+        # Simulating that query_dns_server returns None (fails UDP check for primary)
+        mock_query.return_value = None
+
+        opt = NetworkOptimizer()
+        res = opt.apply_dns("9.9.9.9", "8.8.4.4")
+        
+        self.assertFalse(res.success)
+        self.assertIn("DNS validation failed", res.error)
+        # Verify that netsh set dns command was NOT run
+        mock_run.assert_not_called()
+
+    @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
+    @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_heuristics")
+    @patch("losshound.core.optimizer.NetworkOptimizer.apply_system_responsiveness")
+    @patch("losshound.core.optimizer._run")
+    def test_restore_backup_partial_failure_retains_backup_file(self, mock_run, mock_apply_resp, mock_get_heuristics, mock_check_admin):
+        import losshound.core.optimizer
+        backup = BackupData(
+            timestamp="2026-05-30T12:00:00",
+            tcp_settings=TcpSettings(auto_tuning_level="normal"),
+            dns_servers=("1.1.1.1", "8.8.8.8"),
+            mtu=1500,
+            network_throttling=10,
+            nagle_disabled=True,
+            system_responsiveness=10,
+            tcp_heuristics="disabled"
+        )
+        
+        opt = NetworkOptimizer()
+        opt._save_backup(backup)
+        self.assertTrue(losshound.core.optimizer._BACKUP_FILE.is_file())
+
+        mock_check_admin.return_value = True
+        mock_get_heuristics.return_value = "disabled"
+        
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.stdout = ""
+        mock_proc.stderr = "netsh failed"
+        mock_run.return_value = mock_proc
+
+        from losshound.core.optimizer import _make_result
+        mock_apply_resp.return_value = _make_result(
+            name="Restore system responsiveness", success=False, before="10", after="10",
+            needs_admin=True, error="Registry write failed"
+        )
+
+        results = opt.restore_backup()
+
+        failures = [r for r in results if not r.success and r.status != "Unsupported"]
+        self.assertTrue(len(failures) > 0)
+        self.assertTrue(losshound.core.optimizer._BACKUP_FILE.is_file())
+
+

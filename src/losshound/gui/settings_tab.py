@@ -225,6 +225,14 @@ class SettingsTab(QWidget):
         )
         behavior_form.addRow("LAN discovery:", self._lan_firewall)
 
+        self._lan_http_scan = QCheckBox("Enable LAN HTTP scanner (Warning: can trigger corporate EDR alarms)")
+        self._lan_http_scan.setChecked(config.lan_http_scan_enabled)
+        self._lan_http_scan.setToolTip(
+            "Gathers additional details (such as HTTP home page titles) from local network devices. "
+            "Uncheck this in corporate environments to avoid triggering intrusion detection systems."
+        )
+        behavior_form.addRow("LAN HTTP scanner:", self._lan_http_scan)
+
         main_layout.addWidget(behavior_group)
 
         # Buttons
@@ -282,6 +290,7 @@ class SettingsTab(QWidget):
             auto_benchmark_interval_minutes=self._config.auto_benchmark_interval_minutes,
             close_to_tray=self._close_to_tray.isChecked(),
             lan_discovery_firewall_enabled=self._lan_firewall.isChecked(),
+            lan_http_scan_enabled=self._lan_http_scan.isChecked(),
             pdf_default_dir=self._config.pdf_default_dir,
             alerts=AlertsConfig(
                 enabled=self._alerts_enabled.isChecked(),
@@ -301,12 +310,28 @@ class SettingsTab(QWidget):
     def _save(self):
         config = self._build_config()
         errors = []
+        
+        from losshound.core.validation import validate_target
+
         if not config.public_ping_targets:
             errors.append("Public ping targets cannot be empty.")
+        else:
+            for target in config.public_ping_targets:
+                if not validate_target(target):
+                    errors.append(f"Invalid public ping target: {target}")
+
         if not config.dns_test_hostnames:
             errors.append("DNS test hostnames cannot be empty.")
+        else:
+            for target in config.dns_test_hostnames:
+                if not validate_target(target):
+                    errors.append(f"Invalid DNS hostname: {target}")
+
         if not config.tracert_target:
             errors.append("Tracert target cannot be empty.")
+        elif not validate_target(config.tracert_target):
+            errors.append(f"Invalid tracert target: {config.tracert_target}")
+
         if errors:
             QMessageBox.warning(
                 self, "Settings — invalid",
@@ -348,6 +373,7 @@ class SettingsTab(QWidget):
         self._tracert_target.setText(default.tracert_target)
         self._close_to_tray.setChecked(default.close_to_tray)
         self._lan_firewall.setChecked(default.lan_discovery_firewall_enabled)
+        self._lan_http_scan.setChecked(default.lan_http_scan_enabled)
 
         dc = default.diagnosis
         self._gw_loss.setValue(dc.gateway_loss_threshold)

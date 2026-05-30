@@ -85,7 +85,7 @@ class MainWindow(QMainWindow):
         self._wifi_tab = WifiTab()
         self._drop_tab = DropTab()
         self._qos_tab = QosTab()
-        self._lan_tab = LANTab(self._history)
+        self._lan_tab = LANTab(self._history, self._config)
 
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._history_tab, "History")

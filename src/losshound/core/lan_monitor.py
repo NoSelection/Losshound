@@ -1017,7 +1017,7 @@ def parse_arp_table(local_ip: str) -> List[Dict[str, str]]:
     return devices
 
 
-def scan_local_network(history_store=None) -> List[Dict[str, str]]:
+def scan_local_network(history_store=None, enable_http_scan: bool = False) -> List[Dict[str, str]]:
     """Perform a full LAN scan: sweeps subnet, parses ARP table, resolves hostnames & vendors."""
     net_info = get_local_network_info()
     local_ip = net_info["ip"]
@@ -1059,7 +1059,7 @@ def scan_local_network(history_store=None) -> List[Dict[str, str]]:
             hostname = resolve_hostname_safe(ip)
             
         # Priority 3: HTTP page title
-        if not hostname:
+        if not hostname and enable_http_scan:
             hostname = resolve_http_title(ip)
             
         # Priority 4: Fallback to vendor or generic label

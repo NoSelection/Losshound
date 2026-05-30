@@ -9,28 +9,30 @@ from typing import Optional
 
 from losshound.core.models import PingResult
 from losshound.core.subprocess_runner import run_subprocess_interruptible
+from losshound.core.validation import validate_target
 
 logger = logging.getLogger(__name__)
-
-# Regexes for English Windows ping output
-_RE_STATS = re.compile(
-    r"Sent\s*=\s*(\d+),\s*Received\s*=\s*(\d+),\s*Lost\s*=\s*(\d+)\s*\((\d+)%"
-)
-_RE_RTT = re.compile(
-    r"Minimum\s*=\s*(\d+)ms,\s*Maximum\s*=\s*(\d+)ms,\s*Average\s*=\s*(\d+)ms"
-)
-_RE_REPLY_TIME = re.compile(r"time[=<](\d+)ms")
 
 
 def ping(target: str, count: int = 4, timeout_ms: int = 2000) -> PingResult:
     """Run a subprocess ping and parse the results."""
     now = datetime.now()
-    cmd = f'chcp 437 >nul && ping -n {count} -w {timeout_ms} {target}'
+    
+    if not validate_target(target):
+        logger.warning("Invalid ping target: %r", target)
+        return PingResult(
+            target=target, timestamp=now,
+            packets_sent=count, packets_received=0,
+            loss_percent=100.0, timed_out=False,
+            error="Invalid target",
+        )
+
+    args = ["ping", "-n", str(count), "-w", str(timeout_ms), target]
     process_timeout = (count * timeout_ms / 1000) + 10
 
     try:
         output, _, _ = run_subprocess_interruptible(
-            ["cmd", "/c", cmd],
+            args,
             process_timeout,
         )
     except subprocess.TimeoutExpired:
@@ -54,29 +56,38 @@ def ping(target: str, count: int = 4, timeout_ms: int = 2000) -> PingResult:
 def _parse_ping_output(
     output: str, target: str, timestamp: datetime, count: int
 ) -> PingResult:
-    """Parse Windows ping output into a PingResult."""
-    sent, received, loss_pct = count, 0, 100.0
+    """Parse Windows ping output into a PingResult in a locale-independent way."""
+    # Split the output at the start of the summary block (e.g. "statistics", "istatistik", etc.)
+    # to avoid matching statistics averages.
+    parts = re.split(r"stat", output, flags=re.IGNORECASE)
+    replies_section = parts[0] if parts else output
+
+    # Extract all reply RTT values. Windows ping replies contain time=Xms or time<1ms
+    # regardless of locale (e.g. time=, süre=, zeit=, etc. are followed by '=' or '<').
+    # For robustness, we only count RTTs on lines containing "ttl".
+    rtts = []
+    for line in replies_section.splitlines():
+        if "ttl" in line.lower():
+            match = re.search(r"[=<]\s*(\d+)\s*ms", line, re.IGNORECASE)
+            if match:
+                rtts.append(float(match.group(1)))
+
+    received = min(count, len(rtts))
+    loss_pct = ((count - received) / count * 100.0) if count > 0 else 100.0
+    loss_pct = max(0.0, min(100.0, loss_pct))
+    
     rtt_min: Optional[float] = None
     rtt_avg: Optional[float] = None
     rtt_max: Optional[float] = None
     jitter: Optional[float] = None
 
-    stats_match = _RE_STATS.search(output)
-    if stats_match:
-        sent = int(stats_match.group(1))
-        received = int(stats_match.group(2))
-        loss_pct = float(stats_match.group(4))
+    if rtts:
+        rtt_min = min(rtts)
+        rtt_max = max(rtts)
+        rtt_avg = sum(rtts) / len(rtts)
 
-    rtt_match = _RE_RTT.search(output)
-    if rtt_match:
-        rtt_min = float(rtt_match.group(1))
-        rtt_max = float(rtt_match.group(2))
-        rtt_avg = float(rtt_match.group(3))
-
-    # Extract per-packet RTT for jitter calculation
-    per_packet = [float(m) for m in _RE_REPLY_TIME.findall(output)]
-    if len(per_packet) >= 2:
-        diffs = [abs(per_packet[i+1] - per_packet[i]) for i in range(len(per_packet)-1)]
+    if len(rtts) >= 2:
+        diffs = [abs(rtts[i+1] - rtts[i]) for i in range(len(rtts)-1)]
         jitter = statistics.mean(diffs)
 
     timed_out = received == 0
@@ -84,7 +95,7 @@ def _parse_ping_output(
     return PingResult(
         target=target,
         timestamp=timestamp,
-        packets_sent=sent,
+        packets_sent=count,
         packets_received=received,
         loss_percent=loss_pct,
         rtt_min=rtt_min,
@@ -93,3 +104,4 @@ def _parse_ping_output(
         rtt_jitter=jitter,
         timed_out=timed_out,
     )
+

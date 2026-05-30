@@ -22,15 +22,16 @@ class LanScanWorker(QThread):
     """Background worker for LAN subnet discovery sweep to prevent GUI lag."""
     scan_complete = Signal(list)
 
-    def __init__(self, history: HistoryStore):
+    def __init__(self, history: HistoryStore, enable_http_scan: bool = False):
         super().__init__()
         self._history = history
+        self._enable_http_scan = enable_http_scan
 
     def run(self):
         try:
             from losshound.core.lan_monitor import scan_local_network
             thread_safe_history = HistoryStore(self._history._db_path)
-            devices = scan_local_network(thread_safe_history)
+            devices = scan_local_network(thread_safe_history, enable_http_scan=self._enable_http_scan)
             self.scan_complete.emit(devices)
         except Exception as exc:
             logger.exception("LAN Scan worker failed")
@@ -51,9 +52,10 @@ class ConnectionRefreshWorker(QThread):
 
 
 class LANTab(QWidget):
-    def __init__(self, history: HistoryStore, parent=None):
+    def __init__(self, history: HistoryStore, config=None, parent=None):
         super().__init__(parent)
         self._history = history
+        self._config = config
         self._scan_in_progress = False
         self._query_worker: DbQueryWorker | None = None
         self._write_worker: DbWriteWorker | None = None
@@ -222,7 +224,10 @@ class LANTab(QWidget):
         self._status_label.setText("Scanning subnet (sending pings & checking ARP)...")
 
         # Launch scanning on a background thread
-        self._scan_worker = LanScanWorker(self._history)
+        enable_http_scan = False
+        if self._config:
+            enable_http_scan = self._config.lan_http_scan_enabled
+        self._scan_worker = LanScanWorker(self._history, enable_http_scan=enable_http_scan)
         self._scan_worker.scan_complete.connect(self._on_scan_complete)
         self._scan_worker.start()
 
