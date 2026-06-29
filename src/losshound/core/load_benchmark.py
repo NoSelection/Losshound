@@ -15,7 +15,6 @@ This is where the real optimization impact shows up.  Tests:
 
 from __future__ import annotations
 
-import concurrent.futures
 import json
 import logging
 import os
@@ -230,34 +229,60 @@ def _download_file(url: str, result_holder: dict, stop_event: threading.Event):
 
 def _generate_load(urls: list[str], duration: float, stop_event: threading.Event, result_holder: dict):
     """Download from multiple URLs simultaneously to generate network load."""
-    total_bytes = 0
     start = time.perf_counter()
-    best_speed = 0.0
-    best_url = ""
+    deadline = start + duration
+    results: list[dict] = []
 
-    for url in urls:
-        if stop_event.is_set():
+    def download_loop(url: str) -> None:
+        total_bytes = 0
+        best_speed = 0.0
+
+        while not stop_event.is_set() and time.perf_counter() < deadline:
+            dl_result: dict = {}
+            _download_file(url, dl_result, stop_event)
+            if not dl_result.get("success"):
+                break
+
+            bytes_read = dl_result.get("bytes", 0)
+            total_bytes += bytes_read
+            dl_dur = max(dl_result.get("duration", 0.001), 0.001)
+            best_speed = max(best_speed, (bytes_read * 8) / (dl_dur * 1_000_000))
+
+        results.append({
+            "bytes": total_bytes,
+            "best_speed": best_speed,
+            "url": url,
+        })
+
+    threads = [
+        threading.Thread(
+            target=download_loop,
+            args=(url,),
+            name=f"LosshoundLoadDownload-{i + 1}",
+            daemon=True,
+        )
+        for i, url in enumerate(urls)
+    ]
+
+    for thread in threads:
+        thread.start()
+
+    while time.perf_counter() < deadline and not stop_event.is_set():
+        if all(not thread.is_alive() for thread in threads):
             break
-        elapsed_so_far = time.perf_counter() - start
-        if elapsed_so_far >= duration:
-            break
+        stop_event.wait(0.2)
 
-        dl_result: dict = {}
-        _download_file(url, dl_result, stop_event)
-
-        if dl_result.get("success"):
-            total_bytes += dl_result.get("bytes", 0)
-            dl_dur = dl_result.get("duration", 1)
-            speed = (dl_result.get("bytes", 0) * 8) / (dl_dur * 1_000_000)
-            if speed > best_speed:
-                best_speed = speed
-                best_url = dl_result.get("url", url)
+    stop_event.set()
+    for thread in threads:
+        thread.join(timeout=2)
 
     total_duration = time.perf_counter() - start
+    total_bytes = sum(result.get("bytes", 0) for result in results)
+    best = max(results, key=lambda result: result.get("best_speed", 0.0), default={})
     result_holder["total_bytes"] = total_bytes
     result_holder["total_duration"] = total_duration
-    result_holder["best_speed"] = best_speed
-    result_holder["best_url"] = best_url
+    result_holder["best_speed"] = best.get("best_speed", 0.0)
+    result_holder["best_url"] = best.get("url", "")
 
 
 # ---------------------------------------------------------------------------

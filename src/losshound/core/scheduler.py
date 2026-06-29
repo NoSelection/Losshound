@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-import threading
 import time
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import QObject, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, QMetaObject, QThread, QTimer, Qt, Signal, Slot
 
 from losshound.core.config import AppConfig
 from losshound.core.diagnosis import diagnose
@@ -18,6 +17,32 @@ from losshound.core.route_monitor import trace_route
 from losshound.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
+
+
+class RouteCheckThread(QThread):
+    """Run tracert in its own QThread so monitoring timers stay responsive."""
+
+    route_ready = Signal(object)  # RouteSnapshot
+    error_occurred = Signal(str)
+
+    def __init__(self, target: str, max_hops: int, parent=None):
+        super().__init__(parent)
+        self._target = target
+        self._max_hops = max_hops
+
+    def run(self):
+        try:
+            if self.isInterruptionRequested():
+                return
+            snap = trace_route(self._target, max_hops=self._max_hops)
+            if not self.isInterruptionRequested():
+                self.route_ready.emit(snap)
+        except (InterruptedError, KeyboardInterrupt):
+            logger.info("Route check interrupted during thread shutdown.")
+        except Exception as exc:
+            if not self.isInterruptionRequested():
+                logger.exception("Error in route check")
+                self.error_occurred.emit(str(exc))
 
 
 class MonitorWorker(QObject):
@@ -34,10 +59,10 @@ class MonitorWorker(QObject):
         self._gateway_ip: Optional[str] = None
         self._last_route: Optional[RouteSnapshot] = None
         self._last_dns_check_monotonic: Optional[float] = None
-        self._tracert_running = False
-        self._tracert_lock = threading.Lock()
+        self._route_worker: Optional[RouteCheckThread] = None
         self._stopped = False
 
+    @Slot()
     def start_timers(self):
         """Set up and start the periodic timers."""
         # Ping + DNS timer
@@ -60,15 +85,17 @@ class MonitorWorker(QObject):
         self._prune_timer.timeout.connect(self._prune)
         self._prune_timer.start(3600 * 1000)
 
-        # Run immediately on start
-        self._run_ping_cycle()
-        self._run_route_check()
-        self._prune()
+        # Run after the thread event loop starts, so queued stop/config calls
+        # are always able to reach this worker.
+        QTimer.singleShot(0, self._run_ping_cycle)
+        QTimer.singleShot(0, self._run_route_check)
+        QTimer.singleShot(0, self._prune)
 
         # Delay auto-benchmark by 2 minutes so startup isn't slow.
         if self._bench_timer and self._bench_timer.isActive():
             QTimer.singleShot(120_000, self._run_auto_benchmark)
 
+    @Slot()
     def stop(self):
         self._stopped = True
         if hasattr(self, "_ping_timer"):
@@ -79,7 +106,20 @@ class MonitorWorker(QObject):
             self._bench_timer.stop()
         if hasattr(self, "_prune_timer"):
             self._prune_timer.stop()
+        if self._route_worker and self._route_worker.isRunning():
+            self._route_worker.requestInterruption()
+            if not self._route_worker.wait(3000):
+                logger.warning("Route check thread did not stop cleanly; terminating")
+                self._route_worker.terminate()
+                self._route_worker.wait(1000)
 
+    def mark_stopped(self) -> None:
+        """Thread-safe shutdown flag set before queued stop work runs."""
+        self._stopped = True
+        if self._route_worker and self._route_worker.isRunning():
+            self._route_worker.requestInterruption()
+
+    @Slot(object)
     def update_config(self, config: AppConfig):
         self._config = config
         if hasattr(self, "_ping_timer"):
@@ -87,6 +127,10 @@ class MonitorWorker(QObject):
         if hasattr(self, "_route_timer"):
             self._route_timer.setInterval(config.route_interval_seconds * 1000)
         self._configure_bench_timer()
+
+    @Slot()
+    def run_now(self):
+        self._run_ping_cycle()
 
     def _configure_bench_timer(self) -> None:
         interval_minutes = self._config.auto_benchmark_interval_minutes
@@ -110,6 +154,7 @@ class MonitorWorker(QObject):
         last_check = self._last_dns_check_monotonic
         return last_check is None or (time.monotonic() - last_check) >= interval
 
+    @Slot()
     def _run_ping_cycle(self):
         """Run gateway ping, public pings, and DNS checks."""
         if self._stopped:
@@ -183,36 +228,46 @@ class MonitorWorker(QObject):
             logger.exception("Error in ping cycle")
             self.error_occurred.emit(str(exc))
 
+    @Slot()
     def _run_route_check(self):
-        """Run a tracert check (skips if one is already running)."""
+        """Start a tracert check (skips if one is already running)."""
         if self._stopped:
             return
 
-        with self._tracert_lock:
-            if self._tracert_running:
-                logger.debug("Tracert already in progress, skipping")
-                return
-            self._tracert_running = True
+        if self._route_worker and self._route_worker.isRunning():
+            logger.debug("Tracert already in progress, skipping")
+            return
 
-        try:
-            snap = trace_route(
-                self._config.tracert_target,
-                max_hops=self._config.tracert_max_hops,
-            )
-            if self._stopped or QThread.currentThread().isInterruptionRequested():
-                return
-            self._last_route = snap
-            self._history.save_route_snapshot(snap)
-        except (InterruptedError, KeyboardInterrupt):
-            logger.info("Route check interrupted during thread shutdown.")
-        except Exception as exc:
-            if self._stopped or (QThread.currentThread() and QThread.currentThread().isInterruptionRequested()):
-                return
-            logger.exception("Error in route check")
-            self.error_occurred.emit(str(exc))
-        finally:
-            with self._tracert_lock:
-                self._tracert_running = False
+        worker = RouteCheckThread(
+            self._config.tracert_target,
+            self._config.tracert_max_hops,
+        )
+        worker.route_ready.connect(self._on_route_snapshot)
+        worker.error_occurred.connect(self._on_route_error)
+        worker.finished.connect(self._on_route_thread_finished)
+        self._route_worker = worker
+        worker.start()
+
+    @Slot(object)
+    def _on_route_snapshot(self, snap: RouteSnapshot):
+        if self._stopped or QThread.currentThread().isInterruptionRequested():
+            return
+        self._last_route = snap
+        self._history.save_route_snapshot(snap)
+
+    @Slot(str)
+    def _on_route_error(self, msg: str):
+        if self._stopped or QThread.currentThread().isInterruptionRequested():
+            return
+        self.error_occurred.emit(msg)
+
+    @Slot()
+    def _on_route_thread_finished(self):
+        worker = self.sender()
+        if worker is self._route_worker:
+            self._route_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _run_auto_benchmark(self):
         """Run a lightweight auto-benchmark and save to history for trending."""
@@ -249,6 +304,8 @@ class MonitorThread(QThread):
     observation_ready = Signal(object)
     diagnosis_ready = Signal(object)
     error_occurred = Signal(str)
+    config_update_requested = Signal(object)
+    run_now_requested = Signal()
 
     def __init__(self, config: AppConfig, history: HistoryStore, parent=None):
         super().__init__(parent)
@@ -263,15 +320,36 @@ class MonitorThread(QThread):
             self._worker.observation_ready.connect(self.observation_ready.emit)
             self._worker.diagnosis_ready.connect(self.diagnosis_ready.emit)
             self._worker.error_occurred.connect(self.error_occurred.emit)
+            self.config_update_requested.connect(
+                self._worker.update_config,
+                Qt.ConnectionType.QueuedConnection,
+            )
+            self.run_now_requested.connect(
+                self._worker.run_now,
+                Qt.ConnectionType.QueuedConnection,
+            )
             self._worker.start_timers()
             self.exec()
         finally:
+            if self._worker:
+                self._worker.stop()
             thread_safe_history.close()
 
     def stop(self):
-        if self._worker:
-            self._worker.stop()
+        if not self.isRunning():
+            return
+
         self.requestInterruption()
+        if self._worker:
+            self._worker.mark_stopped()
+            try:
+                QMetaObject.invokeMethod(
+                    self._worker,
+                    "stop",
+                    Qt.ConnectionType.QueuedConnection,
+                )
+            except RuntimeError:
+                logger.debug("Monitor worker was already gone during shutdown")
         self.quit()
         # Give the worker a generous window — a tracert in flight can take
         # 30s+. After that, terminate hard; the Job Object will kill any
@@ -284,4 +362,8 @@ class MonitorThread(QThread):
     def update_config(self, config: AppConfig):
         self._config = config
         if self._worker:
-            self._worker.update_config(config)
+            self.config_update_requested.emit(config)
+
+    def run_now(self):
+        if self._worker:
+            self.run_now_requested.emit()

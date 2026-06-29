@@ -30,8 +30,11 @@ class LanScanWorker(QThread):
     def run(self):
         try:
             from losshound.core.lan_monitor import scan_local_network
-            thread_safe_history = HistoryStore(self._history._db_path)
-            devices = scan_local_network(thread_safe_history, enable_http_scan=self._enable_http_scan)
+            with HistoryStore(self._history._db_path) as thread_safe_history:
+                devices = scan_local_network(
+                    thread_safe_history,
+                    enable_http_scan=self._enable_http_scan,
+                )
             self.scan_complete.emit(devices)
         except Exception as exc:
             logger.exception("LAN Scan worker failed")
@@ -181,6 +184,9 @@ class LANTab(QWidget):
  
         # Initial loads
         self._refresh_devices_table()
+
+    def update_config(self, config) -> None:
+        self._config = config
 
     def showEvent(self, event):
         super().showEvent(event)

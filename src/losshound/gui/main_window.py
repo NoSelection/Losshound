@@ -165,6 +165,7 @@ class MainWindow(QMainWindow):
         self._monitor.update_config(config)
         self._alert_engine.update_config(config.alerts)
         self._notification_dispatcher.update_config(config.alerts)
+        self._lan_tab.update_config(config)
         self._seconds_until_next = config.ping_interval_seconds
         self._status_bar.set_interval(config.ping_interval_seconds)
         self._status_bar.set_targets(len(getattr(config, "public_ping_targets", [])))
@@ -206,8 +207,9 @@ class MainWindow(QMainWindow):
         if self._paused:
             self._status_bar.set_status_text("Resume monitoring first")
             return
+        self._monitor.run_now()
         self._seconds_until_next = 1
-        self._status_bar.set_status_text("Run-now requested")
+        self._status_bar.set_status_text("Running check now")
 
     def _open_settings(self) -> None:
         for i in range(self._tabs.count()):

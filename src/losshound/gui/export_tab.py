@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
@@ -17,24 +17,25 @@ from losshound.storage.history import HistoryStore
 class _IspReportWorker(QThread):
     finished = Signal(str)  # formatted report text
 
-    def __init__(self, history: HistoryStore, hours: int):
+    def __init__(self, db_path: Path, hours: int):
         super().__init__()
-        self._history = history
+        self._db_path = db_path
         self._hours = hours
 
     def run(self):
         from losshound.core.isp_report import format_isp_report, generate_isp_report
-        report = generate_isp_report(self._history, self._hours)
-        text = format_isp_report(report)
-        self.finished.emit(text)
+        with HistoryStore(self._db_path) as history:
+            report = generate_isp_report(history, self._hours)
+            text = format_isp_report(report)
+            self.finished.emit(text)
 
 
 class _IspPdfWorker(QThread):
     finished = Signal(object)  # tuple[Path | None, str]  (path, error_msg)
 
-    def __init__(self, history, hours: int, output_path):
+    def __init__(self, db_path: Path, hours: int, output_path):
         super().__init__()
-        self._history = history
+        self._db_path = db_path
         self._hours = hours
         self._output_path = output_path
 
@@ -42,7 +43,8 @@ class _IspPdfWorker(QThread):
         try:
             from losshound.core.isp_report import generate_isp_report
             from losshound.core.isp_report_pdf import render_isp_report_pdf
-            report = generate_isp_report(self._history, self._hours)
+            with HistoryStore(self._db_path) as history:
+                report = generate_isp_report(history, self._hours)
             render_isp_report_pdf(report, self._output_path)
             self.finished.emit((self._output_path, ""))
         except Exception as exc:
@@ -158,7 +160,7 @@ class ExportTab(QWidget):
         hours = self._hours.value()
         self._preview.setText("Generating ISP report...")
 
-        worker = _IspReportWorker(self._history, hours)
+        worker = _IspReportWorker(self._history._db_path, hours)
         worker.finished.connect(self._on_isp_done)
         worker.start()
         self._thread = worker
@@ -291,7 +293,7 @@ class ExportTab(QWidget):
 
         self._preview.setText(f"Generating PDF report to:\n{path}\n\nPlease wait...")
 
-        worker = _IspPdfWorker(self._history, hours, Path(path))
+        worker = _IspPdfWorker(self._history._db_path, hours, Path(path))
         worker.finished.connect(self._on_pdf_done)
         worker.start()
         self._thread = worker
