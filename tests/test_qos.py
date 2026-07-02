@@ -1,5 +1,58 @@
-from unittest.mock import patch, MagicMock
-from losshound.core.qos import QosRule, apply_rule, remove_rule
+from unittest.mock import MagicMock, patch
+
+from losshound.core.qos import (
+    PRIORITY_PRESETS,
+    QosRule,
+    _run,
+    apply_rule,
+    build_lag_mitigation_rule,
+    remove_rule,
+)
+
+
+def test_qos_runner_uses_interruptible_subprocess():
+    with patch(
+        "losshound.core.qos.run_subprocess_interruptible",
+        return_value=("out", "err", 7),
+    ) as mock_run:
+        result = _run(["powershell", "-NoProfile"], timeout=3)
+
+    mock_run.assert_called_once_with(["powershell", "-NoProfile"], 3)
+    assert result.stdout == "out"
+    assert result.stderr == "err"
+    assert result.returncode == 7
+
+
+def test_build_lag_mitigation_rule_defaults_to_bulk_priority():
+    rule = build_lag_mitigation_rule("C:\\Program Files\\Steam\\steam.exe")
+
+    assert rule.name == "LagMitigation_steam"
+    assert rule.app_path == "steam.exe"
+    assert rule.priority_preset == "Bulk"
+    assert rule.dscp_value == PRIORITY_PRESETS["Bulk"]
+    assert "lag attribution" in rule.note
+
+
+def test_build_lag_mitigation_rule_bounds_long_rule_names():
+    rule = build_lag_mitigation_rule("x" * 100 + ".exe")
+    assert len(rule.name) <= 64
+
+
+def test_apply_rule_without_admin_returns_actionable_failure():
+    rule = QosRule(
+        name="LagMitigation_steam",
+        app_path="steam.exe",
+        priority_preset="Bulk",
+        dscp_value=PRIORITY_PRESETS["Bulk"],
+    )
+
+    with patch("losshound.core.qos.check_admin", return_value=False):
+        result = apply_rule(rule)
+
+    assert result.success is False
+    assert result.action == "failed"
+    assert "Administrator privileges required" in result.message
+
 
 def test_qos_validation():
     # Test valid rule name and app path

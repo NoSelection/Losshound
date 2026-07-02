@@ -10,11 +10,10 @@ import json
 import logging
 import re
 import subprocess
-from dataclasses import dataclass, field, asdict
-from pathlib import Path
-from typing import Optional
-
+from dataclasses import dataclass, asdict
+from pathlib import Path, PureWindowsPath
 from losshound.core.config import _app_data_dir
+from losshound.core.subprocess_runner import run_subprocess_interruptible
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,12 @@ PRIORITY_PRESETS = {
     "Bulk":        8,   # CS1  — torrents, backups
 }
 
+AUTO_MITIGATION_PRESET = "Bulk"
+AUTO_MITIGATION_PREFIX = "LagMitigation"
+
+_RULE_NAME_RE = re.compile(r"^[a-zA-Z0-9_ \-]{1,64}$")
+_APP_NAME_RE = re.compile(r"^[a-zA-Z0-9_ \-\.]+$")
+
 PRESET_DESCRIPTIONS = {
     "Realtime": "Lowest latency — VoIP, competitive gaming, remote desktop",
     "High": "Prioritized — video calls, streaming, important apps",
@@ -36,14 +41,22 @@ PRESET_DESCRIPTIONS = {
 }
 
 
-def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        creationflags=subprocess.CREATE_NO_WINDOW,
-    )
+@dataclass
+class _CommandResult:
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
+
+
+def _run(cmd: list[str], timeout: int = 15) -> _CommandResult:
+    try:
+        stdout, stderr, returncode = run_subprocess_interruptible(cmd, timeout)
+        return _CommandResult(stdout=stdout, stderr=stderr, returncode=returncode)
+    except subprocess.TimeoutExpired:
+        return _CommandResult(
+            stderr=f"Command timed out after {timeout} seconds",
+            returncode=124,
+        )
 
 
 @dataclass
@@ -64,6 +77,36 @@ class QosResult:
     success: bool
     action: str             # "created", "removed", "updated", "failed"
     message: str = ""
+
+
+def _app_name_from_path(app_path: str) -> str:
+    raw = app_path.strip()
+    if "\\" in raw or "/" in raw:
+        return PureWindowsPath(raw).name
+    return raw
+
+
+def _safe_rule_fragment(app_name: str) -> str:
+    stem = PureWindowsPath(app_name).stem or app_name
+    fragment = re.sub(r"[^a-zA-Z0-9_ \-]", "_", stem).strip(" _-")
+    if not fragment:
+        fragment = "App"
+    max_len = 64 - len(AUTO_MITIGATION_PREFIX) - 1
+    return fragment[:max_len]
+
+
+def build_lag_mitigation_rule(app_path: str) -> QosRule:
+    """Build the low-priority QoS rule used for lag-attribution suspects."""
+    app_name = _app_name_from_path(app_path)
+    fragment = _safe_rule_fragment(app_name)
+    preset = AUTO_MITIGATION_PRESET
+    return QosRule(
+        name=f"{AUTO_MITIGATION_PREFIX}_{fragment}",
+        app_path=app_name,
+        priority_preset=preset,
+        dscp_value=PRIORITY_PRESETS[preset],
+        note="Auto-created from lag attribution",
+    )
 
 
 def check_admin() -> bool:
@@ -106,7 +149,7 @@ def apply_rule(rule: QosRule) -> QosResult:
         )
 
     # Validate rule name against command injection/LPE
-    if not re.match(r"^[a-zA-Z0-9_\-\s]{1,64}$", rule.name):
+    if not _RULE_NAME_RE.match(rule.name):
         return QosResult(
             rule_name=rule.name,
             success=False,
@@ -115,8 +158,8 @@ def apply_rule(rule: QosRule) -> QosResult:
         )
 
     # Extract just the exe name from full path and validate
-    app_name = Path(rule.app_path).name if "\\" in rule.app_path or "/" in rule.app_path else rule.app_path
-    if not re.match(r"^[a-zA-Z0-9_\-\s\.]+$", app_name) or "'" in app_name or ";" in app_name:
+    app_name = _app_name_from_path(rule.app_path)
+    if not _APP_NAME_RE.match(app_name) or "'" in app_name or ";" in app_name:
         return QosResult(
             rule_name=rule.name,
             success=False,
@@ -171,7 +214,7 @@ def remove_rule(rule_name: str) -> QosResult:
         )
 
     # Validate rule name against command injection/LPE
-    if not re.match(r"^[a-zA-Z0-9_\-\s]{1,64}$", rule_name):
+    if not _RULE_NAME_RE.match(rule_name):
         return QosResult(
             rule_name=rule_name,
             success=False,

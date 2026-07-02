@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
     QMessageBox, QPushButton, QTableWidget, QTableWidgetItem, QVBoxLayout,
@@ -15,9 +16,11 @@ from losshound.gui.theme import button_style
 from losshound.core.qos import (
     PRESET_DESCRIPTIONS, PRIORITY_PRESETS,
     QosResult, QosRule,
-    apply_rule, check_admin, load_saved_rules, remove_all_losshound_policies,
-    remove_rule, save_rules,
+    apply_rule, build_lag_mitigation_rule, load_saved_rules,
+    remove_all_losshound_policies, remove_rule, save_rules,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class _ApplyWorker(QThread):
@@ -28,8 +31,20 @@ class _ApplyWorker(QThread):
         self._rule = rule
 
     def run(self):
-        result = apply_rule(self._rule)
-        self.finished.emit(result)
+        try:
+            result = apply_rule(self._rule)
+        except InterruptedError:
+            return
+        except Exception as exc:
+            logger.exception("QoS apply failed")
+            result = QosResult(
+                rule_name=self._rule.name,
+                success=False,
+                action="failed",
+                message=str(exc)[:200],
+            )
+        if not self.isInterruptionRequested():
+            self.finished.emit(result)
 
 
 class _RemoveWorker(QThread):
@@ -40,19 +55,47 @@ class _RemoveWorker(QThread):
         self._name = rule_name
 
     def run(self):
-        result = remove_rule(self._name)
-        self.finished.emit(result)
+        try:
+            result = remove_rule(self._name)
+        except InterruptedError:
+            return
+        except Exception as exc:
+            logger.exception("QoS remove failed")
+            result = QosResult(
+                rule_name=self._name,
+                success=False,
+                action="failed",
+                message=str(exc)[:200],
+            )
+        if not self.isInterruptionRequested():
+            self.finished.emit(result)
 
 
 class _RemoveAllWorker(QThread):
     finished = Signal(object)
 
     def run(self):
-        results = remove_all_losshound_policies()
-        self.finished.emit(results)
+        try:
+            results = remove_all_losshound_policies()
+        except InterruptedError:
+            return
+        except Exception as exc:
+            logger.exception("QoS remove-all failed")
+            results = [
+                QosResult(
+                    rule_name="all",
+                    success=False,
+                    action="failed",
+                    message=str(exc)[:200],
+                )
+            ]
+        if not self.isInterruptionRequested():
+            self.finished.emit(results)
 
 
 class QosTab(QWidget):
+    rule_apply_finished = Signal(object)  # QosResult
+
     def shutdown(self):
         from losshound.gui._shutdown import stop_qthreads
         stop_qthreads(getattr(self, "_threads", []))
@@ -195,6 +238,36 @@ class QosTab(QWidget):
         self._app_input.clear()
         self._status_label.setText(f"Added rule for {name}")
 
+    def apply_lag_mitigation(self, app_name: str) -> QosRule:
+        """Save and apply the automatic low-priority rule for a lag suspect."""
+        rule = self._upsert_rule(build_lag_mitigation_rule(app_name))
+        self._status_label.setText(f"Applying lag QoS rule for {rule.app_path}...")
+        self._status_label.setStyleSheet("color: #d9b65f;")
+        self._apply_single(rule)
+        return rule
+
+    def _upsert_rule(self, rule: QosRule) -> QosRule:
+        lowered_app = rule.app_path.lower()
+        for idx, existing in enumerate(self._rules):
+            if existing.name == rule.name or existing.app_path.lower() == lowered_app:
+                updated = QosRule(
+                    name=existing.name,
+                    app_path=existing.app_path,
+                    priority_preset=rule.priority_preset,
+                    dscp_value=rule.dscp_value,
+                    active=True,
+                    note=rule.note,
+                )
+                self._rules[idx] = updated
+                save_rules(self._rules)
+                self._refresh_table()
+                return updated
+
+        self._rules.append(rule)
+        save_rules(self._rules)
+        self._refresh_table()
+        return rule
+
     def _refresh_table(self):
         self._table.setRowCount(0)
         for i, rule in enumerate(self._rules):
@@ -244,6 +317,7 @@ class QosTab(QWidget):
         else:
             self._status_label.setText(f"{result.rule_name}: {result.message[:60]}")
             self._status_label.setStyleSheet("color: #e06363;")
+        self.rule_apply_finished.emit(result)
 
     def _delete_rule(self, rule: QosRule):
         self._rules = [r for r in self._rules if r.name != rule.name]

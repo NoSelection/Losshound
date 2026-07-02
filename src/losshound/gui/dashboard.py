@@ -7,13 +7,14 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
     QTableWidget,
@@ -34,6 +35,7 @@ from losshound.gui.palette import (
     c,
     qc,
 )
+from losshound.gui.theme import button_style
 from losshound.gui.widgets import (
     KeyValueRow,
     MetricCard,
@@ -206,6 +208,84 @@ class AlertsFeed(BracketedPanel):
             old = self._rows.pop()
             old.setParent(None)
             old.deleteLater()
+
+
+class QosMitigationPanel(BracketedPanel):
+    """One-click mitigation offer shown after local-saturation attribution."""
+
+    apply_requested = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(title="Lag mitigation", parent=parent)
+        self._app_name = ""
+
+        self._summary = QLabel("")
+        self._summary.setWordWrap(True)
+        self._summary.setStyleSheet(
+            f"color: {c('text_primary')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+        self.layout().addWidget(self._summary)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(
+            f"color: {c('text_secondary')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+        self.layout().addWidget(self._status)
+
+        self._apply_button = QPushButton("Apply Bulk QoS")
+        self._apply_button.setStyleSheet(button_style("warning"))
+        self._apply_button.clicked.connect(self._emit_apply)
+        self.layout().addWidget(self._apply_button)
+
+        self.setVisible(False)
+
+    def offer(self, app_name: str, summary: str) -> None:
+        self._app_name = app_name
+        display_name = self._display_app_name(app_name)
+        self._summary.setText(f"{display_name} is the top local-traffic suspect.")
+        self._summary.setToolTip(app_name)
+        self._apply_button.setToolTip(app_name)
+        self._status.setText(summary)
+        self._status.setStyleSheet(
+            f"color: {c('text_secondary')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+        self._apply_button.setText(f"Apply Bulk QoS to {display_name}")
+        self._apply_button.setEnabled(True)
+        self.setVisible(True)
+
+    def set_pending(self, app_name: str) -> None:
+        self._status.setText(f"Applying QoS rule for {app_name}...")
+        self._status.setStyleSheet(
+            f"color: {c('warn')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+        self._apply_button.setEnabled(False)
+
+    def set_result(self, success: bool, message: str) -> None:
+        token = "mint" if success else "warn"
+        self._status.setText(message)
+        self._status.setStyleSheet(
+            f"color: {c(token)}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+        self._apply_button.setEnabled(True)
+
+    def _emit_apply(self) -> None:
+        if self._app_name:
+            self.apply_requested.emit(self._app_name)
+
+    @staticmethod
+    def _display_app_name(app_name: str) -> str:
+        return app_name if len(app_name) <= 28 else f"{app_name[:25]}..."
 
 
 class RouteSnapshotPanel(BracketedPanel):
@@ -429,6 +509,8 @@ def _cell(text: str, color: str = "text_secondary") -> QTableWidgetItem:
 class DashboardTab(QWidget):
     """The redesigned dashboard."""
 
+    qos_apply_requested = Signal(str)
+
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setStyleSheet("background: transparent;")
@@ -491,11 +573,16 @@ class DashboardTab(QWidget):
 
         # ------------------------------------------------------------ Right column
         self.alerts_panel = AlertsFeed()
+        self.qos_mitigation_panel = QosMitigationPanel()
+        self.qos_mitigation_panel.apply_requested.connect(
+            self.qos_apply_requested.emit
+        )
         self.route_panel = RouteSnapshotPanel()
 
         right_col = QVBoxLayout()
         right_col.setSpacing(4)
         right_col.addWidget(self.alerts_panel, 1)
+        right_col.addWidget(self.qos_mitigation_panel, 0)
         right_col.addWidget(self.route_panel, 1)
         right_holder = QWidget()
         right_holder.setLayout(right_col)
@@ -665,3 +752,12 @@ class DashboardTab(QWidget):
 
     def update_route(self, obs: Observation) -> None:
         self.route_panel.update_route(obs)
+
+    def show_qos_offer(self, app_name: str, summary: str) -> None:
+        self.qos_mitigation_panel.offer(app_name, summary)
+
+    def set_qos_offer_pending(self, app_name: str) -> None:
+        self.qos_mitigation_panel.set_pending(app_name)
+
+    def set_qos_offer_result(self, success: bool, message: str) -> None:
+        self.qos_mitigation_panel.set_result(success, message)

@@ -86,6 +86,10 @@ class MainWindow(QMainWindow):
         self._drop_tab = DropTab()
         self._qos_tab = QosTab()
         self._lan_tab = LANTab(self._history, self._config)
+        self._pending_lag_qos_rule: str | None = None
+
+        self._dashboard.qos_apply_requested.connect(self._apply_lag_qos_rule)
+        self._qos_tab.rule_apply_finished.connect(self._on_qos_rule_finished)
 
         self._tabs.addTab(self._dashboard, "Dashboard")
         self._tabs.addTab(self._history_tab, "History")
@@ -157,6 +161,26 @@ class MainWindow(QMainWindow):
             "error" if level == "ERROR" else "warn",
             attribution.summary,
         )
+        if attribution.verdict == "local_saturation" and attribution.suspects:
+            top = attribution.suspects[0]
+            self._dashboard.show_qos_offer(top.process, attribution.summary)
+
+    def _apply_lag_qos_rule(self, app_name: str) -> None:
+        rule = self._qos_tab.apply_lag_mitigation(app_name)
+        self._pending_lag_qos_rule = rule.name
+        self._dashboard.set_qos_offer_pending(rule.app_path)
+        self._status_bar.set_status_text(f"Applying QoS rule for {rule.app_path}")
+
+    def _on_qos_rule_finished(self, result) -> None:
+        if result.rule_name != self._pending_lag_qos_rule:
+            return
+
+        message = result.message or result.action
+        if not result.success and "Administrator privileges" in message:
+            message = "Administrator privileges required; rule saved in QoS tab."
+        self._dashboard.set_qos_offer_result(result.success, message[:180])
+        self._status_bar.set_status_text(message[:60])
+        self._pending_lag_qos_rule = None
 
     def _on_observation(self, obs: Observation):
         self._dashboard.update_observation(obs)
