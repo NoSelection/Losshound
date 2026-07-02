@@ -636,11 +636,12 @@ class MonitorThread(QThread):
                 logger.debug("Monitor worker was already gone during shutdown")
         self.quit()
         # In-flight ping/tracert subprocesses are killed within ~2s of the
-        # interruption request, and the worker's own stop() waits up to 3s
-        # for the route thread plus 2s for the attribution thread — give the
-        # full chain room before the hard terminate. The Job Object kills any
-        # straggler subprocess children when the interpreter exits.
-        if not self.wait(8000):
+        # interruption request, and the worker's own stop() chains waits for
+        # the route (3s+1s), attribution (2s+1s), and drop-forensics (1.5s+0.5s)
+        # threads — up to ~9s worst case, so the outer window must exceed that
+        # before the hard terminate. The Job Object kills any straggler
+        # subprocess children when the interpreter exits.
+        if not self.wait(12000):
             logger.warning("MonitorThread did not stop cleanly; terminating")
             self.terminate()
             self.wait(1000)
