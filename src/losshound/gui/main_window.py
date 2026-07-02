@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import math
 import logging
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QTabWidget,
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from losshound.core.config import AppConfig
-from losshound.core.models import Diagnosis, Observation
+from losshound.core.models import Diagnosis, DiagnosisCategory, Observation
 from losshound.core.scheduler import MonitorThread
 from losshound.gui.dashboard import DashboardTab
 from losshound.gui.drop_tab import DropTab
@@ -31,6 +32,134 @@ from losshound.gui.widgets import LosshoundHeader, MonitorStatusBar
 from losshound.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
+
+
+class _DnsActionWorker(QThread):
+    finished = Signal(object)
+
+    def run(self):
+        try:
+            from losshound.core.dns_bench import DNS_SERVERS, TEST_DOMAINS, benchmark_all
+
+            results = benchmark_all(
+                servers=list(DNS_SERVERS.keys()),
+                domains=TEST_DOMAINS[:2],
+                rounds=1,
+            )
+            reliable = [
+                result for result in results
+                if result.success_rate >= 0.5 and math.isfinite(result.avg_ms)
+            ]
+            if not reliable:
+                payload = {
+                    "success": False,
+                    "message": "DNS benchmark found no reliable resolver.",
+                }
+            else:
+                fastest = reliable[0]
+                payload = {
+                    "success": True,
+                    "message": (
+                        f"Fastest DNS: {fastest.name} ({fastest.server}) "
+                        f"at {fastest.avg_ms:.1f} ms."
+                    ),
+                }
+            if not self.isInterruptionRequested():
+                self.finished.emit(payload)
+        except (InterruptedError, KeyboardInterrupt):
+            return
+        except Exception as exc:
+            logger.exception("DNS action failed")
+            if not self.isInterruptionRequested():
+                self.finished.emit({
+                    "success": False,
+                    "message": f"DNS benchmark failed: {str(exc)[:120]}",
+                })
+
+
+class _WifiActionWorker(QThread):
+    finished = Signal(object)
+
+    def run(self):
+        try:
+            from losshound.core.wifi_diag import (
+                find_best_channel,
+                get_wifi_interface,
+                scan_networks,
+            )
+
+            iface = get_wifi_interface()
+            if iface is None or iface.state != "connected":
+                payload = {
+                    "success": False,
+                    "message": "No connected WiFi interface detected.",
+                }
+            else:
+                networks = scan_networks()
+                band = iface.band or "2.4GHz"
+                recommended = find_best_channel(networks, band)
+                weak = iface.signal_pct < 60
+                if recommended == iface.channel and not weak:
+                    message = (
+                        f"WiFi looks healthy: {iface.signal_pct}% signal, "
+                        f"channel {iface.channel}."
+                    )
+                elif recommended != iface.channel:
+                    message = (
+                        f"WiFi signal {iface.signal_pct}%; switch {band} "
+                        f"channel {iface.channel} to {recommended}."
+                    )
+                else:
+                    message = (
+                        f"Weak WiFi signal ({iface.signal_pct}%). Channel "
+                        f"{iface.channel} is already the best visible option."
+                    )
+                payload = {"success": True, "message": message}
+
+            if not self.isInterruptionRequested():
+                self.finished.emit(payload)
+        except (InterruptedError, KeyboardInterrupt):
+            return
+        except Exception as exc:
+            logger.exception("WiFi action failed")
+            if not self.isInterruptionRequested():
+                self.finished.emit({
+                    "success": False,
+                    "message": f"WiFi scan failed: {str(exc)[:120]}",
+                })
+
+
+def _dashboard_actions_for_diagnosis(
+    diag: Diagnosis,
+    bufferbloat_grade: str = "",
+) -> list[dict[str, str]]:
+    actions: list[dict[str, str]] = []
+
+    if diag.category == DiagnosisCategory.DNS_ISSUE:
+        actions.append({
+            "key": "dns_benchmark",
+            "label": "Benchmark DNS",
+            "detail": "Run DNS benchmark and suggest the fastest reliable resolver.",
+            "kind": "primary",
+        })
+
+    if diag.category in (DiagnosisCategory.LAN_ISSUE, DiagnosisCategory.INTERMITTENT):
+        actions.append({
+            "key": "wifi_channel",
+            "label": "Check WiFi Channel",
+            "detail": "Scan visible WiFi networks and suggest a better channel if signal is weak.",
+            "kind": "primary",
+        })
+
+    if bufferbloat_grade.upper() in ("D", "F"):
+        actions.append({
+            "key": "open_qos",
+            "label": "Open QoS",
+            "detail": f"Latest load benchmark bufferbloat grade is {bufferbloat_grade.upper()}.",
+            "kind": "warning",
+        })
+
+    return actions
 
 
 class MainWindow(QMainWindow):
@@ -87,8 +216,10 @@ class MainWindow(QMainWindow):
         self._qos_tab = QosTab()
         self._lan_tab = LANTab(self._history, self._config)
         self._pending_lag_qos_rule: str | None = None
+        self._dashboard_action_worker: QThread | None = None
 
         self._dashboard.qos_apply_requested.connect(self._apply_lag_qos_rule)
+        self._dashboard.diagnosis_action_requested.connect(self._on_dashboard_action)
         self._qos_tab.rule_apply_finished.connect(self._on_qos_rule_finished)
 
         self._tabs.addTab(self._dashboard, "Dashboard")
@@ -211,11 +342,76 @@ class MainWindow(QMainWindow):
 
     def _on_diagnosis(self, diag: Diagnosis):
         self._dashboard.update_diagnosis(diag)
+        self._sync_diagnosis_actions(diag)
         event = self._alert_engine.feed(diag)
         if event is None:
             return
         self._tray.show_event(event)
         self._notification_dispatcher.dispatch(event)
+
+    def _sync_diagnosis_actions(self, diag: Diagnosis) -> None:
+        self._dashboard.set_diagnosis_actions(
+            _dashboard_actions_for_diagnosis(
+                diag,
+                bufferbloat_grade=self._latest_bufferbloat_grade(),
+            )
+        )
+
+    @staticmethod
+    def _latest_bufferbloat_grade() -> str:
+        try:
+            from losshound.core.load_benchmark import get_latest_load_snapshot
+
+            snapshot = get_latest_load_snapshot()
+            if not snapshot:
+                return ""
+            return (
+                snapshot.bufferbloat_grade
+                or getattr(snapshot.bufferbloat, "grade", "")
+                or ""
+            ).upper()
+        except Exception as exc:
+            logger.debug("Bufferbloat action lookup failed: %s", exc)
+            return ""
+
+    def _on_dashboard_action(self, key: str) -> None:
+        if self._dashboard_action_worker and self._dashboard_action_worker.isRunning():
+            self._dashboard.set_diagnosis_action_result(
+                False, "Another action is already running."
+            )
+            return
+
+        if key == "dns_benchmark":
+            self._dashboard.set_diagnosis_action_pending("Benchmarking DNS resolvers...")
+            worker = _DnsActionWorker(self)
+            worker.finished.connect(self._on_dashboard_action_finished)
+            self._dashboard_action_worker = worker
+            worker.start()
+            return
+
+        if key == "wifi_channel":
+            self._dashboard.set_diagnosis_action_pending("Scanning WiFi channels...")
+            worker = _WifiActionWorker(self)
+            worker.finished.connect(self._on_dashboard_action_finished)
+            self._dashboard_action_worker = worker
+            worker.start()
+            return
+
+        if key == "open_qos":
+            self._open_tab(self._qos_tab)
+            self._dashboard.set_diagnosis_action_result(
+                True, "QoS tab opened. Add low-priority rules for background apps."
+            )
+            self._status_bar.set_status_text("QoS recommended for bufferbloat")
+
+    def _on_dashboard_action_finished(self, payload: dict) -> None:
+        worker = self.sender()
+        if worker is self._dashboard_action_worker:
+            self._dashboard_action_worker = None
+        success = bool(payload.get("success"))
+        message = str(payload.get("message", ""))[:180]
+        self._dashboard.set_diagnosis_action_result(success, message)
+        self._status_bar.set_status_text(message[:60])
 
     def _on_error(self, msg: str):
         logger.error("Monitor error: %s", msg)
@@ -276,8 +472,11 @@ class MainWindow(QMainWindow):
         self._status_bar.set_status_text("Running check now")
 
     def _open_settings(self) -> None:
+        self._open_tab(self._settings_tab)
+
+    def _open_tab(self, target: QWidget) -> None:
         for i in range(self._tabs.count()):
-            if self._tabs.widget(i) is self._settings_tab:
+            if self._tabs.widget(i) is target:
                 self._tabs.setCurrentIndex(i)
                 return
 
@@ -324,6 +523,13 @@ class MainWindow(QMainWindow):
             self._tray.hide()
         except Exception:
             pass
+
+        try:
+            if self._dashboard_action_worker and self._dashboard_action_worker.isRunning():
+                self._dashboard_action_worker.requestInterruption()
+                self._dashboard_action_worker.wait(1500)
+        except Exception:
+            logger.exception("Error stopping dashboard action worker")
 
         tab_attrs = (
             "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",

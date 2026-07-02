@@ -288,6 +288,75 @@ class QosMitigationPanel(BracketedPanel):
         return app_name if len(app_name) <= 28 else f"{app_name[:25]}..."
 
 
+class DiagnosisActionsPanel(BracketedPanel):
+    """Contextual action buttons driven by diagnosis results."""
+
+    action_requested = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(title="Actions", parent=parent)
+        self._buttons: dict[str, QPushButton] = {}
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setStyleSheet(
+            f"color: {c('text_secondary')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+        self.layout().addWidget(self._status)
+
+        self.setVisible(False)
+
+    def set_actions(self, actions: list[dict[str, str]]) -> None:
+        self._clear_buttons()
+        self._status.setText("")
+        if not actions:
+            self.setVisible(False)
+            return
+
+        for action in actions:
+            key = action["key"]
+            button = QPushButton(action["label"])
+            button.setToolTip(action.get("detail", ""))
+            button.setStyleSheet(button_style(action.get("kind", "primary")))
+            button.clicked.connect(lambda checked=False, k=key: self.action_requested.emit(k))
+            self.layout().addWidget(button)
+            self._buttons[key] = button
+
+        self.setVisible(True)
+
+    def set_pending(self, text: str) -> None:
+        self._set_buttons_enabled(False)
+        self._status.setText(text)
+        self._status.setStyleSheet(
+            f"color: {c('warn')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+
+    def set_result(self, success: bool, text: str) -> None:
+        self._set_buttons_enabled(True)
+        token = "mint" if success else "warn"
+        self._status.setText(text)
+        self._status.setStyleSheet(
+            f"color: {c(token)}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 11px;"
+        )
+
+    def _set_buttons_enabled(self, enabled: bool) -> None:
+        for button in self._buttons.values():
+            button.setEnabled(enabled)
+
+    def _clear_buttons(self) -> None:
+        for button in self._buttons.values():
+            self.layout().removeWidget(button)
+            button.setParent(None)
+            button.deleteLater()
+        self._buttons.clear()
+
+
 class RouteSnapshotPanel(BracketedPanel):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(title="Route snapshot", parent=parent)
@@ -510,6 +579,7 @@ class DashboardTab(QWidget):
     """The redesigned dashboard."""
 
     qos_apply_requested = Signal(str)
+    diagnosis_action_requested = Signal(str)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -577,12 +647,17 @@ class DashboardTab(QWidget):
         self.qos_mitigation_panel.apply_requested.connect(
             self.qos_apply_requested.emit
         )
+        self.diagnosis_actions_panel = DiagnosisActionsPanel()
+        self.diagnosis_actions_panel.action_requested.connect(
+            self.diagnosis_action_requested.emit
+        )
         self.route_panel = RouteSnapshotPanel()
 
         right_col = QVBoxLayout()
         right_col.setSpacing(4)
         right_col.addWidget(self.alerts_panel, 1)
         right_col.addWidget(self.qos_mitigation_panel, 0)
+        right_col.addWidget(self.diagnosis_actions_panel, 0)
         right_col.addWidget(self.route_panel, 1)
         right_holder = QWidget()
         right_holder.setLayout(right_col)
@@ -761,3 +836,12 @@ class DashboardTab(QWidget):
 
     def set_qos_offer_result(self, success: bool, message: str) -> None:
         self.qos_mitigation_panel.set_result(success, message)
+
+    def set_diagnosis_actions(self, actions: list[dict[str, str]]) -> None:
+        self.diagnosis_actions_panel.set_actions(actions)
+
+    def set_diagnosis_action_pending(self, message: str) -> None:
+        self.diagnosis_actions_panel.set_pending(message)
+
+    def set_diagnosis_action_result(self, success: bool, message: str) -> None:
+        self.diagnosis_actions_panel.set_result(success, message)
