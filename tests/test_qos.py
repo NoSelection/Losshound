@@ -1,3 +1,4 @@
+import json
 from unittest.mock import MagicMock, patch
 
 from losshound.core.qos import (
@@ -6,6 +7,7 @@ from losshound.core.qos import (
     _run,
     apply_rule,
     build_lag_mitigation_rule,
+    load_saved_rules,
     remove_rule,
 )
 
@@ -101,3 +103,81 @@ def test_qos_validation():
         res_invalid = remove_rule("Game'; Start-Process calc; '")
         assert res_invalid.success is False
         assert "Invalid rule name" in res_invalid.message
+
+
+def test_apply_rule_rejects_tampered_dscp_before_powershell():
+    rule = QosRule(
+        name="GameRule",
+        app_path="game.exe",
+        priority_preset="Realtime",
+        dscp_value="0; Start-Process calc; #",
+    )
+
+    with patch("losshound.core.qos.check_admin") as mock_admin, \
+         patch("losshound.core.qos._run") as mock_run:
+        res = apply_rule(rule)
+
+    assert res.success is False
+    assert "Invalid DSCP value" in res.message
+    mock_admin.assert_not_called()
+    mock_run.assert_not_called()
+
+
+def test_load_saved_rules_skips_tampered_dscp(tmp_path):
+    rules_path = tmp_path / "qos_rules.json"
+    rules_path.write_text(
+        json.dumps([
+            {
+                "name": "Good",
+                "app_path": "good.exe",
+                "priority_preset": "Realtime",
+                "dscp_value": 46,
+            },
+            {
+                "name": "Bad",
+                "app_path": "bad.exe",
+                "priority_preset": "Realtime",
+                "dscp_value": "0; Start-Process calc; #",
+            },
+            {
+                "name": 123,
+                "app_path": "bad.exe",
+                "priority_preset": "Realtime",
+                "dscp_value": 46,
+            },
+            {
+                "name": "BadPath",
+                "app_path": None,
+                "priority_preset": "Realtime",
+                "dscp_value": 46,
+            },
+            {
+                "name": "BadPriority",
+                "app_path": "bad.exe",
+                "priority_preset": "Injected",
+                "dscp_value": 46,
+            },
+            {
+                "name": "BadActive",
+                "app_path": "bad.exe",
+                "priority_preset": "Realtime",
+                "dscp_value": 46,
+                "active": "yes",
+            },
+            {
+                "name": "BadNote",
+                "app_path": "bad.exe",
+                "priority_preset": "Realtime",
+                "dscp_value": 46,
+                "note": [],
+            },
+            ["not", "a", "rule"],
+        ]),
+        encoding="utf-8",
+    )
+
+    with patch("losshound.core.qos._rules_path", return_value=rules_path):
+        rules = load_saved_rules()
+
+    assert [rule.name for rule in rules] == ["Good"]
+    assert rules[0].dscp_value == 46

@@ -31,6 +31,8 @@ AUTO_MITIGATION_PREFIX = "LagMitigation"
 
 _RULE_NAME_RE = re.compile(r"^[a-zA-Z0-9_ \-]{1,64}$")
 _APP_NAME_RE = re.compile(r"^[a-zA-Z0-9_ \-\.]+$")
+_DSCP_MIN = 0
+_DSCP_MAX = 63
 
 PRESET_DESCRIPTIONS = {
     "Realtime": "Lowest latency — VoIP, competitive gaming, remote desktop",
@@ -95,6 +97,21 @@ def _safe_rule_fragment(app_name: str) -> str:
     return fragment[:max_len]
 
 
+def _coerce_dscp_value(value: object) -> int | None:
+    """Return a valid DSCP integer, or None for tampered/corrupt values."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        dscp = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        dscp = int(value.strip())
+    else:
+        return None
+    if _DSCP_MIN <= dscp <= _DSCP_MAX:
+        return dscp
+    return None
+
+
 def build_lag_mitigation_rule(app_path: str) -> QosRule:
     """Build the low-priority QoS rule used for lag-attribution suspects."""
     app_name = _app_name_from_path(app_path)
@@ -140,14 +157,6 @@ def get_existing_policies() -> list[dict]:
 
 def apply_rule(rule: QosRule) -> QosResult:
     """Create or update a QoS policy for an application."""
-    if not check_admin():
-        return QosResult(
-            rule_name=rule.name,
-            success=False,
-            action="failed",
-            message="Administrator privileges required to create QoS policies",
-        )
-
     # Validate rule name against command injection/LPE
     if not _RULE_NAME_RE.match(rule.name):
         return QosResult(
@@ -167,6 +176,23 @@ def apply_rule(rule: QosRule) -> QosResult:
             message="Invalid application path or name",
         )
 
+    dscp_value = _coerce_dscp_value(rule.dscp_value)
+    if dscp_value is None:
+        return QosResult(
+            rule_name=rule.name,
+            success=False,
+            action="failed",
+            message="Invalid DSCP value: must be an integer from 0 to 63",
+        )
+
+    if not check_admin():
+        return QosResult(
+            rule_name=rule.name,
+            success=False,
+            action="failed",
+            message="Administrator privileges required to create QoS policies",
+        )
+
     policy_name = f"Losshound_{rule.name}"
 
     # Remove existing policy with same name first
@@ -181,7 +207,7 @@ def apply_rule(rule: QosRule) -> QosResult:
         "powershell", "-NoProfile", "-Command",
         f"New-NetQosPolicy -Name '{policy_name}' "
         f"-AppPathNameMatchCondition '{app_name}' "
-        f"-DSCPAction {rule.dscp_value} "
+        f"-DSCPAction {dscp_value} "
         f"-PolicyStore ActiveStore "
         f"-ErrorAction Stop",
     ])
@@ -191,7 +217,7 @@ def apply_rule(rule: QosRule) -> QosResult:
             rule_name=rule.name,
             success=True,
             action="created",
-            message=f"QoS policy applied: {app_name} -> DSCP {rule.dscp_value} ({rule.priority_preset})",
+            message=f"QoS policy applied: {app_name} -> DSCP {dscp_value} ({rule.priority_preset})",
         )
     else:
         error = proc.stderr.strip() or proc.stdout.strip()
@@ -271,17 +297,51 @@ def load_saved_rules() -> list[QosRule]:
         return []
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return [
-            QosRule(
-                name=r["name"],
-                app_path=r["app_path"],
-                priority_preset=r["priority_preset"],
-                dscp_value=r["dscp_value"],
-                active=r.get("active", True),
-                note=r.get("note", ""),
-            )
-            for r in data
-        ]
+        if not isinstance(data, list):
+            return []
+
+        rules: list[QosRule] = []
+        for r in data:
+            try:
+                if not isinstance(r, dict):
+                    raise ValueError("rule entry must be an object")
+
+                name = r["name"]
+                app_path = r["app_path"]
+                priority_preset = r["priority_preset"]
+                active = r.get("active", True)
+                note = r.get("note", "")
+
+                if not isinstance(name, str) or not _RULE_NAME_RE.match(name):
+                    raise ValueError("invalid rule name")
+                if not isinstance(app_path, str):
+                    raise ValueError("invalid application path")
+                app_name = _app_name_from_path(app_path)
+                if not _APP_NAME_RE.match(app_name) or "'" in app_name or ";" in app_name:
+                    raise ValueError("invalid application path")
+                if not isinstance(priority_preset, str) or priority_preset not in PRIORITY_PRESETS:
+                    raise ValueError("invalid priority preset")
+                if not isinstance(active, bool):
+                    raise ValueError("invalid active flag")
+                if not isinstance(note, str):
+                    raise ValueError("invalid note")
+
+                dscp_value = _coerce_dscp_value(r["dscp_value"])
+                if dscp_value is None:
+                    raise ValueError("invalid DSCP value")
+                rules.append(
+                    QosRule(
+                        name=name,
+                        app_path=app_path,
+                        priority_preset=priority_preset,
+                        dscp_value=dscp_value,
+                        active=active,
+                        note=note,
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                logger.warning("Skipping invalid QoS rule: %s", exc)
+        return rules
     except (json.JSONDecodeError, KeyError) as exc:
         logger.warning("Failed to load QoS rules: %s", exc)
         return []

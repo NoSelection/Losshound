@@ -153,6 +153,21 @@ def _sanitize_adapter_name(name: str) -> str:
     return cleaned.replace("'", "''")
 
 
+def _coerce_registry_dword_value(value: object) -> str | None:
+    """Return a safe numeric registry value string, or None for tampered input."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, str) and re.fullmatch(r"\d{1,10}", value.strip()):
+        number = int(value.strip())
+    else:
+        return None
+    if 0 <= number <= 0xFFFFFFFF:
+        return str(number)
+    return None
+
+
 def _parse_bool_setting(val: str) -> str:
     """Robust locale-independent parser for enabled/disabled settings."""
     val_lower = val.lower()
@@ -2477,8 +2492,18 @@ class NetworkOptimizer:
                         ))
 
             # --- Adapter EEE Restore ---
-            if getattr(backup.adapter, "eee_enabled", None) is not None:
-                if not is_admin:
+            eee_raw = getattr(backup.adapter, "eee_enabled", None)
+            if eee_raw is not None:
+                eee_value = _coerce_registry_dword_value(eee_raw)
+                if eee_value is None:
+                    results.append(_make_result(
+                        name="Restore EEE", success=False,
+                        before="current", after="",
+                        needs_admin=True,
+                        error="Invalid backed-up EEE registry value",
+                        note="Skipped a tampered or corrupt backup value",
+                    ))
+                elif not is_admin:
                     results.append(_need_admin("Restore EEE"))
                 else:
                     try:
@@ -2490,12 +2515,12 @@ class NetworkOptimizer:
                         ])
                         kw = kw_proc.stdout.strip()
                         if kw:
-                            eee_cmd = f"Set-NetAdapterAdvancedProperty -Name '{adapter_name}' -RegistryKeyword '{kw}' -RegistryValue {backup.adapter.eee_enabled}"
+                            eee_cmd = f"Set-NetAdapterAdvancedProperty -Name '{adapter_name}' -RegistryKeyword '{kw}' -RegistryValue {eee_value}"
                             proc = _run(["powershell", "-NoProfile", "-Command", eee_cmd])
                             ok = proc.returncode == 0
                             results.append(_make_result(
                                 name="Restore EEE", success=ok,
-                                before="current", after=f"Value {backup.adapter.eee_enabled}",
+                                before="current", after=f"Value {eee_value}",
                                 needs_admin=True,
                                 error=proc.stderr.strip() or None if not ok else None,
                                 command=eee_cmd,

@@ -357,4 +357,43 @@ class TestOptimizerExtensions(unittest.TestCase):
         self.assertTrue(len(failures) > 0)
         self.assertTrue(losshound.core.optimizer._BACKUP_FILE.is_file())
 
+    @patch("winreg.OpenKey", side_effect=OSError())
+    @patch("losshound.core.optimizer.NetworkOptimizer.apply_mtu")
+    @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
+    @patch("losshound.core.optimizer._run")
+    def test_restore_backup_rejects_tampered_eee_value(
+        self, mock_run, mock_check_admin, mock_apply_mtu, mock_open_key,
+    ):
+        from losshound.core.optimizer import _make_result
+
+        mock_check_admin.return_value = True
+        mock_apply_mtu.return_value = _make_result(
+            name="Restore MTU", success=True, before="current", after="1500",
+            needs_admin=True,
+        )
+        backup = BackupData(
+            timestamp="2026-05-30T12:00:00",
+            tcp_settings=TcpSettings(),
+            dns_servers=("", ""),
+            mtu=1500,
+            network_throttling=None,
+            nagle_disabled=True,
+            adapter=AdapterBackup(
+                name="Ethernet",
+                power_management_enabled=None,
+                interrupt_moderation_enabled=None,
+                rsc_enabled=None,
+                lso_enabled=None,
+                eee_enabled="0; Start-Process calc; #",
+            ),
+        )
+
+        results = NetworkOptimizer().restore_backup(backup)
+
+        eee_results = [r for r in results if r.name == "Restore EEE"]
+        self.assertEqual(len(eee_results), 1)
+        self.assertFalse(eee_results[0].success)
+        self.assertIn("Invalid backed-up EEE", eee_results[0].error)
+        self.assertFalse(any("Start-Process" in str(call.args) for call in mock_run.call_args_list))
+
 
