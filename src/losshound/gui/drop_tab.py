@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from losshound.core.drop_analyzer import (
-    DropAnalysisReport, run_drop_analysis, format_drop_report,
+    DropAnalysisReport, run_drop_analysis,
 )
 from losshound.core.gateway import detect_gateway
 from losshound.gui.theme import button_style
@@ -398,6 +398,29 @@ class DropTab(QWidget):
             f"Done — {report.total_samples} samples, {drop_count} drops detected",
         )
         self._display_report(report)
+
+    def show_forensics_episode(self, episode) -> None:
+        """Display an automatic scheduler-triggered forensic capture."""
+        self._set_busy(
+            False,
+            f"Auto forensics captured: {episode.cause}",
+        )
+        self._display_report(episode.report)
+
+        cause_labels = {
+            "wifi_roam": "WIFI ROAM / CHANNEL CHANGE",
+            "gateway_reboot": "GATEWAY / ROUTER REBOOT",
+            "isp": "ISP / WAN DROP",
+            "inconclusive": "INCONCLUSIVE DROP",
+        }
+        self._verdict_label.setText(
+            f"{cause_labels.get(episode.cause, episode.cause.upper())}: "
+            f"{episode.summary}"
+        )
+        self._confidence_label.setText(
+            f"Auto capture  |  Confidence: {episode.confidence}  |  "
+            f"Gateway: {episode.gateway_ip}  |  Timeout streak: {episode.timeout_streak}"
+        )
 
     # ------------------------------------------------------------------
     # Display results

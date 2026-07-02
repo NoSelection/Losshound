@@ -11,6 +11,12 @@ from losshound.core.models import (
     RouteHop,
     RouteSnapshot,
 )
+from losshound.core.drop_analyzer import (
+    ConnSample,
+    DropAnalysisReport,
+    DropForensicsEpisode,
+    GatewayStateSnapshot,
+)
 from losshound.storage.history import HistoryStore
 
 
@@ -93,6 +99,62 @@ def test_save_route_snapshot():
     assert len(loaded) == 1
     assert len(loaded[0].hops) == 2
     assert loaded[0].hops[0].ip == "192.168.1.1"
+    store.close()
+
+
+def test_save_and_load_drop_forensics():
+    store = _make_store()
+    now = datetime.now()
+    sample = ConnSample(
+        timestamp=now,
+        link_up=True,
+        connection_type="ethernet",
+        speed_mbps=100.0,
+        wifi_signal_pct=0,
+        wifi_ssid="",
+        wifi_channel=0,
+        gateway_reachable=True,
+        gateway_rtt_ms=2.0,
+        wan_reachable=False,
+        wan_rtt_ms=None,
+        dns_ok=True,
+    )
+    report = DropAnalysisReport(
+        scan_duration_seconds=1.0,
+        connection_type="ethernet",
+        total_samples=1,
+        samples=[sample],
+        drops=[],
+        events=[],
+        verdict="ISP / WAN ISSUE",
+        confidence="medium",
+        details=[],
+        recommendations=[],
+        drop_regularity=None,
+    )
+    episode = DropForensicsEpisode(
+        timestamp=now,
+        trigger="timeout_burst",
+        timeout_streak=3,
+        gateway_ip="192.168.1.1",
+        wan_target="8.8.8.8",
+        report=report,
+        wifi_before=None,
+        wifi_after=None,
+        gateway_before=GatewayStateSnapshot("192.168.1.1", True, 2.0),
+        gateway_after=GatewayStateSnapshot("192.168.1.1", True, 2.0),
+        cause="isp",
+        confidence="medium",
+        summary="Gateway stayed reachable while WAN failed",
+    )
+
+    row_id = store.save_drop_forensics(episode)
+    loaded = store.recent_drop_forensics()
+
+    assert row_id > 0
+    assert loaded[0]["cause"] == "isp"
+    assert loaded[0]["timeout_streak"] == 3
+    assert loaded[0]["raw"]["report"]["samples"][0]["wan_reachable"] is False
     store.close()
 
 
@@ -231,4 +293,3 @@ def test_device_custom_name_migration():
     assert store.get_devices()[0]["custom_name"] == "Migrated Device"
 
     store.close()
-

@@ -5,7 +5,7 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QTimer
 
 from losshound.core.config import AppConfig
-from losshound.core.models import PingResult
+from losshound.core.models import Diagnosis, DiagnosisCategory, PingResult
 from losshound.core.scheduler import (
     FAST_INTERVAL_SECONDS,
     RECOVERY_CYCLES,
@@ -161,3 +161,80 @@ def test_attribution_throttled_by_cooldown(qapp):
 
     first_worker.requestInterruption()
     first_worker.wait(5000)
+
+
+# ------------------------------------------------------ Drop forensics trigger
+
+class _FakeSignal:
+    def __init__(self):
+        self.callbacks = []
+
+    def connect(self, callback):
+        self.callbacks.append(callback)
+
+
+class _FakeDropForensicsThread:
+    created = []
+
+    def __init__(self, gateway, wan_target, timeout_streak):
+        self.gateway = gateway
+        self.wan_target = wan_target
+        self.timeout_streak = timeout_streak
+        self.forensics_ready = _FakeSignal()
+        self.finished = _FakeSignal()
+        self.started = False
+        self.running = False
+        self.created.append(self)
+
+    def isRunning(self):
+        return self.running
+
+    def start(self):
+        self.started = True
+        self.running = True
+
+
+def _diag_with_streak(streak: int) -> Diagnosis:
+    return Diagnosis(
+        timestamp=datetime.now(),
+        category=DiagnosisCategory.INTERMITTENT,
+        summary="Intermittent packet loss detected",
+        explanation="test",
+        confidence="medium",
+        evidence={"max_timeout_streak": streak},
+    )
+
+
+def test_timeout_burst_starts_drop_forensics(qapp, monkeypatch):
+    import losshound.core.scheduler as scheduler
+
+    _FakeDropForensicsThread.created = []
+    monkeypatch.setattr(scheduler, "DropForensicsThread", _FakeDropForensicsThread)
+    worker = _worker(qapp)
+    worker._gateway_ip = "192.168.1.1"
+    worker._config.public_ping_targets = ["9.9.9.9"]
+
+    worker._maybe_run_drop_forensics(
+        _diag_with_streak(worker._config.diagnosis.timeout_burst_threshold)
+    )
+
+    assert len(_FakeDropForensicsThread.created) == 1
+    created = _FakeDropForensicsThread.created[0]
+    assert created.gateway == "192.168.1.1"
+    assert created.wan_target == "9.9.9.9"
+    assert created.started is True
+
+
+def test_drop_forensics_ignores_short_timeout_streak(qapp, monkeypatch):
+    import losshound.core.scheduler as scheduler
+
+    _FakeDropForensicsThread.created = []
+    monkeypatch.setattr(scheduler, "DropForensicsThread", _FakeDropForensicsThread)
+    worker = _worker(qapp)
+    worker._gateway_ip = "192.168.1.1"
+
+    worker._maybe_run_drop_forensics(
+        _diag_with_streak(worker._config.diagnosis.timeout_burst_threshold - 1)
+    )
+
+    assert _FakeDropForensicsThread.created == []

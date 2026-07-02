@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, QMetaObject, QThread, QTimer, Qt, Signal, Sl
 from losshound.core.config import AppConfig
 from losshound.core.diagnosis import diagnose
 from losshound.core.dns_checks import check_dns
+from losshound.core.drop_analyzer import DropForensicsEpisode, run_drop_forensics
 from losshound.core.gateway import detect_gateway
 from losshound.core.lag_attribution import LagAttribution, attribute_lag
 from losshound.core.models import Diagnosis, DnsResult, Observation, RouteSnapshot
@@ -34,6 +35,49 @@ LAG_SPIKE_FACTOR = 2.0
 LAG_SPIKE_MIN_DELTA_MS = 30.0
 LAG_ATTRIBUTION_COOLDOWN_S = 120
 _BASELINE_EMA_ALPHA = 0.2
+
+# Disconnect forensics: when the diagnosis window sees a timeout burst, run a
+# short rapid-poll capture to classify WiFi roam vs gateway reboot vs ISP/WAN.
+DROP_FORENSICS_DURATION_S = 30
+DROP_FORENSICS_POLL_INTERVAL_S = 1.0
+DROP_FORENSICS_COOLDOWN_S = 300
+
+
+class DropForensicsThread(QThread):
+    """Run automatic disconnect forensics off the monitor loop."""
+
+    forensics_ready = Signal(object)  # DropForensicsEpisode
+
+    def __init__(
+        self,
+        gateway: str,
+        wan_target: str,
+        timeout_streak: int,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self._gateway = gateway
+        self._wan_target = wan_target
+        self._timeout_streak = timeout_streak
+
+    def run(self):
+        try:
+            if self.isInterruptionRequested():
+                return
+            episode = run_drop_forensics(
+                gateway=self._gateway,
+                wan_target=self._wan_target,
+                timeout_streak=self._timeout_streak,
+                duration_seconds=DROP_FORENSICS_DURATION_S,
+                poll_interval=DROP_FORENSICS_POLL_INTERVAL_S,
+                stop_check=self.isInterruptionRequested,
+            )
+            if not self.isInterruptionRequested():
+                self.forensics_ready.emit(episode)
+        except (InterruptedError, KeyboardInterrupt):
+            logger.info("Drop forensics interrupted during thread shutdown.")
+        except Exception:
+            logger.exception("Error in drop forensics")
 
 
 class LagAttributionThread(QThread):
@@ -97,6 +141,7 @@ class MonitorWorker(QObject):
     error_occurred = Signal(str)
     cadence_changed = Signal(int)       # effective ping interval, seconds
     lag_attribution_ready = Signal(object)  # LagAttribution
+    drop_forensics_ready = Signal(object)   # DropForensicsEpisode
 
     def __init__(self, config: AppConfig, history: HistoryStore):
         super().__init__()
@@ -112,6 +157,8 @@ class MonitorWorker(QObject):
         self._rtt_baseline: Optional[float] = None
         self._attr_worker: Optional[LagAttributionThread] = None
         self._last_attribution_monotonic: Optional[float] = None
+        self._drop_worker: Optional[DropForensicsThread] = None
+        self._last_drop_forensics_monotonic: Optional[float] = None
 
     @Slot()
     def start_timers(self):
@@ -169,6 +216,12 @@ class MonitorWorker(QObject):
                 logger.warning("Lag attribution thread did not stop cleanly; terminating")
                 self._attr_worker.terminate()
                 self._attr_worker.wait(1000)
+        if self._drop_worker and self._drop_worker.isRunning():
+            self._drop_worker.requestInterruption()
+            if not self._drop_worker.wait(1500):
+                logger.warning("Drop forensics thread did not stop cleanly; terminating")
+                self._drop_worker.terminate()
+                self._drop_worker.wait(500)
 
     def mark_stopped(self) -> None:
         """Thread-safe shutdown flag set before queued stop work runs."""
@@ -177,6 +230,8 @@ class MonitorWorker(QObject):
             self._route_worker.requestInterruption()
         if self._attr_worker and self._attr_worker.isRunning():
             self._attr_worker.requestInterruption()
+        if self._drop_worker and self._drop_worker.isRunning():
+            self._drop_worker.requestInterruption()
 
     @Slot(object)
     def update_config(self, config: AppConfig):
@@ -318,6 +373,57 @@ class MonitorWorker(QObject):
         if worker is not None:
             worker.deleteLater()
 
+    def _maybe_run_drop_forensics(self, diag: Diagnosis) -> None:
+        """Kick off a short capture when the diagnosis window sees a burst."""
+        if self._stopped:
+            return
+        if not self._gateway_ip:
+            return
+
+        try:
+            timeout_streak = int(diag.evidence.get("max_timeout_streak", 0) or 0)
+        except (TypeError, ValueError):
+            timeout_streak = 0
+        if timeout_streak < self._config.diagnosis.timeout_burst_threshold:
+            return
+
+        now = time.monotonic()
+        if (
+            self._last_drop_forensics_monotonic is not None
+            and now - self._last_drop_forensics_monotonic < DROP_FORENSICS_COOLDOWN_S
+        ):
+            return
+        if self._drop_worker and self._drop_worker.isRunning():
+            return
+
+        self._last_drop_forensics_monotonic = now
+        wan_target = self._config.public_ping_targets[0] if self._config.public_ping_targets else "8.8.8.8"
+        worker = DropForensicsThread(
+            self._gateway_ip,
+            wan_target,
+            timeout_streak,
+        )
+        worker.forensics_ready.connect(self._on_drop_forensics)
+        worker.finished.connect(self._on_drop_thread_finished)
+        self._drop_worker = worker
+        worker.start()
+
+    @Slot(object)
+    def _on_drop_forensics(self, episode: DropForensicsEpisode):
+        if self._stopped or QThread.currentThread().isInterruptionRequested():
+            return
+        logger.info("Drop forensics: %s", episode.summary)
+        self._history.save_drop_forensics(episode)
+        self.drop_forensics_ready.emit(episode)
+
+    @Slot()
+    def _on_drop_thread_finished(self):
+        worker = self.sender()
+        if worker is self._drop_worker:
+            self._drop_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
     @Slot()
     def _run_ping_cycle(self):
         """Run gateway ping, public pings, and DNS checks."""
@@ -390,6 +496,7 @@ class MonitorWorker(QObject):
             diag = diagnose(recent, self._config.diagnosis, route_history)
             self._history.save_diagnosis(diag)
             self.diagnosis_ready.emit(diag)
+            self._maybe_run_drop_forensics(diag)
 
         except (InterruptedError, KeyboardInterrupt):
             logger.info("Ping cycle interrupted during thread shutdown.")
@@ -477,6 +584,7 @@ class MonitorThread(QThread):
     error_occurred = Signal(str)
     cadence_changed = Signal(int)
     lag_attribution_ready = Signal(object)
+    drop_forensics_ready = Signal(object)
     config_update_requested = Signal(object)
     run_now_requested = Signal()
 
@@ -495,6 +603,7 @@ class MonitorThread(QThread):
             self._worker.error_occurred.connect(self.error_occurred.emit)
             self._worker.cadence_changed.connect(self.cadence_changed.emit)
             self._worker.lag_attribution_ready.connect(self.lag_attribution_ready.emit)
+            self._worker.drop_forensics_ready.connect(self.drop_forensics_ready.emit)
             self.config_update_requested.connect(
                 self._worker.update_config,
                 Qt.ConnectionType.QueuedConnection,

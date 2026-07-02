@@ -18,20 +18,19 @@ monitoring; admin recommended for full event-log access.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from typing import Optional
 
+from losshound.core.subprocess_runner import run_subprocess_interruptible
 from losshound.core.validation import validate_target
 
 logger = logging.getLogger(__name__)
-
-_CREATE_NO_WINDOW: int = 0x08000000
-
 
 # ---------------------------------------------------------------------------
 # Data models
@@ -103,6 +102,64 @@ class DropAnalysisReport:
     drop_regularity: Optional[str]    # "regular ~Xmin", "irregular", None
 
 
+@dataclass
+class WifiStateSnapshot:
+    """WiFi state captured around an automatic disconnect-forensics run."""
+
+    connected: bool
+    ssid: str = ""
+    bssid: str = ""
+    signal_pct: int = 0
+    channel: int = 0
+    band: str = ""
+
+
+@dataclass
+class GatewayStateSnapshot:
+    """Gateway reachability captured around an automatic forensics run."""
+
+    gateway_ip: str
+    reachable: bool
+    rtt_ms: Optional[float] = None
+
+
+@dataclass
+class DropForensicsEpisode:
+    """Automatic short capture triggered by a scheduler timeout burst."""
+
+    timestamp: datetime
+    trigger: str
+    timeout_streak: int
+    gateway_ip: str
+    wan_target: str
+    report: DropAnalysisReport
+    wifi_before: Optional[WifiStateSnapshot]
+    wifi_after: Optional[WifiStateSnapshot]
+    gateway_before: GatewayStateSnapshot
+    gateway_after: GatewayStateSnapshot
+    cause: str                 # "wifi_roam" | "gateway_reboot" | "isp" | "inconclusive"
+    confidence: str
+    summary: str
+
+
+@dataclass
+class _CommandResult:
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
+
+
+def _run(args: list[str], timeout: float) -> _CommandResult:
+    try:
+        stdout, stderr, returncode = run_subprocess_interruptible(args, timeout)
+        return _CommandResult(stdout=stdout, stderr=stderr, returncode=returncode)
+    except subprocess.TimeoutExpired:
+        return _CommandResult(
+            stderr=f"Command timed out after {timeout} seconds",
+            returncode=124,
+        )
+
+
 # ---------------------------------------------------------------------------
 # Helpers — quick single-packet probes
 # ---------------------------------------------------------------------------
@@ -112,10 +169,9 @@ def _quick_ping(target: str, timeout_ms: int = 1500) -> tuple[bool, Optional[flo
     if not validate_target(target):
         return False, None
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["ping", "-n", "1", "-w", str(timeout_ms), target],
-            capture_output=True, text=True, timeout=(timeout_ms / 1000) + 3,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=(timeout_ms / 1000) + 3,
         )
         out = proc.stdout
         if "ttl=" in out.lower():
@@ -124,6 +180,8 @@ def _quick_ping(target: str, timeout_ms: int = 1500) -> tuple[bool, Optional[flo
             rtt = float(m.group(1)) if m else 0.0
             return True, rtt
         return False, None
+    except InterruptedError:
+        raise
     except Exception:
         return False, None
 
@@ -133,15 +191,16 @@ def _quick_dns(hostname: str = "google.com") -> bool:
     if not validate_target(hostname):
         return False
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["nslookup", hostname],
-            capture_output=True, text=True, timeout=5,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=5,
         )
         out_lower = proc.stdout.lower()
         has_address = any(kw in out_lower for kw in ("address", "adres", "adresse"))
         can_find = any(kw in out_lower for kw in ("can't find", "cannot find", "bulunamıyor", "nicht gefunden"))
         return proc.returncode == 0 and has_address and not can_find
+    except InterruptedError:
+        raise
     except Exception:
         return False
 
@@ -156,10 +215,9 @@ def _get_active_nic_info() -> tuple[str, bool, float]:
     Returns (connection_type, link_up, speed_mbps).
     """
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["netsh", "interface", "show", "interface"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=10,
         )
         # Check for connected interfaces
         for line in proc.stdout.splitlines():
@@ -185,6 +243,8 @@ def _get_active_nic_info() -> tuple[str, bool, float]:
                     conn_type = "ethernet" if is_ethernet else "wifi"
                     return conn_type, False, 0.0
 
+    except InterruptedError:
+        raise
     except Exception as exc:
         logger.debug("NIC info failed: %s", exc)
 
@@ -194,23 +254,23 @@ def _get_active_nic_info() -> tuple[str, bool, float]:
 def _get_link_speed(interface_name: str) -> float:
     """Get the negotiated link speed for a network interface."""
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["netsh", "interface", "ipv4", "show", "subinterfaces"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=10,
         )
         for line in proc.stdout.splitlines():
             if interface_name.lower() in line.lower():
                 break
+    except InterruptedError:
+        raise
     except Exception:
         pass
 
     # Fallback: wmic
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["wmic", "nic", "where", "NetEnabled=true", "get", "Name,Speed", "/format:csv"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=10,
         )
         for line in proc.stdout.splitlines():
             if not line.strip():
@@ -223,6 +283,8 @@ def _get_link_speed(interface_name: str) -> float:
                     return speed_bps / 1_000_000  # Convert to Mbps
                 except ValueError:
                     continue
+    except InterruptedError:
+        raise
     except Exception:
         pass
 
@@ -232,10 +294,9 @@ def _get_link_speed(interface_name: str) -> float:
 def _check_media_status() -> bool:
     """Check if the Ethernet cable is physically connected (media sense)."""
     try:
-        proc = subprocess.run(
+        proc = _run(
             ["ipconfig", "/all"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=10,
         )
         out_lower = proc.stdout.lower()
         has_disconnected = any(
@@ -243,6 +304,8 @@ def _check_media_status() -> bool:
             for x in ("media disconnected", "medium getrennt", "bağlantısı kesildi", "desconectado", "déconnecté", "disconnected")
         )
         return not has_disconnected
+    except InterruptedError:
+        raise
     except Exception:
         return True  # assume connected on error
 
@@ -286,13 +349,14 @@ def _get_network_events(hours: int = 3) -> list[NetworkEvent]:
             f"/q:{query}",
             "/c:50", "/rd:true", "/f:text"
         ]
-        proc = subprocess.run(
+        proc = _run(
             args,
-            capture_output=True, text=True, timeout=15,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=15,
         )
         if proc.returncode == 0:
             events.extend(_parse_wevtutil_text(proc.stdout, "System"))
+    except InterruptedError:
+        raise
     except Exception as exc:
         logger.debug("System event log query failed: %s", exc)
 
@@ -303,13 +367,14 @@ def _get_network_events(hours: int = 3) -> list[NetworkEvent]:
             f"/q:*[System[TimeCreated[timediff(@SystemTime) <= {ms}]]]",
             "/c:50", "/rd:true", "/f:text"
         ]
-        proc = subprocess.run(
+        proc = _run(
             args,
-            capture_output=True, text=True, timeout=15,
-            creationflags=_CREATE_NO_WINDOW,
+            timeout=15,
         )
         if proc.returncode == 0:
             events.extend(_parse_wevtutil_text(proc.stdout, "WLAN"))
+    except InterruptedError:
+        raise
     except Exception as exc:
         logger.debug("WLAN event log query failed: %s", exc)
 
@@ -388,8 +453,190 @@ def _get_wifi_state() -> tuple[bool, int, str, int]:
         if iface and iface.state == "connected":
             return True, iface.signal_pct, iface.ssid, iface.channel
         return False, 0, "", 0
+    except InterruptedError:
+        raise
     except Exception:
         return False, 0, "", 0
+
+
+def capture_wifi_snapshot() -> Optional[WifiStateSnapshot]:
+    """Capture current WiFi state, including BSSID for roam detection."""
+    try:
+        from losshound.core.wifi_diag import get_wifi_interface
+
+        iface = get_wifi_interface()
+        if iface is None:
+            return None
+        return WifiStateSnapshot(
+            connected=iface.state == "connected",
+            ssid=iface.ssid,
+            bssid=iface.bssid,
+            signal_pct=iface.signal_pct,
+            channel=iface.channel,
+            band=iface.band,
+        )
+    except InterruptedError:
+        raise
+    except Exception as exc:
+        logger.debug("WiFi snapshot failed: %s", exc)
+        return None
+
+
+def capture_gateway_snapshot(gateway: str) -> GatewayStateSnapshot:
+    """Capture gateway reachability for disconnect forensics."""
+    reachable, rtt_ms = _quick_ping(gateway, timeout_ms=1000)
+    return GatewayStateSnapshot(
+        gateway_ip=gateway,
+        reachable=reachable,
+        rtt_ms=rtt_ms,
+    )
+
+
+def classify_drop_forensics(
+    report: DropAnalysisReport,
+    wifi_before: Optional[WifiStateSnapshot],
+    wifi_after: Optional[WifiStateSnapshot],
+    gateway_before: GatewayStateSnapshot,
+    gateway_after: GatewayStateSnapshot,
+) -> tuple[str, str, str]:
+    """Return (cause, confidence, summary) for an automatic drop capture."""
+    patterns = {drop.pattern for drop in report.drops}
+    total = max(1, report.total_samples)
+    gateway_failures = sum(1 for sample in report.samples if not sample.gateway_reachable)
+    wan_failures = sum(1 for sample in report.samples if not sample.wan_reachable)
+    link_failures = sum(1 for sample in report.samples if not sample.link_up)
+    wifi_signal_drop = any(drop.wifi_signal_dropped for drop in report.drops)
+
+    wifi_roamed = False
+    wifi_signal_note = ""
+    if wifi_before and wifi_after and wifi_before.connected and wifi_after.connected:
+        bssid_changed = (
+            bool(wifi_before.bssid)
+            and bool(wifi_after.bssid)
+            and wifi_before.bssid.lower() != wifi_after.bssid.lower()
+        )
+        channel_changed = (
+            wifi_before.channel > 0
+            and wifi_after.channel > 0
+            and wifi_before.channel != wifi_after.channel
+        )
+        signal_delta = wifi_before.signal_pct - wifi_after.signal_pct
+        wifi_roamed = bssid_changed or channel_changed
+        if signal_delta >= 25:
+            wifi_signal_drop = True
+        wifi_signal_note = (
+            f"signal {wifi_before.signal_pct}%->{wifi_after.signal_pct}%, "
+            f"channel {wifi_before.channel}->{wifi_after.channel}"
+        )
+
+    if wifi_roamed or (
+        report.connection_type == "wifi"
+        and (wifi_signal_drop or link_failures > 0)
+        and gateway_failures > 0
+    ):
+        confidence = "high" if wifi_roamed else "medium"
+        summary = "WiFi roam/channel change likely caused the disconnect"
+        if wifi_signal_note:
+            summary = f"{summary} ({wifi_signal_note})"
+        return "wifi_roam", confidence, summary
+
+    if "isp_wan_issue" in patterns or (
+        wan_failures > 0 and gateway_failures == 0 and gateway_before.reachable
+    ):
+        pct = wan_failures / total * 100
+        return (
+            "isp",
+            "high" if pct >= 25 else "medium",
+            f"Gateway stayed reachable while WAN failed ({wan_failures}/{total} samples)",
+        )
+
+    if "gateway_issue" in patterns or (
+        gateway_failures > 0 and wan_failures > 0 and link_failures == 0
+    ):
+        recovered = "recovered" if gateway_after.reachable else "still unreachable"
+        return (
+            "gateway_reboot",
+            "medium",
+            f"Gateway and WAN dropped together while link stayed up; gateway {recovered}",
+        )
+
+    if "full_outage" in patterns and gateway_failures > 0 and wan_failures > 0:
+        return (
+            "gateway_reboot",
+            "medium",
+            "Gateway and WAN dropped together during the timeout burst",
+        )
+
+    if report.drops:
+        return (
+            "inconclusive",
+            "low",
+            f"Drop captured, but pattern is unclear ({report.verdict})",
+        )
+
+    return (
+        "inconclusive",
+        "low",
+        "Timeout burst ended before rapid polling caught a clear drop pattern",
+    )
+
+
+def run_drop_forensics(
+    gateway: str,
+    wan_target: str = "8.8.8.8",
+    timeout_streak: int = 0,
+    duration_seconds: int = 30,
+    poll_interval: float = 1.0,
+    stop_check=None,
+) -> DropForensicsEpisode:
+    """Run a short automatic capture after a scheduler timeout burst."""
+    timestamp = datetime.now()
+    wifi_before = capture_wifi_snapshot()
+    gateway_before = capture_gateway_snapshot(gateway)
+
+    report = run_drop_analysis(
+        gateway=gateway,
+        wan_target=wan_target,
+        duration_seconds=duration_seconds,
+        poll_interval=poll_interval,
+        stop_check=stop_check,
+    )
+
+    gateway_after = capture_gateway_snapshot(gateway)
+    wifi_after = capture_wifi_snapshot()
+    cause, confidence, summary = classify_drop_forensics(
+        report, wifi_before, wifi_after, gateway_before, gateway_after
+    )
+
+    return DropForensicsEpisode(
+        timestamp=timestamp,
+        trigger="timeout_burst",
+        timeout_streak=timeout_streak,
+        gateway_ip=gateway,
+        wan_target=wan_target,
+        report=report,
+        wifi_before=wifi_before,
+        wifi_after=wifi_after,
+        gateway_before=gateway_before,
+        gateway_after=gateway_after,
+        cause=cause,
+        confidence=confidence,
+        summary=summary,
+    )
+
+
+def drop_forensics_to_json(episode: DropForensicsEpisode) -> str:
+    """Serialize a forensic episode for HistoryStore persistence."""
+    return _json_dumps_dataclass(episode)
+
+
+def _json_dumps_dataclass(obj) -> str:
+    def _default(value):
+        if isinstance(value, datetime):
+            return value.isoformat()
+        raise TypeError(f"Object of type {type(value)} is not JSON serializable")
+
+    return json.dumps(asdict(obj), default=_default)
 
 
 # ---------------------------------------------------------------------------

@@ -145,6 +145,7 @@ class MainWindow(QMainWindow):
         monitor.error_occurred.connect(self._on_error)
         monitor.cadence_changed.connect(self._on_cadence_changed)
         monitor.lag_attribution_ready.connect(self._on_lag_attribution)
+        monitor.drop_forensics_ready.connect(self._on_drop_forensics)
 
     def _on_cadence_changed(self, seconds: int):
         self._current_interval = seconds
@@ -181,6 +182,22 @@ class MainWindow(QMainWindow):
         self._dashboard.set_qos_offer_result(result.success, message[:180])
         self._status_bar.set_status_text(message[:60])
         self._pending_lag_qos_rule = None
+
+    def _on_drop_forensics(self, episode) -> None:
+        level = "ERROR" if episode.cause in ("gateway_reboot", "isp") else "WARN"
+        self._dashboard.events_panel.add(
+            episode.timestamp,
+            level,
+            "DROP",
+            episode.summary,
+        )
+        self._dashboard.alerts_panel.add_alert(
+            episode.timestamp,
+            "error" if level == "ERROR" else "warn",
+            episode.summary,
+        )
+        self._drop_tab.show_forensics_episode(episode)
+        self._status_bar.set_status_text(f"Drop forensics: {episode.cause}")
 
     def _on_observation(self, obs: Observation):
         self._dashboard.update_observation(obs)

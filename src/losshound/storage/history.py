@@ -72,6 +72,21 @@ CREATE INDEX IF NOT EXISTS idx_route_ts ON route_snapshots(timestamp);
 CREATE INDEX IF NOT EXISTS idx_bench_ts ON benchmark_snapshots(timestamp);
 CREATE INDEX IF NOT EXISTS idx_bench_label ON benchmark_snapshots(label);
 
+CREATE TABLE IF NOT EXISTS drop_forensics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    confidence TEXT,
+    gateway_ip TEXT,
+    wan_target TEXT,
+    timeout_streak INTEGER DEFAULT 0,
+    raw_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_drop_forensics_ts ON drop_forensics(timestamp);
+CREATE INDEX IF NOT EXISTS idx_drop_forensics_cause ON drop_forensics(cause);
+
 CREATE TABLE IF NOT EXISTS alerts (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp   TEXT NOT NULL,
@@ -194,6 +209,51 @@ class HistoryStore:
             ),
         )
         self._conn.commit()
+
+    def save_drop_forensics(self, episode) -> int:
+        """Persist an automatic disconnect-forensics episode."""
+        from losshound.core.drop_analyzer import drop_forensics_to_json
+
+        cursor = self._conn.execute(
+            """INSERT INTO drop_forensics
+               (timestamp, cause, summary, confidence, gateway_ip, wan_target,
+                timeout_streak, raw_json)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                episode.timestamp.isoformat(),
+                episode.cause,
+                episode.summary,
+                episode.confidence,
+                episode.gateway_ip,
+                episode.wan_target,
+                episode.timeout_streak,
+                drop_forensics_to_json(episode),
+            ),
+        )
+        self._conn.commit()
+        return cursor.lastrowid
+
+    def recent_drop_forensics(self, limit: int = 20) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT id, timestamp, cause, summary, confidence, gateway_ip,
+                      wan_target, timeout_streak, raw_json
+               FROM drop_forensics ORDER BY timestamp DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [
+            {
+                "id": r[0],
+                "timestamp": r[1],
+                "cause": r[2],
+                "summary": r[3],
+                "confidence": r[4],
+                "gateway_ip": r[5],
+                "wan_target": r[6],
+                "timeout_streak": r[7],
+                "raw": json.loads(r[8]) if r[8] else {},
+            }
+            for r in rows
+        ]
 
     def get_recent_observations(self, minutes: int = 10) -> list[Observation]:
         cutoff = (datetime.now() - timedelta(minutes=minutes)).isoformat()
@@ -319,7 +379,13 @@ class HistoryStore:
     def prune(self, retention_hours: int = 24) -> int:
         cutoff = (datetime.now() - timedelta(hours=retention_hours)).isoformat()
         total = 0
-        for table in ["observations", "diagnoses", "route_snapshots", "benchmark_snapshots"]:
+        for table in [
+            "observations",
+            "diagnoses",
+            "route_snapshots",
+            "benchmark_snapshots",
+            "drop_forensics",
+        ]:
             cursor = self._conn.execute(
                 f"DELETE FROM {table} WHERE timestamp <= ?", (cutoff,)
             )

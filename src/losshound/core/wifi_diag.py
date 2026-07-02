@@ -9,21 +9,33 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
+
+from losshound.core.subprocess_runner import run_subprocess_interruptible
 
 logger = logging.getLogger(__name__)
 
-_CREATE_NO_WINDOW: int = 0x08000000
+@dataclass
+class _CommandResult:
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
 
 
-def _run(cmd: str, timeout: float = 15) -> subprocess.CompletedProcess[str]:
+def _run(cmd: str, timeout: float = 15) -> _CommandResult:
     """Run a command with English locale and hidden window."""
-    return subprocess.run(
-        ["cmd", "/c", f"chcp 437 >nul && {cmd}"],
-        capture_output=True, text=True, timeout=timeout,
-        creationflags=_CREATE_NO_WINDOW,
-    )
+    try:
+        stdout, stderr, returncode = run_subprocess_interruptible(
+            ["cmd", "/c", f"chcp 437 >nul && {cmd}"],
+            timeout,
+        )
+        return _CommandResult(stdout=stdout, stderr=stderr, returncode=returncode)
+    except subprocess.TimeoutExpired:
+        return _CommandResult(
+            stderr=f"Command timed out after {timeout} seconds",
+            returncode=124,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +212,8 @@ def get_wifi_interface() -> Optional[WifiInterface]:
             band=_band_from_channel(channel),
             frequency_ghz=_freq_from_channel(channel),
         )
+    except InterruptedError:
+        raise
     except Exception as exc:
         logger.warning("Failed to get WiFi interface: %s", exc)
         return None
@@ -236,6 +250,8 @@ def scan_networks() -> list[WifiNetwork]:
             networks.append(_parse_network(current))
 
         return networks
+    except InterruptedError:
+        raise
     except Exception as exc:
         logger.warning("WiFi scan failed: %s", exc)
         return []
