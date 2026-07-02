@@ -5,6 +5,37 @@ All notable changes to Losshound are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Native ICMP pinger.** IPv4 targets are pinged through the Windows
+  `IcmpSendEcho` API (no admin needed) instead of spawning `ping.exe`: no
+  process per probe, no locale-dependent parsing, and sub-millisecond gateway
+  RTT/jitter resolution. Hostname targets still fall back to `ping.exe`.
+- **Adaptive monitoring cadence.** When a cycle sees loss or timeouts, sampling
+  densifies to every 5s with a lighter probe count to capture the burst shape,
+  then returns to the configured interval after 3 clean cycles. The status bar
+  shows the effective interval.
+- **Lag attribution ("blame the process").** On an RTT spike (2x the learned
+  healthy baseline) or loss, the monitor samples interface throughput
+  (`GetIfTable`) and active connections per process, then reports a verdict in
+  the dashboard: local saturation (naming the likely app), external (ISP or
+  route), or inconclusive. Saturation is judged against the line capacity
+  measured by the load benchmark when available.
+
+### Fixed
+- **A stuck DNS lookup no longer fails checks for other hostnames.** The
+  resolver in-flight guard is now per hostname; previously one hung lookup made
+  every other hostname report failure, which could trigger false "DNS issue"
+  diagnoses.
+- **Load benchmark actually saturates the line again.** The download mirror
+  list had rotted (tele2/hetzner gone) and 1 MB files caused reconnect churn,
+  which produced misleadingly good bufferbloat grades. Replaced with large
+  files on live CDNs; download threads also stop faster after the test window.
+- **Cleaner shutdown windows.** The monitor thread's stop timeout now covers
+  the route-check and attribution threads' own stop waits, avoiding hard
+  terminations mid-write.
+
 ## [0.1.1] - 2026-06-29
 
 Reliability release: the monitor no longer stalls, worker threads shut down

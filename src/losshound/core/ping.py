@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import statistics
@@ -7,6 +8,7 @@ import subprocess
 from datetime import datetime
 from typing import Optional
 
+from losshound.core import icmp_ping
 from losshound.core.models import PingResult
 from losshound.core.subprocess_runner import run_subprocess_interruptible
 from losshound.core.validation import validate_target
@@ -14,10 +16,18 @@ from losshound.core.validation import validate_target
 logger = logging.getLogger(__name__)
 
 
+def _is_ipv4_literal(target: str) -> bool:
+    try:
+        ipaddress.IPv4Address(target)
+        return True
+    except ValueError:
+        return False
+
+
 def ping(target: str, count: int = 4, timeout_ms: int = 2000) -> PingResult:
-    """Run a subprocess ping and parse the results."""
+    """Ping a target: native ICMP for IPv4 literals, subprocess fallback."""
     now = datetime.now()
-    
+
     if not validate_target(target):
         logger.warning("Invalid ping target: %r", target)
         return PingResult(
@@ -26,6 +36,20 @@ def ping(target: str, count: int = 4, timeout_ms: int = 2000) -> PingResult:
             loss_percent=100.0, timed_out=False,
             error="Invalid target",
         )
+
+    # Preferred path: kernel ICMP API. No process spawn, no locale-dependent
+    # parsing. Hostnames still go through ping.exe, which resolves them.
+    if icmp_ping.available() and _is_ipv4_literal(target):
+        try:
+            rtts = icmp_ping.send_echoes(target, count=count, timeout_ms=timeout_ms)
+            return _build_ping_result(rtts, target, now, count)
+        except InterruptedError:
+            raise
+        except OSError as exc:
+            logger.debug(
+                "Native ICMP ping to %s failed (%s); falling back to ping.exe",
+                target, exc,
+            )
 
     args = ["ping", "-n", str(count), "-w", str(timeout_ms), target]
     process_timeout = (count * timeout_ms / 1000) + 10
@@ -72,10 +96,17 @@ def _parse_ping_output(
             if match:
                 rtts.append(float(match.group(1)))
 
+    return _build_ping_result(rtts, target, timestamp, count)
+
+
+def _build_ping_result(
+    rtts: list[float], target: str, timestamp: datetime, count: int
+) -> PingResult:
+    """Aggregate per-probe RTTs into a PingResult (shared by both ping paths)."""
     received = min(count, len(rtts))
     loss_pct = ((count - received) / count * 100.0) if count > 0 else 100.0
     loss_pct = max(0.0, min(100.0, loss_pct))
-    
+
     rtt_min: Optional[float] = None
     rtt_avg: Optional[float] = None
     rtt_max: Optional[float] = None

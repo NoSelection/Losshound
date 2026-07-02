@@ -107,7 +107,9 @@ class MainWindow(QMainWindow):
         self._status_bar.set_threads(1)
         self._status_bar.set_monitoring(True)
 
-        # Countdown timer
+        # Countdown timer. _current_interval tracks the monitor's effective
+        # cadence, which densifies during instability (see scheduler).
+        self._current_interval = config.ping_interval_seconds
         self._seconds_until_next = config.ping_interval_seconds
         self._countdown_timer = QTimer(self)
         self._countdown_timer.timeout.connect(self._tick_countdown)
@@ -137,6 +139,24 @@ class MainWindow(QMainWindow):
         monitor.observation_ready.connect(self._on_observation)
         monitor.diagnosis_ready.connect(self._on_diagnosis)
         monitor.error_occurred.connect(self._on_error)
+        monitor.cadence_changed.connect(self._on_cadence_changed)
+        monitor.lag_attribution_ready.connect(self._on_lag_attribution)
+
+    def _on_cadence_changed(self, seconds: int):
+        self._current_interval = seconds
+        self._seconds_until_next = min(self._seconds_until_next, seconds)
+        self._status_bar.set_interval(seconds)
+
+    def _on_lag_attribution(self, attribution):
+        level = "ERROR" if attribution.verdict == "local_saturation" else "WARN"
+        self._dashboard.events_panel.add(
+            attribution.timestamp, level, "LAG", attribution.summary
+        )
+        self._dashboard.alerts_panel.add_alert(
+            attribution.timestamp,
+            "error" if level == "ERROR" else "warn",
+            attribution.summary,
+        )
 
     def _on_observation(self, obs: Observation):
         self._dashboard.update_observation(obs)
@@ -146,7 +166,7 @@ class MainWindow(QMainWindow):
         self._status_bar.set_status_text(
             f"Last check: {obs.timestamp.strftime('%H:%M:%S')}"
         )
-        self._seconds_until_next = self._config.ping_interval_seconds
+        self._seconds_until_next = self._current_interval
 
     def _on_diagnosis(self, diag: Diagnosis):
         self._dashboard.update_diagnosis(diag)
@@ -166,6 +186,9 @@ class MainWindow(QMainWindow):
         self._alert_engine.update_config(config.alerts)
         self._notification_dispatcher.update_config(config.alerts)
         self._lan_tab.update_config(config)
+        # The worker's queued update_config re-emits cadence_changed with the
+        # effective interval, which corrects these if fast mode is active.
+        self._current_interval = config.ping_interval_seconds
         self._seconds_until_next = config.ping_interval_seconds
         self._status_bar.set_interval(config.ping_interval_seconds)
         self._status_bar.set_targets(len(getattr(config, "public_ping_targets", [])))

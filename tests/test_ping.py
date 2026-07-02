@@ -43,13 +43,15 @@ def test_parse_jitter():
 
 
 def test_ping_builds_arg_list():
+    """The subprocess fallback must call ping.exe directly, no shell wrapping."""
     from unittest.mock import patch
     from losshound.core.ping import ping
 
-    with patch("losshound.core.ping.run_subprocess_interruptible") as mock_run:
+    with patch("losshound.core.ping.run_subprocess_interruptible") as mock_run, \
+         patch("losshound.core.icmp_ping.available", return_value=False):
         mock_run.return_value = ("time=12ms time=11ms time=13ms time=12ms", "", 0)
         ping("8.8.8.8", count=4, timeout_ms=2000)
-        
+
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         assert isinstance(args, list)
