@@ -36,11 +36,17 @@ _DATA_DIR = Path(
 ) / "Losshound"
 _LOAD_BENCH_FILE = _DATA_DIR / "load_benchmark_history.json"
 
-# Public files to download for load generation (small-ish, fast CDNs)
+# Public files to download for load generation. Large files sustain one
+# connection for the whole load window (small files cause reconnect churn
+# that throttles throughput). Cloudflare appears twice on purpose: each list
+# entry gets its own download thread, and speed.cloudflare.com is built for
+# parallel speed-test streams. (tele2/hetzner mirrors died — verified 2026-07.)
+# Note: speed.cloudflare.com rejects bytes >= 100000000 with a 403.
 _DOWNLOAD_URLS = [
-    "http://proof.ovh.net/files/1Mb.dat",
-    "http://speedtest.tele2.net/1MB.zip",
-    "http://ipv4.download.thinkbroadband.com/1MB.zip",
+    "https://speed.cloudflare.com/__down?bytes=90000000",
+    "https://speed.cloudflare.com/__down?bytes=90000000",
+    "http://proof.ovh.net/files/100Mb.dat",
+    "http://ipv4.download.thinkbroadband.com/50MB.zip",
 ]
 
 _PING_TARGET = "1.1.1.1"
@@ -209,7 +215,10 @@ def _download_file(url: str, result_holder: dict, stop_event: threading.Event):
         start = time.perf_counter()
         total_bytes = 0
 
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        # Short socket timeout so a download thread blocked in read() exits
+        # quickly once the benchmark ends, instead of eating bandwidth for
+        # seconds after the stop event is set.
+        with urllib.request.urlopen(req, timeout=5) as resp:
             while not stop_event.is_set():
                 chunk = resp.read(8192)
                 if not chunk:
@@ -232,6 +241,7 @@ def _generate_load(urls: list[str], duration: float, stop_event: threading.Event
     start = time.perf_counter()
     deadline = start + duration
     results: list[dict] = []
+    results_lock = threading.Lock()
 
     def download_loop(url: str) -> None:
         total_bytes = 0
@@ -248,11 +258,12 @@ def _generate_load(urls: list[str], duration: float, stop_event: threading.Event
             dl_dur = max(dl_result.get("duration", 0.001), 0.001)
             best_speed = max(best_speed, (bytes_read * 8) / (dl_dur * 1_000_000))
 
-        results.append({
-            "bytes": total_bytes,
-            "best_speed": best_speed,
-            "url": url,
-        })
+        with results_lock:
+            results.append({
+                "bytes": total_bytes,
+                "best_speed": best_speed,
+                "url": url,
+            })
 
     threads = [
         threading.Thread(
@@ -277,8 +288,10 @@ def _generate_load(urls: list[str], duration: float, stop_event: threading.Event
         thread.join(timeout=2)
 
     total_duration = time.perf_counter() - start
-    total_bytes = sum(result.get("bytes", 0) for result in results)
-    best = max(results, key=lambda result: result.get("best_speed", 0.0), default={})
+    with results_lock:
+        completed = list(results)
+    total_bytes = sum(result.get("bytes", 0) for result in completed)
+    best = max(completed, key=lambda result: result.get("best_speed", 0.0), default={})
     result_holder["total_bytes"] = total_bytes
     result_holder["total_duration"] = total_duration
     result_holder["best_speed"] = best.get("best_speed", 0.0)

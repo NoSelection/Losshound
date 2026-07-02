@@ -11,8 +11,10 @@ from losshound.core.models import DnsResult
 
 logger = logging.getLogger(__name__)
 
-_RESOLVER_LOCK = threading.Lock()
-_RESOLVER_IN_FLIGHT = False
+_PENDING_LOCK = threading.Lock()
+# Hostnames with a resolver thread still outstanding after a timeout. Tracked
+# per hostname so one stuck lookup can't fail checks for unrelated hostnames.
+_PENDING_HOSTNAMES: set[str] = set()
 
 
 def check_dns(hostname: str, timeout: float = 5.0) -> DnsResult:
@@ -22,19 +24,17 @@ def check_dns(hostname: str, timeout: float = 5.0) -> DnsResult:
     start = time.perf_counter()
     result_queue: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
 
-    global _RESOLVER_IN_FLIGHT
-    with _RESOLVER_LOCK:
-        if _RESOLVER_IN_FLIGHT:
+    with _PENDING_LOCK:
+        if hostname in _PENDING_HOSTNAMES:
             return DnsResult(
                 hostname=hostname,
                 timestamp=now,
                 resolved=False,
                 error="Previous DNS resolution still pending",
             )
-        _RESOLVER_IN_FLIGHT = True
+        _PENDING_HOSTNAMES.add(hostname)
 
     def _resolve():
-        global _RESOLVER_IN_FLIGHT
         try:
             result_queue.put((
                 True,
@@ -43,8 +43,8 @@ def check_dns(hostname: str, timeout: float = 5.0) -> DnsResult:
         except BaseException as exc:
             result_queue.put((False, exc))
         finally:
-            with _RESOLVER_LOCK:
-                _RESOLVER_IN_FLIGHT = False
+            with _PENDING_LOCK:
+                _PENDING_HOSTNAMES.discard(hostname)
 
     thread = threading.Thread(
         target=_resolve,
