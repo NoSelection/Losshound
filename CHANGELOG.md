@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-02
+
 ### Added
 - **Native ICMP pinger.** IPv4 targets are pinged through the Windows
   `IcmpSendEcho` API (no admin needed) instead of spawning `ping.exe`: no
@@ -35,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Cleaner shutdown windows.** The monitor thread's stop timeout now covers
   the route-check and attribution threads' own stop waits, avoiding hard
   terminations mid-write.
+- **Local saved-state hardening.** QoS rules and optimizer restore backups now
+  validate locally stored numeric/state fields before they can influence
+  elevated Windows networking commands.
 
 ## [0.1.1] - 2026-06-29
 
@@ -70,5 +75,6 @@ cleanly, and several actions that only *looked* like they worked now actually do
 
 Initial public release.
 
+[0.1.2]: https://github.com/NoSelection/Losshound/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/NoSelection/Losshound/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/NoSelection/Losshound/releases/tag/v0.1.0
