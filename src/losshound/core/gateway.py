@@ -10,7 +10,10 @@ logger = logging.getLogger(__name__)
 
 def detect_gateway() -> Optional[str]:
     """Detect the default gateway IP address on Windows."""
-    gw = _detect_via_ipconfig()
+    from losshound.core.windows_network import get_active_network_interface
+
+    active = get_active_network_interface()
+    gw = active.gateway if active else _detect_via_ipconfig()
     if gw:
         logger.info("Detected gateway: %s", gw)
     else:

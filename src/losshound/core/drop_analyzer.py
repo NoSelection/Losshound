@@ -18,6 +18,7 @@ monitoring; admin recommended for full event-log access.
 
 from __future__ import annotations
 
+import csv
 import json
 import logging
 import re
@@ -29,6 +30,7 @@ from typing import Optional
 
 from losshound.core.subprocess_runner import run_subprocess_interruptible
 from losshound.core.validation import validate_target
+from losshound.core.windows_network import get_active_network_interface
 
 logger = logging.getLogger(__name__)
 
@@ -209,39 +211,90 @@ def _quick_dns(hostname: str = "google.com") -> bool:
 # NIC link state
 # ---------------------------------------------------------------------------
 
+_CONNECTED_STATES = {
+    "connected",
+    "bağlı",
+    "verbunden",
+    "conectado",
+    "connecté",
+}
+_DISCONNECTED_STATES = {
+    "disconnected",
+    "bağlantısız",
+    "nicht verbunden",
+    "desconectado",
+    "déconnecté",
+}
+
+
+def _parse_interface_row(line: str) -> Optional[tuple[str, str, str]]:
+    """Parse a data row from ``netsh interface show interface``.
+
+    Netsh aligns its four columns with runs of whitespace, while the final
+    interface-name column may itself contain spaces.  Some localized state
+    labels also contain spaces, so prefer the aligned form and retain a
+    single-space fallback for compact test/legacy output.
+    """
+    columns = re.split(r"\s{2,}", line.strip(), maxsplit=3)
+    if len(columns) == 4:
+        _, state, interface_type, name = columns
+        return state.casefold().strip(), interface_type, name.strip()
+
+    parts = line.split(maxsplit=3)
+    if len(parts) == 4:
+        _, state, interface_type, name = parts
+        return state.casefold().strip(), interface_type, name.strip()
+    return None
+
 def _get_active_nic_info() -> tuple[str, bool, float]:
-    """Detect connection type, link state, and speed from netsh.
+    """Detect the active connection type, link state, and speed.
 
     Returns (connection_type, link_up, speed_mbps).
     """
+    # Prefer the interface that owns Windows' lowest-metric default route.
+    # This avoids selecting an unrelated connected virtual/secondary adapter,
+    # and its link speed belongs to that exact interface.
+    active = get_active_network_interface(timeout=3.0)
+    if active is not None:
+        name = active.interface_alias
+        is_ethernet = (
+            "wi-fi" not in name.lower()
+            and "wireless" not in name.lower()
+        )
+        conn_type = "ethernet" if is_ethernet else "wifi"
+        speed = active.link_speed_mbps if active.connected else 0.0
+        return conn_type, active.connected, speed
+
+    # Compatibility fallback for systems without the NetTCPIP PowerShell
+    # cmdlets (or where PowerShell execution is unavailable).
     try:
         proc = _run(
             ["netsh", "interface", "show", "interface"],
             timeout=10,
         )
-        # Check for connected interfaces
+        # Check for connected interfaces.  State matching must be exact:
+        # "connected" is a suffix of "disconnected" in English.
         for line in proc.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                state = parts[1].lower()
-                if any(x in state for x in ("connected", "bağlı", "verbunden", "conectado")):
-                    iface_type = parts[2].lower()  # "dedicated" (ethernet) or other
-                    name = " ".join(parts[3:])
-                    is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
-                    conn_type = "ethernet" if is_ethernet else "wifi"
-                    speed = _get_link_speed(name)
-                    return conn_type, True, speed
+            parsed = _parse_interface_row(line)
+            if parsed is None:
+                continue
+            state, _, name = parsed
+            if state in _CONNECTED_STATES:
+                is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
+                conn_type = "ethernet" if is_ethernet else "wifi"
+                speed = _get_link_speed(name)
+                return conn_type, True, speed
 
         # Check for disconnected interfaces
         for line in proc.stdout.splitlines():
-            parts = line.split()
-            if len(parts) >= 4:
-                state = parts[1].lower()
-                if any(x in state for x in ("disconnected", "bağlantısız", "nicht verbunden", "desconectado")):
-                    name = " ".join(parts[3:])
-                    is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
-                    conn_type = "ethernet" if is_ethernet else "wifi"
-                    return conn_type, False, 0.0
+            parsed = _parse_interface_row(line)
+            if parsed is None:
+                continue
+            state, _, name = parsed
+            if state in _DISCONNECTED_STATES:
+                is_ethernet = "wi-fi" not in name.lower() and "wireless" not in name.lower()
+                conn_type = "ethernet" if is_ethernet else "wifi"
+                return conn_type, False, 0.0
 
     except InterruptedError:
         raise
@@ -252,37 +305,37 @@ def _get_active_nic_info() -> tuple[str, bool, float]:
 
 
 def _get_link_speed(interface_name: str) -> float:
-    """Get the negotiated link speed for a network interface."""
+    """Get the negotiated link speed for the named network interface."""
     try:
         proc = _run(
-            ["netsh", "interface", "ipv4", "show", "subinterfaces"],
+            [
+                "wmic", "nic", "where", "NetEnabled=true", "get",
+                "NetConnectionID,Speed", "/format:csv",
+            ],
             timeout=10,
         )
-        for line in proc.stdout.splitlines():
-            if interface_name.lower() in line.lower():
-                break
-    except InterruptedError:
-        raise
-    except Exception:
-        pass
+        rows = csv.reader(line for line in proc.stdout.splitlines() if line.strip())
+        header = next(rows, None)
+        if header is None:
+            return 0.0
 
-    # Fallback: wmic
-    try:
-        proc = _run(
-            ["wmic", "nic", "where", "NetEnabled=true", "get", "Name,Speed", "/format:csv"],
-            timeout=10,
-        )
-        for line in proc.stdout.splitlines():
-            if not line.strip():
+        columns = {name.strip().casefold(): index for index, name in enumerate(header)}
+        connection_index = columns.get("netconnectionid")
+        speed_index = columns.get("speed")
+        if connection_index is None or speed_index is None:
+            return 0.0
+
+        expected = interface_name.casefold().strip()
+        for row in rows:
+            if max(connection_index, speed_index) >= len(row):
                 continue
-            # CSV format: Node,Name,Speed
-            parts = line.split(",")
-            if len(parts) >= 3:
-                try:
-                    speed_bps = int(parts[-1].strip())
-                    return speed_bps / 1_000_000  # Convert to Mbps
-                except ValueError:
-                    continue
+            if row[connection_index].casefold().strip() != expected:
+                continue
+            try:
+                speed_bps = int(row[speed_index].strip())
+            except ValueError:
+                return 0.0
+            return speed_bps / 1_000_000  # Convert to Mbps
     except InterruptedError:
         raise
     except Exception:

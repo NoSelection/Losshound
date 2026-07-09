@@ -24,6 +24,35 @@ def test_parse_tracert_incomplete():
     assert not snap.completed
 
 
+def test_responsive_last_hop_is_not_complete_unless_it_is_destination():
+    output = """
+Tracing route to 8.8.8.8 over a maximum of 2 hops
+
+  1     1 ms     1 ms     1 ms  192.168.1.1
+  2    10 ms    11 ms    10 ms  10.0.0.1
+
+Trace complete.
+"""
+    snap = _parse_tracert_output(output, "8.8.8.8", datetime.now())
+
+    assert snap.hops[-1].ip == "10.0.0.1"
+    assert not snap.completed
+
+
+def test_hostname_route_completes_at_resolved_header_destination():
+    output = """
+Tracing route to dns.google [8.8.8.8] over a maximum of 20 hops
+
+  1     1 ms     1 ms     1 ms  192.168.1.1
+  2    20 ms    19 ms    21 ms  8.8.8.8
+
+Trace complete.
+"""
+    snap = _parse_tracert_output(output, "dns.google", datetime.now())
+
+    assert snap.completed
+
+
 def test_parse_tracert_rtt():
     snap = _parse_tracert_output(TRACERT_OUTPUT, "8.8.8.8", datetime.now())
     hop1 = snap.hops[0]

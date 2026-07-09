@@ -3,20 +3,21 @@
 This is where the real optimization impact shows up.  Tests:
 
 1. **Latency under load** — Ping while simultaneously downloading.
-   Nagle, CTCP, ECN, and throttling changes are most visible here.
+   Congestion-control and traffic-shaping changes are most visible here.
 
 2. **Bufferbloat score** — How much latency increases under load vs idle.
    This is the #1 metric for gaming/VoIP quality.
 
 3. **Download throughput** — Raw download speed measurement.
 
-4. **Upload responsiveness** — Small packet send rate under congestion.
+4. **Small UDP responsiveness** — DNS-query response time and loss.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import statistics
@@ -90,7 +91,7 @@ class BufferbloatResult:
     loaded_latency_ms: float
     latency_increase_ms: float
     latency_increase_pct: float
-    grade: str  # A, B, C, D, F
+    grade: str  # A, B, C, D, F, or N/A when latency is unavailable
 
 
 @dataclass
@@ -105,8 +106,7 @@ class ThroughputResult:
 
 @dataclass
 class SmallPacketResult:
-    """Small packet responsiveness — measures how quickly tiny packets
-    get through under load (affected by Nagle's algorithm)."""
+    """Small UDP DNS-query responsiveness and loss."""
 
     avg_rtt_ms: float
     min_rtt_ms: float
@@ -306,13 +306,11 @@ def _small_packet_test(
     target: str = "1.1.1.1",
     port: int = 53,
     count: int = 50,
-    payload_size: int = 1,
 ) -> SmallPacketResult:
-    """Send tiny UDP packets and measure round-trip time.
+    """Send valid UDP DNS queries and measure response time and loss.
 
-    This directly tests Nagle's algorithm impact — with Nagle enabled,
-    small packets get delayed waiting for more data.  We send minimal
-    DNS queries (which are small packets) and time the response.
+    This is a general small-datagram responsiveness check; TCP stream
+    coalescing behavior is outside its scope.
     """
     from losshound.core.dns_bench import build_dns_query
     import random
@@ -325,8 +323,6 @@ def _small_packet_test(
         sent += 1
         query_id = random.randint(0, 0xFFFF)
         packet = build_dns_query("example.com", query_id)
-        # Trim to make it even smaller if payload_size < len(packet)
-        # Actually keep the valid DNS query so we get a response
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -391,6 +387,38 @@ def _grade_bufferbloat(increase_pct: float) -> str:
         return "F"
 
 
+def _summarize_latency(rtts: list[float], result_type):
+    """Build an idle/loaded latency result without inventing RTT samples."""
+    valid = [rtt for rtt in rtts if rtt >= 0 and math.isfinite(rtt)]
+    attempted = len(rtts)
+    loss_pct = (
+        ((attempted - len(valid)) / attempted) * 100.0
+        if attempted
+        else 100.0
+    )
+
+    if not valid:
+        return result_type(
+            avg_ms=float("inf"),
+            min_ms=float("inf"),
+            max_ms=float("inf"),
+            jitter_ms=float("inf"),
+            loss_pct=100.0,
+            samples=0,
+        )
+
+    return result_type(
+        avg_ms=statistics.mean(valid),
+        min_ms=min(valid),
+        max_ms=max(valid),
+        jitter_ms=statistics.mean(
+            [abs(valid[i + 1] - valid[i]) for i in range(len(valid) - 1)]
+        ) if len(valid) >= 2 else 0.0,
+        loss_pct=loss_pct,
+        samples=len(valid),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main benchmark
 # ---------------------------------------------------------------------------
@@ -421,21 +449,11 @@ def run_load_benchmark(
     _ping_continuous(_PING_TARGET, duration_seconds=12, results=idle_rtts,
                      stop_event=stop, interval=0.5)
 
-    valid_idle = [r for r in idle_rtts if r > 0]
-    if not valid_idle:
-        valid_idle = [999.0]
-
-    idle = IdleLatency(
-        avg_ms=statistics.mean(valid_idle),
-        min_ms=min(valid_idle),
-        max_ms=max(valid_idle),
-        jitter_ms=statistics.mean(
-            [abs(valid_idle[i+1] - valid_idle[i]) for i in range(len(valid_idle)-1)]
-        ) if len(valid_idle) >= 2 else 0.0,
-        loss_pct=((len(idle_rtts) - len(valid_idle)) / len(idle_rtts) * 100.0) if idle_rtts else 0.0,
-        samples=len(valid_idle),
-    )
-    _progress(f"  Idle latency: {idle.avg_ms:.1f}ms avg, {idle.jitter_ms:.1f}ms jitter")
+    idle = _summarize_latency(idle_rtts, IdleLatency)
+    if idle.samples:
+        _progress(f"  Idle latency: {idle.avg_ms:.1f}ms avg, {idle.jitter_ms:.1f}ms jitter")
+    else:
+        _progress("  Idle latency unavailable (100% packet loss)")
 
     # ── Step 2: Latency under load ────────────────────────────
     _progress("Step 2/4: Measuring latency under load (downloading)...")
@@ -471,26 +489,26 @@ def run_load_benchmark(
     if load_thread.is_alive():
         logger.warning("Load generator did not stop within cleanup window")
 
-    valid_loaded = [r for r in loaded_rtts if r > 0]
-    if not valid_loaded:
-        valid_loaded = [999.0]
-
-    loaded = LoadedLatency(
-        avg_ms=statistics.mean(valid_loaded),
-        min_ms=min(valid_loaded),
-        max_ms=max(valid_loaded),
-        jitter_ms=statistics.mean(
-            [abs(valid_loaded[i+1] - valid_loaded[i]) for i in range(len(valid_loaded)-1)]
-        ) if len(valid_loaded) >= 2 else 0.0,
-        loss_pct=((len(loaded_rtts) - len(valid_loaded)) / len(loaded_rtts) * 100.0) if loaded_rtts else 0.0,
-        samples=len(valid_loaded),
-    )
-    _progress(f"  Loaded latency: {loaded.avg_ms:.1f}ms avg, {loaded.jitter_ms:.1f}ms jitter")
+    loaded = _summarize_latency(loaded_rtts, LoadedLatency)
+    if loaded.samples:
+        _progress(f"  Loaded latency: {loaded.avg_ms:.1f}ms avg, {loaded.jitter_ms:.1f}ms jitter")
+    else:
+        _progress("  Loaded latency unavailable (100% packet loss)")
 
     # ── Step 3: Bufferbloat calculation ───────────────────────
-    latency_increase_ms = loaded.avg_ms - idle.avg_ms
-    latency_increase_pct = (latency_increase_ms / idle.avg_ms * 100.0) if idle.avg_ms > 0 else 0
-    grade = _grade_bufferbloat(latency_increase_pct)
+    latency_available = idle.samples > 0 and loaded.samples > 0
+    if latency_available:
+        latency_increase_ms = loaded.avg_ms - idle.avg_ms
+        latency_increase_pct = (
+            latency_increase_ms / idle.avg_ms * 100.0
+            if idle.avg_ms > 0
+            else float("inf")
+        )
+        grade = _grade_bufferbloat(latency_increase_pct)
+    else:
+        latency_increase_ms = float("inf")
+        latency_increase_pct = float("inf")
+        grade = "N/A"
 
     bufferbloat = BufferbloatResult(
         idle_latency_ms=idle.avg_ms,
@@ -499,7 +517,10 @@ def run_load_benchmark(
         latency_increase_pct=latency_increase_pct,
         grade=grade,
     )
-    _progress(f"  Bufferbloat grade: {grade} ({latency_increase_pct:.0f}% increase)")
+    if latency_available:
+        _progress(f"  Bufferbloat grade: {grade} ({latency_increase_pct:.0f}% increase)")
+    else:
+        _progress("  Bufferbloat grade unavailable (latency probes had no replies)")
 
     # ── Throughput ────────────────────────────────────────────
     total_bytes = dl_result.get("total_bytes", 0)
@@ -520,7 +541,10 @@ def run_load_benchmark(
     _progress("Step 3/4: Testing small packet responsiveness...")
 
     small = _small_packet_test(count=50)
-    _progress(f"  Small packet RTT: {small.avg_rtt_ms:.1f}ms avg")
+    if small.packets_received:
+        _progress(f"  Small packet RTT: {small.avg_rtt_ms:.1f}ms avg")
+    else:
+        _progress("  Small packet RTT unavailable (100% packet loss)")
 
     _progress("Step 4/4: Computing results...")
 
@@ -552,7 +576,10 @@ def compare_load_snapshots(
     """Compare two load benchmark snapshots."""
 
     def _delta(b: float | None, a: float | None):
-        if b is None or a is None or b == 0:
+        if (
+            b is None or a is None or b == 0
+            or not math.isfinite(b) or not math.isfinite(a)
+        ):
             return None, None
         diff = a - b
         pct = (diff / b * 100.0)
@@ -564,7 +591,12 @@ def compare_load_snapshots(
     small_d, small_p = _delta(before.small_packet.avg_rtt_ms, after.small_packet.avg_rtt_ms)
 
     bb_delta = None
-    if before.latency_increase_pct is not None and after.latency_increase_pct is not None:
+    if (
+        before.latency_increase_pct is not None
+        and after.latency_increase_pct is not None
+        and math.isfinite(before.latency_increase_pct)
+        and math.isfinite(after.latency_increase_pct)
+    ):
         bb_delta = after.latency_increase_pct - before.latency_increase_pct
 
     delta = LoadBenchmarkDelta(
@@ -632,6 +664,39 @@ def compare_load_snapshots(
 # Persistence
 # ---------------------------------------------------------------------------
 
+def _json_safe(value):
+    """Convert non-finite measurements to JSON ``null`` recursively."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _restore_unavailable_measurements(data: dict) -> None:
+    """Map persisted ``null`` measurements back to the in-memory sentinel."""
+    if data.get("latency_increase_pct") is None:
+        data["latency_increase_pct"] = float("inf")
+    fields_by_section = {
+        "idle": ("avg_ms", "min_ms", "max_ms", "jitter_ms"),
+        "loaded": ("avg_ms", "min_ms", "max_ms", "jitter_ms"),
+        "bufferbloat": (
+            "idle_latency_ms", "loaded_latency_ms",
+            "latency_increase_ms", "latency_increase_pct",
+        ),
+        "small_packet": ("avg_rtt_ms", "min_rtt_ms", "max_rtt_ms"),
+    }
+    for section, fields in fields_by_section.items():
+        values = data.get(section)
+        if not isinstance(values, dict):
+            continue
+        for field in fields:
+            if values.get(field) is None:
+                values[field] = float("inf")
+
+
 def save_load_snapshot(snapshot: LoadBenchmarkSnapshot) -> None:
     """Append a snapshot to the load benchmark history."""
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -643,11 +708,22 @@ def save_load_snapshot(snapshot: LoadBenchmarkSnapshot) -> None:
         except Exception:
             history = []
 
-    history.append(asdict(snapshot))
+    history.append(_json_safe(asdict(snapshot)))
     history = history[-20:]
 
-    with open(_LOAD_BENCH_FILE, "w", encoding="utf-8") as fh:
-        json.dump(history, fh, indent=2)
+    temp_path = _LOAD_BENCH_FILE.with_suffix(".json.tmp")
+    try:
+        with open(temp_path, "w", encoding="utf-8") as fh:
+            json.dump(history, fh, indent=2, allow_nan=False)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temp_path, _LOAD_BENCH_FILE)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not remove temporary benchmark history %s", temp_path)
 
 
 def load_load_snapshots() -> list[LoadBenchmarkSnapshot]:
@@ -659,6 +735,7 @@ def load_load_snapshots() -> list[LoadBenchmarkSnapshot]:
             history = json.load(fh)
         snapshots = []
         for data in history:
+            _restore_unavailable_measurements(data)
             data["idle"] = IdleLatency(**data["idle"])
             data["loaded"] = LoadedLatency(**data["loaded"])
             data["bufferbloat"] = BufferbloatResult(**data["bufferbloat"])
@@ -685,27 +762,38 @@ def get_latest_load_snapshot(label: str | None = None) -> LoadBenchmarkSnapshot 
 
 def format_load_snapshot(snap: LoadBenchmarkSnapshot) -> str:
     """Format a load benchmark for terminal display."""
+    def _latency_line(result) -> str:
+        if result.samples == 0 or not math.isfinite(result.avg_ms):
+            return (
+                f"    Unavailable  Loss: {result.loss_pct:.1f}%  "
+                f"({result.samples} samples)"
+            )
+        return (
+            f"    Avg: {result.avg_ms:.1f}ms  Min: {result.min_ms:.1f}ms  "
+            f"Max: {result.max_ms:.1f}ms  Jitter: {result.jitter_ms:.1f}ms  "
+            f"Loss: {result.loss_pct:.1f}%  ({result.samples} samples)"
+        )
+
     lines: list[str] = []
     lines.append(f"Load Benchmark: {snap.label} ({snap.timestamp[:19]})")
     lines.append("=" * 65)
 
     lines.append("")
     lines.append("  IDLE LATENCY (no load)")
-    lines.append(f"    Avg: {snap.idle.avg_ms:.1f}ms  Min: {snap.idle.min_ms:.1f}ms  "
-                 f"Max: {snap.idle.max_ms:.1f}ms  Jitter: {snap.idle.jitter_ms:.1f}ms  "
-                 f"Loss: {snap.idle.loss_pct:.1f}%  ({snap.idle.samples} samples)")
+    lines.append(_latency_line(snap.idle))
 
     lines.append("")
     lines.append("  LOADED LATENCY (while downloading)")
-    lines.append(f"    Avg: {snap.loaded.avg_ms:.1f}ms  Min: {snap.loaded.min_ms:.1f}ms  "
-                 f"Max: {snap.loaded.max_ms:.1f}ms  Jitter: {snap.loaded.jitter_ms:.1f}ms  "
-                 f"Loss: {snap.loaded.loss_pct:.1f}%  ({snap.loaded.samples} samples)")
+    lines.append(_latency_line(snap.loaded))
 
     lines.append("")
     bb = snap.bufferbloat
     lines.append(f"  BUFFERBLOAT — Grade: {bb.grade}")
-    lines.append(f"    Latency increase under load: +{bb.latency_increase_ms:.1f}ms "
-                 f"(+{bb.latency_increase_pct:.0f}%)")
+    if math.isfinite(bb.latency_increase_ms) and math.isfinite(bb.latency_increase_pct):
+        lines.append(f"    Latency increase under load: +{bb.latency_increase_ms:.1f}ms "
+                     f"(+{bb.latency_increase_pct:.0f}%)")
+    else:
+        lines.append("    Latency increase under load: Unavailable")
     lines.append(f"    {_bufferbloat_explanation(bb.grade)}")
 
     lines.append("")
@@ -716,9 +804,12 @@ def format_load_snapshot(snap: LoadBenchmarkSnapshot) -> str:
 
     lines.append("")
     sp = snap.small_packet
-    lines.append(f"  SMALL PACKET RESPONSIVENESS (Nagle impact)")
-    lines.append(f"    Avg RTT: {sp.avg_rtt_ms:.1f}ms  Min: {sp.min_rtt_ms:.1f}ms  "
-                 f"Max: {sp.max_rtt_ms:.1f}ms  Loss: {sp.loss_pct:.1f}%")
+    lines.append("  SMALL UDP DNS RESPONSIVENESS")
+    if sp.packets_received and math.isfinite(sp.avg_rtt_ms):
+        lines.append(f"    Avg RTT: {sp.avg_rtt_ms:.1f}ms  Min: {sp.min_rtt_ms:.1f}ms  "
+                     f"Max: {sp.max_rtt_ms:.1f}ms  Loss: {sp.loss_pct:.1f}%")
+    else:
+        lines.append(f"    Unavailable  Loss: {sp.loss_pct:.1f}%")
 
     return "\n".join(lines)
 
@@ -747,6 +838,16 @@ def format_load_comparison(report: LoadBenchmarkReport) -> str:
             tag = " BETTER" if (diff < 0) == lower_better else " WORSE"
         return f"{sign}{diff:.1f} ({sign}{pct:.0f}%){tag}" if pct else f"{sign}{diff:.1f}"
 
+    def _grade_change(before: str, after: str) -> str:
+        rank = {"A": 0, "B": 1, "C": 2, "D": 3, "F": 4}
+        if before not in rank or after not in rank:
+            return "UNAVAILABLE"
+        if rank[after] < rank[before]:
+            return "IMPROVED!"
+        if rank[after] == rank[before]:
+            return "SAME"
+        return "WORSE"
+
     lines.append("")
     lines.append(f"  {'Metric':<28} {'Before':<14} {'After':<14} {'Change'}")
     lines.append(f"  {'-'*28} {'-'*14} {'-'*14} {'-'*25}")
@@ -756,7 +857,7 @@ def format_load_comparison(report: LoadBenchmarkReport) -> str:
     lines.append(f"  {'Loaded Latency':<28} {_fmt(b.loaded.avg_ms):<14} {_fmt(a.loaded.avg_ms):<14} "
                  f"{_change(d.loaded_latency_delta_ms, d.loaded_latency_pct_change)}")
     lines.append(f"  {'Bufferbloat Grade':<28} {b.bufferbloat_grade:<14} {a.bufferbloat_grade:<14} "
-                 f"{'IMPROVED!' if a.bufferbloat_grade < b.bufferbloat_grade else ('SAME' if a.bufferbloat_grade == b.bufferbloat_grade else 'WORSE')}")
+                 f"{_grade_change(b.bufferbloat_grade, a.bufferbloat_grade)}")
     lines.append(f"  {'Latency Increase Under Load':<28} {_fmt(b.latency_increase_pct, '%'):<14} {_fmt(a.latency_increase_pct, '%'):<14} "
                  f"{_change(d.bufferbloat_increase_delta, None)}")
     lines.append(f"  {'Download Speed':<28} {_fmt(b.speed_mbps, ' Mbps'):<14} {_fmt(a.speed_mbps, ' Mbps'):<14} "
@@ -782,5 +883,6 @@ def _bufferbloat_explanation(grade: str) -> str:
         "C": "Fair. Noticeable lag spikes when downloading. Room for improvement.",
         "D": "Poor. Significant lag when network is busy. Gaming/VoIP will suffer.",
         "F": "Terrible. Your connection becomes nearly unusable under load.",
+        "N/A": "Unavailable because one or both latency phases received no replies.",
     }
     return explanations.get(grade, "")

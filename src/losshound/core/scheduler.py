@@ -13,7 +13,13 @@ from losshound.core.dns_checks import check_dns
 from losshound.core.drop_analyzer import DropForensicsEpisode, run_drop_forensics
 from losshound.core.gateway import detect_gateway
 from losshound.core.lag_attribution import LagAttribution, attribute_lag
-from losshound.core.models import Diagnosis, DnsResult, Observation, RouteSnapshot
+from losshound.core.models import (
+    Diagnosis,
+    DnsResult,
+    Observation,
+    PingResult,
+    RouteSnapshot,
+)
 from losshound.core.ping import ping
 from losshound.core.route_monitor import trace_route
 from losshound.storage.history import HistoryStore
@@ -27,6 +33,8 @@ logger = logging.getLogger(__name__)
 FAST_INTERVAL_SECONDS = 5
 FAST_PING_COUNT = 2
 RECOVERY_CYCLES = 3
+_FAST_CYCLE_SLACK_SECONDS = 0.25
+_FAST_DNS_BUDGET_SECONDS = 1.0
 
 # Lag attribution: a cycle whose average public RTT exceeds the healthy
 # baseline by both the factor and the absolute floor counts as a spike.
@@ -133,6 +141,31 @@ class RouteCheckThread(QThread):
                 self.error_occurred.emit(str(exc))
 
 
+class _PingProbeThread(QThread):
+    """Run one target's ping in an independently cancellable QThread."""
+
+    def __init__(self, target: str, count: int, timeout_ms: int, parent=None):
+        super().__init__(parent)
+        self.target = target
+        self.count = count
+        self.timeout_ms = timeout_ms
+        self.result: Optional[PingResult] = None
+        self.error: Optional[Exception] = None
+        self.interrupted = False
+
+    def run(self):
+        try:
+            self.result = ping(
+                self.target,
+                count=self.count,
+                timeout_ms=self.timeout_ms,
+            )
+        except (InterruptedError, KeyboardInterrupt):
+            self.interrupted = True
+        except Exception as exc:
+            self.error = exc
+
+
 class MonitorWorker(QObject):
     """Background worker that runs network tests on timers."""
 
@@ -159,6 +192,7 @@ class MonitorWorker(QObject):
         self._last_attribution_monotonic: Optional[float] = None
         self._drop_worker: Optional[DropForensicsThread] = None
         self._last_drop_forensics_monotonic: Optional[float] = None
+        self._probe_workers: list[_PingProbeThread] = []
 
     @Slot()
     def start_timers(self):
@@ -196,6 +230,7 @@ class MonitorWorker(QObject):
     @Slot()
     def stop(self):
         self._stopped = True
+        self._interrupt_probe_workers()
         if hasattr(self, "_ping_timer"):
             self._ping_timer.stop()
         if hasattr(self, "_route_timer"):
@@ -226,12 +261,18 @@ class MonitorWorker(QObject):
     def mark_stopped(self) -> None:
         """Thread-safe shutdown flag set before queued stop work runs."""
         self._stopped = True
+        self._interrupt_probe_workers()
         if self._route_worker and self._route_worker.isRunning():
             self._route_worker.requestInterruption()
         if self._attr_worker and self._attr_worker.isRunning():
             self._attr_worker.requestInterruption()
         if self._drop_worker and self._drop_worker.isRunning():
             self._drop_worker.requestInterruption()
+
+    def _interrupt_probe_workers(self) -> None:
+        for worker in tuple(self._probe_workers):
+            if worker.isRunning():
+                worker.requestInterruption()
 
     @Slot(object)
     def update_config(self, config: AppConfig):
@@ -424,6 +465,107 @@ class MonitorWorker(QObject):
         if worker is not None:
             worker.deleteLater()
 
+    @staticmethod
+    def _probe_timeout_result(target: str, count: int, error: str) -> PingResult:
+        return PingResult(
+            target=target,
+            timestamp=datetime.now(),
+            packets_sent=count,
+            packets_received=0,
+            loss_percent=100.0,
+            timed_out=True,
+            error=error,
+        )
+
+    def _monitor_interrupted(self) -> bool:
+        thread = QThread.currentThread()
+        return self._stopped or bool(thread and thread.isInterruptionRequested())
+
+    def _run_ping_probes(
+        self,
+        targets: list[str],
+        count: int,
+        timeout_ms: int,
+        deadline: Optional[float] = None,
+    ) -> list[PingResult]:
+        """Ping targets concurrently while preserving QThread cancellation.
+
+        A Python thread pool would lose the monitor QThread's interruption
+        contract.  Giving each target its own QThread lets both the native
+        ICMP and subprocess paths observe ``requestInterruption()``.
+        """
+        if not targets:
+            return []
+
+        effective_timeout_ms = max(1, timeout_ms)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return [
+                    self._probe_timeout_result(
+                        target, count, "Fast-cycle probe deadline reached"
+                    )
+                    for target in targets
+                ]
+            # A target may consume the timeout once per echo.  All targets run
+            # in parallel, so only divide the remaining wall-time by count.
+            deadline_timeout_ms = max(1, int((remaining * 1000) / max(1, count)))
+            effective_timeout_ms = min(effective_timeout_ms, deadline_timeout_ms)
+
+        workers = [
+            _PingProbeThread(target, count, effective_timeout_ms)
+            for target in targets
+        ]
+        self._probe_workers = workers
+        deadline_reached = False
+
+        try:
+            for worker in workers:
+                worker.start()
+
+            while any(worker.isRunning() for worker in workers):
+                if self._monitor_interrupted():
+                    raise InterruptedError(
+                        "Ping probes aborted due to monitor interruption request."
+                    )
+                if deadline is not None and time.monotonic() >= deadline:
+                    deadline_reached = True
+                    break
+                for worker in workers:
+                    if worker.isRunning():
+                        worker.wait(20)
+        finally:
+            # This is also the deadline cleanup path.  Never drop the final
+            # Python reference while a QThread is still running.
+            for worker in workers:
+                if worker.isRunning():
+                    worker.requestInterruption()
+            while any(worker.isRunning() for worker in workers):
+                for worker in workers:
+                    if worker.isRunning():
+                        worker.wait(25)
+            self._probe_workers = []
+
+        if self._monitor_interrupted():
+            raise InterruptedError(
+                "Ping probes aborted due to monitor interruption request."
+            )
+
+        results: list[PingResult] = []
+        for worker in workers:
+            if worker.error is not None:
+                raise worker.error
+            if worker.result is not None:
+                results.append(worker.result)
+                continue
+            message = (
+                "Fast-cycle probe deadline reached"
+                if deadline_reached
+                else "Ping probe interrupted"
+            )
+            results.append(self._probe_timeout_result(worker.target, count, message))
+        return results
+
     @Slot()
     def _run_ping_cycle(self):
         """Run gateway ping, public pings, and DNS checks."""
@@ -432,47 +574,80 @@ class MonitorWorker(QObject):
 
         try:
             now = datetime.now()
+            cycle_started = time.monotonic()
+            started_in_fast_mode = self._fast_mode
 
-            # Detect gateway
-            self._gateway_ip = detect_gateway()
+            # Gateway discovery may invoke Windows management commands.  A
+            # fast cycle already has the gateway from the cycle that detected
+            # loss, so reuse it instead of spending the five-second sampling
+            # budget rediscovering the same local route.
+            if not started_in_fast_mode or not self._gateway_ip:
+                self._gateway_ip = detect_gateway()
 
             # Lighter probe count while sampling densely, so fast cycles
             # finish well within the fast interval.
-            ping_count = FAST_PING_COUNT if self._fast_mode else self._config.ping_count
+            ping_count = (
+                FAST_PING_COUNT
+                if started_in_fast_mode
+                else self._config.ping_count
+            )
 
-            # Gateway ping
+            dns_due = self._dns_due()
+            cycle_deadline: Optional[float] = None
+            probe_deadline: Optional[float] = None
+            if started_in_fast_mode:
+                cycle_deadline = (
+                    cycle_started
+                    + FAST_INTERVAL_SECONDS
+                    - _FAST_CYCLE_SLACK_SECONDS
+                )
+                probe_deadline = cycle_deadline
+                if dns_due and self._config.dns_test_hostnames:
+                    probe_deadline -= _FAST_DNS_BUDGET_SECONDS
+
+            public_targets = list(self._config.public_ping_targets)
+            targets = ([self._gateway_ip] if self._gateway_ip else []) + public_targets
+            probe_results = self._run_ping_probes(
+                targets,
+                count=ping_count,
+                timeout_ms=self._config.ping_timeout_ms,
+                deadline=probe_deadline,
+            )
+
+            result_index = 0
             gw_ping = None
             if self._gateway_ip:
-                gw_ping = ping(
-                    self._gateway_ip,
-                    count=ping_count,
-                    timeout_ms=self._config.ping_timeout_ms,
-                )
-
-            # Public IP pings
-            pub_pings = []
-            for target in self._config.public_ping_targets:
-                if self._stopped or QThread.currentThread().isInterruptionRequested():
-                    return
-                result = ping(
-                    target,
-                    count=ping_count,
-                    timeout_ms=self._config.ping_timeout_ms,
-                )
-                pub_pings.append(result)
+                gw_ping = probe_results[0]
+                result_index = 1
+            pub_pings = probe_results[result_index:]
 
             self._update_cadence(gw_ping, pub_pings)
             self._maybe_attribute_lag(gw_ping, pub_pings)
 
             # DNS checks
             dns_results: list[DnsResult] = []
-            if self._dns_due():
-                for hostname in self._config.dns_test_hostnames:
-                    if self._stopped or QThread.currentThread().isInterruptionRequested():
-                        return
-                    result = check_dns(hostname)
+            if dns_due:
+                hostnames = list(self._config.dns_test_hostnames)
+                for index, hostname in enumerate(hostnames):
+                    if self._monitor_interrupted():
+                        raise InterruptedError(
+                            "DNS checks aborted due to monitor interruption request."
+                        )
+
+                    if cycle_deadline is None:
+                        result = check_dns(hostname)
+                    else:
+                        remaining = cycle_deadline - time.monotonic()
+                        if remaining <= 0:
+                            # No measurement is better than recording a
+                            # deadline skip as a false DNS failure.
+                            break
+                        remaining_hosts = len(hostnames) - index
+                        timeout = max(0.001, remaining / remaining_hosts)
+                        result = check_dns(hostname, timeout=timeout)
                     dns_results.append(result)
-                self._last_dns_check_monotonic = time.monotonic()
+                if dns_results or not hostnames:
+                    self._last_dns_check_monotonic = time.monotonic()
 
             # Build observation
             obs = Observation(
