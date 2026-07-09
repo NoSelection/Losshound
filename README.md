@@ -78,6 +78,25 @@ pip install -e .
 python -m losshound
 ```
 
+### `run_as_admin.bat` (source checkout only)
+
+The batch launcher starts the source version of Losshound with Windows
+Administrator privileges. It activates the repository's `venv` when present,
+requests elevation through the standard UAC prompt, and then runs
+`python -m losshound` from the project directory.
+
+1. Complete the **From source** installation above first.
+2. Inspect `run_as_admin.bat` before running it, as you should with any script
+   that requests Administrator access.
+3. Double-click the file and approve the Windows UAC prompt, or launch a
+   specific command from a terminal, such as `run_as_admin.bat restore`.
+
+Normal diagnostics do not require elevation. Use this launcher only when you
+intend to apply or restore Optimizer, QoS, or firewall changes. If you downloaded
+`Losshound.exe` instead, right-click that executable and choose **Run as
+administrator** when one of those actions requires it; the batch file is not
+needed.
+
 ### Requirements
 
 - Python 3.10+
