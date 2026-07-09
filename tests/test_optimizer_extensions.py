@@ -3,7 +3,13 @@ import unittest
 from unittest.mock import MagicMock, patch
 import winreg
 
-from losshound.core.optimizer import NetworkOptimizer, BackupData, TcpSettings, AdapterBackup
+from losshound.core.optimizer import (
+    AdapterBackup,
+    BackupData,
+    DnsState,
+    NetworkOptimizer,
+    TcpSettings,
+)
 from losshound.core.models import PingResult
 
 class TestOptimizerExtensions(unittest.TestCase):
@@ -112,30 +118,36 @@ class TestOptimizerExtensions(unittest.TestCase):
     @patch("losshound.core.optimizer.NetworkOptimizer._save_backup")
     @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_settings")
-    @patch("losshound.core.optimizer.NetworkOptimizer.get_current_dns")
+    @patch("losshound.core.optimizer.NetworkOptimizer._get_dns_state")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_current_mtu")
-    @patch("losshound.core.optimizer.NetworkOptimizer.get_network_throttling_index")
+    @patch("losshound.core.optimizer._read_registry_dword_snapshot")
     @patch("losshound.core.optimizer.NetworkOptimizer._backup_adapter_settings")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_heuristics")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_system_responsiveness")
     @patch("winreg.OpenKey")
     @patch("winreg.QueryValueEx")
     @patch("winreg.EnumKey")
-    def test_backup_and_load(self, mock_enum, mock_query, mock_open_key, mock_get_resp, mock_get_heuristics, mock_backup_adapter, mock_get_throttling, mock_get_mtu, mock_get_dns, mock_get_tcp, mock_check_admin, mock_save):
+    def test_backup_and_load(self, mock_enum, mock_query, mock_open_key, mock_get_resp, mock_get_heuristics, mock_backup_adapter, mock_registry_snapshot, mock_get_mtu, mock_get_dns_state, mock_get_tcp, mock_check_admin, mock_save):
         mock_check_admin.return_value = True
         mock_get_tcp.return_value = TcpSettings()
-        mock_get_dns.return_value = ("1.1.1.1", "8.8.8.8")
+        mock_get_dns_state.return_value = DnsState(
+            "Ethernet", ("1.1.1.1", "8.8.8.8"), False, True,
+        )
         mock_get_mtu.return_value = 1500
-        mock_get_throttling.return_value = 10
+        mock_registry_snapshot.side_effect = [
+            (True, 10),    # NetworkThrottlingIndex
+            (True, 10),    # SystemResponsiveness
+            (True, 1),     # TcpAckFrequency
+            (True, 1),     # TCPNoDelay
+            (True, 0),     # TcpDelAckTicks
+            (True, 1024),  # FastSendDatagramThreshold
+        ]
         mock_backup_adapter.return_value = AdapterBackup("Ethernet", True, True, False, False, "0")
         mock_get_heuristics.return_value = "disabled"
         mock_get_resp.return_value = 10
         mock_enum.side_effect = ["mock-guid-123", OSError()]
         mock_query.side_effect = [
             (["192.168.1.1"], winreg.REG_SZ),  # DhcpDefaultGateway
-            (1, winreg.REG_DWORD),             # TCPNoDelay
-            (0, winreg.REG_DWORD),             # TcpDelAckTicks
-            (1024, winreg.REG_DWORD),          # FastSendDatagramThreshold
         ]
 
         opt = NetworkOptimizer()
@@ -145,6 +157,9 @@ class TestOptimizerExtensions(unittest.TestCase):
         self.assertEqual(backup.system_responsiveness, 10)
         self.assertEqual(backup.tcp_del_ack_ticks, 0)
         self.assertEqual(backup.fast_send_datagram_threshold, 1024)
+        self.assertEqual(backup.dns_adapter_name, "Ethernet")
+        self.assertFalse(backup.dns_automatic)
+        self.assertEqual(backup.dns_server_list, ("1.1.1.1", "8.8.8.8"))
         self.assertEqual(backup.adapter.eee_enabled, "0")
 
     @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
@@ -258,30 +273,32 @@ class TestOptimizerExtensions(unittest.TestCase):
 
     @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_settings")
-    @patch("losshound.core.optimizer.NetworkOptimizer.get_current_dns")
+    @patch("losshound.core.optimizer.NetworkOptimizer._get_dns_state")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_current_mtu")
-    @patch("losshound.core.optimizer.NetworkOptimizer.get_network_throttling_index")
+    @patch("losshound.core.optimizer._read_registry_dword_snapshot")
     @patch("losshound.core.optimizer.NetworkOptimizer._backup_adapter_settings")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_tcp_heuristics")
     @patch("losshound.core.optimizer.NetworkOptimizer.get_system_responsiveness")
     @patch("winreg.OpenKey")
     @patch("winreg.QueryValueEx")
     @patch("winreg.EnumKey")
-    def test_optimize_twice_preserves_backup(self, mock_enum, mock_query, mock_open_key, mock_get_resp, mock_get_heuristics, mock_backup_adapter, mock_get_throttling, mock_get_mtu, mock_get_dns, mock_get_tcp, mock_check_admin):
+    def test_optimize_twice_preserves_backup(self, mock_enum, mock_query, mock_open_key, mock_get_resp, mock_get_heuristics, mock_backup_adapter, mock_registry_snapshot, mock_get_mtu, mock_get_dns_state, mock_get_tcp, mock_check_admin):
         mock_check_admin.return_value = True
         mock_get_tcp.return_value = TcpSettings(auto_tuning_level="normal")
-        mock_get_dns.return_value = ("1.1.1.1", "8.8.8.8")
+        mock_get_dns_state.return_value = DnsState(
+            "Ethernet", ("1.1.1.1", "8.8.8.8"), False, True,
+        )
         mock_get_mtu.return_value = 1500
-        mock_get_throttling.return_value = 10
+        mock_registry_snapshot.side_effect = [
+            (True, 10), (True, 10), (True, 1),
+            (True, 1), (True, 0), (True, 1024),
+        ]
         mock_backup_adapter.return_value = AdapterBackup("Ethernet", True, True, False, False, "0")
         mock_get_heuristics.return_value = "disabled"
         mock_get_resp.return_value = 10
         mock_enum.side_effect = ["mock-guid-123", OSError()]
         mock_query.side_effect = [
             (["192.168.1.1"], winreg.REG_SZ),  # DhcpDefaultGateway
-            (1, winreg.REG_DWORD),             # TCPNoDelay
-            (0, winreg.REG_DWORD),             # TcpDelAckTicks
-            (1024, winreg.REG_DWORD),          # FastSendDatagramThreshold
         ]
 
         opt = NetworkOptimizer()
@@ -295,13 +312,15 @@ class TestOptimizerExtensions(unittest.TestCase):
         self.assertEqual(backup2.tcp_settings.auto_tuning_level, "normal")
 
     @patch("losshound.core.optimizer.NetworkOptimizer.check_admin")
-    @patch("losshound.core.optimizer.NetworkOptimizer.get_current_dns")
+    @patch("losshound.core.optimizer.NetworkOptimizer._get_dns_state")
     @patch("losshound.core.optimizer.NetworkOptimizer._active_adapter_name")
     @patch("losshound.core.dns_bench.query_dns_server")
     @patch("losshound.core.optimizer._run")
-    def test_dns_apply_dead_resolver_aborts(self, mock_run, mock_query, mock_adapter, mock_get_dns, mock_check_admin):
+    def test_dns_apply_dead_resolver_aborts(self, mock_run, mock_query, mock_adapter, mock_get_dns_state, mock_check_admin):
         mock_check_admin.return_value = True
-        mock_get_dns.return_value = ("1.1.1.1", "8.8.8.8")
+        mock_get_dns_state.return_value = DnsState(
+            "Ethernet", ("1.1.1.1", "8.8.8.8"), False, True,
+        )
         mock_adapter.return_value = "Ethernet"
         
         # Simulating that query_dns_server returns None (fails UDP check for primary)
@@ -351,7 +370,11 @@ class TestOptimizerExtensions(unittest.TestCase):
             needs_admin=True, error="Registry write failed"
         )
 
-        results = opt.restore_backup()
+        with patch(
+            "losshound.core.windows_network.get_active_network_interface",
+            return_value=None,
+        ):
+            results = opt.restore_backup()
 
         failures = [r for r in results if not r.success and r.status != "Unsupported"]
         self.assertTrue(len(failures) > 0)

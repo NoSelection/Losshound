@@ -28,6 +28,17 @@ def test_skips_when_not_admin():
     assert run_mock.call_count == 0
 
 
+def test_source_checkout_never_scopes_rule_to_python_exe():
+    with patch.object(firewall, "_is_running_as_admin", return_value=True), \
+         patch.object(firewall.sys, "platform", "win32"), \
+         patch.object(firewall.sys, "frozen", False, create=True), \
+         patch("subprocess.run") as run_mock:
+        result = firewall.ensure_lan_discovery_firewall_rules()
+
+    assert result is False
+    run_mock.assert_not_called()
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="firewall logic only runs on Windows")
 def test_skips_when_not_windows():
     with patch.object(firewall.sys, "platform", "linux"):

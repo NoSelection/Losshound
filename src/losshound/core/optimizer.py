@@ -12,6 +12,7 @@ them in the returned results so the caller can inform the user.
 from __future__ import annotations
 
 import ctypes
+import ipaddress
 import json
 import logging
 import os
@@ -105,6 +106,35 @@ class AdapterBackup:
     eee_enabled: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class DnsState:
+    """Adapter-scoped IPv4 DNS configuration.
+
+    ``automatic`` is ``True`` for DHCP-provided DNS, ``False`` for a static
+    server list, and ``None`` when Windows did not expose enough information
+    to distinguish the two safely.  ``detected`` is deliberately separate
+    from an empty server list because DHCP can legitimately have no lease yet.
+    """
+
+    adapter_name: str
+    servers: tuple[str, ...] = ()
+    automatic: Optional[bool] = None
+    detected: bool = False
+
+
+@dataclass(frozen=True)
+class _DnsWriteOutcome:
+    """Internal result from an adapter-scoped DNS write and read-back."""
+
+    success: bool
+    after: DnsState
+    commands: tuple[tuple[str, ...], ...]
+    command_exit_code: Optional[int]
+    error: Optional[str]
+    verification: str
+    changed: bool = False
+
+
 @dataclass
 class BackupData:
     """Complete settings snapshot for later restoration."""
@@ -121,6 +151,22 @@ class BackupData:
     system_responsiveness: Optional[int] = None
     fast_send_datagram_threshold: Optional[int] = None
     tcp_del_ack_ticks: Optional[int] = None
+    # DNS metadata added in v0.1.3.  The original two-item ``dns_servers``
+    # field remains for backwards compatibility with existing backup files.
+    dns_adapter_name: str = ""
+    dns_automatic: Optional[bool] = None
+    dns_server_list: tuple[str, ...] = ()
+    # Presence flags let restore distinguish "value absent" from "backup
+    # could not read it".  Guessing here can create registry overrides that
+    # did not exist before optimisation.
+    network_throttling_present: Optional[bool] = None
+    system_responsiveness_present: Optional[bool] = None
+    fast_send_datagram_threshold_present: Optional[bool] = None
+    nagle_tcp_ack_frequency: Optional[int] = None
+    nagle_tcp_ack_frequency_present: Optional[bool] = None
+    nagle_tcp_no_delay: Optional[int] = None
+    nagle_tcp_no_delay_present: Optional[bool] = None
+    tcp_del_ack_ticks_present: Optional[bool] = None
 
 
 @dataclass
@@ -166,6 +212,49 @@ def _coerce_registry_dword_value(value: object) -> str | None:
     if 0 <= number <= 0xFFFFFFFF:
         return str(number)
     return None
+
+
+def _is_ipv4_address(value: object) -> bool:
+    """Return whether *value* is a canonical, usable IPv4 address string."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return str(ipaddress.IPv4Address(value)) == value
+    except ipaddress.AddressValueError:
+        return False
+
+
+def _read_registry_dword_snapshot(
+    key_path: str,
+    value_name: str,
+) -> tuple[Optional[bool], Optional[int]]:
+    """Read a DWORD while preserving absent-vs-unreadable state.
+
+    Returns ``(True, value)`` when present, ``(False, None)`` when the value is
+    definitely absent, and ``(None, None)`` when it could not be read safely.
+    """
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE, key_path, 0, winreg.KEY_READ,
+        ) as key:
+            try:
+                value, value_type = winreg.QueryValueEx(key, value_name)
+            except FileNotFoundError:
+                return False, None
+    except FileNotFoundError:
+        return False, None
+    except OSError:
+        return None, None
+
+    if value_type != winreg.REG_DWORD or isinstance(value, bool):
+        return None, None
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None, None
+    if not 0 <= number <= 0xFFFFFFFF:
+        return None, None
+    return True, number
 
 
 def _parse_bool_setting(val: str) -> str:
@@ -246,7 +335,7 @@ def _normalize_value(raw: str) -> str:
         return "--"
     stripped = raw.strip()
     # Check for registry hex constants
-    if stripped.lower() in ("0xffffffff", "4294967295"):
+    if stripped.lower() in ("0xffffffff", "4294967295", "-1"):
         return "Disabled (0xFFFFFFFF)"
     # Exact lookup (case-insensitive)
     display = _VALUE_DISPLAY.get(stripped.lower())
@@ -256,6 +345,11 @@ def _normalize_value(raw: str) -> str:
     if " " not in stripped and stripped.isalpha():
         return stripped.capitalize()
     return stripped
+
+
+def _values_equal(left: str, right: str) -> bool:
+    """Compare raw settings after the same display normalisation users see."""
+    return _normalize_value(left).strip().casefold() == _normalize_value(right).strip().casefold()
 
 
 def _make_result(
@@ -278,8 +372,10 @@ def _make_result(
     Rules
     -----
     * Failed → ``after`` is cleared unless *verification* proves it changed.
-    * ``before == desired`` (or ``before == after``) and success → Verified.
-    * ``before == after`` and not success → No change.
+    * A supplied *desired* value must match the observed *after* value before
+      an operation can be successful.
+    * ``before == desired == after`` and success → Verified.
+    * ``before == after`` without a desired value → No change.
     * ``needs_admin`` and not success and "Administrator" in error → Skipped.
     * ``"unsupported"`` / ``"not found"`` in error → Unsupported.
     * *reboot_required* → Reboot required.
@@ -289,18 +385,32 @@ def _make_result(
     after_display = _normalize_value(after)
     desired_display = _normalize_value(desired) if desired else ""
 
+    # A successful process exit is not proof that Windows accepted a setting.
+    # Enforce read-back agreement centrally so callers cannot accidentally
+    # report an unchanged-but-wrong value as "Verified".  Comparing the
+    # display forms also handles equivalent values such as 0xFFFFFFFF and
+    # 4294967295.
+    if success and desired and not _values_equal(after, desired):
+        success = False
+        mismatch = (
+            f"Verification failed: expected {desired_display}, "
+            f"observed {after_display}"
+        )
+        error = error or mismatch
+        note = mismatch
+
     # --- Derive status ---
     status: str
     if success:
-        if desired and before.strip().lower() == desired.strip().lower():
+        if desired and _values_equal(before, desired) and _values_equal(after, desired):
             status = "Verified"
             after_display = before_display  # nothing actually changed
             if not note or "reboot" in note.lower():
                 note = f"Already optimized (set to {before_display})"
-        elif before.strip().lower() == after.strip().lower() and before.strip():
-            status = "Verified"
-            if not note or "reboot" in note.lower():
-                note = f"Already optimized (set to {before_display})"
+        elif not desired and _values_equal(before, after) and before.strip():
+            status = "No change"
+            if not note:
+                note = f"No change (still {before_display})"
         elif reboot_required:
             status = "Reboot required"
         else:
@@ -384,127 +494,337 @@ class NetworkOptimizer:
         """Benchmark DNS servers and return results sorted fastest-first."""
         return _dns_benchmark_all(servers=servers)
 
-    def get_current_dns(self) -> tuple[str, str]:
-        """Return ``(primary, secondary)`` DNS servers for the active adapter.
+    @staticmethod
+    def _dns_state_display(state: DnsState) -> str:
+        if not state.detected:
+            return "Unavailable"
+        if state.automatic is True:
+            mode = "Automatic (DHCP)"
+        elif state.automatic is False:
+            mode = "Static"
+        else:
+            mode = "Mode unknown"
+        servers = ", ".join(state.servers) if state.servers else "no IPv4 servers"
+        return f"{mode}: {servers}"
 
-        Falls back to ``("", "")`` if detection fails.
+    def _get_dns_state(self, adapter_name: str | None = None) -> DnsState:
+        """Read IPv4 DNS state for exactly one adapter.
+
+        PowerShell supplies locale-independent JSON and the registry-backed
+        DHCP/static mode.  The adapter-scoped ``netsh`` fallback intentionally
+        leaves the mode unknown when it cannot be established safely.
         """
+        requested_name = adapter_name or self._active_adapter_name()
+        adapter = _sanitize_adapter_name(requested_name)
+        if not adapter:
+            return DnsState(adapter_name="", detected=False)
+
+        ps_command = (
+            f"$adapter = Get-NetAdapter -Name '{adapter}' -ErrorAction Stop; "
+            "$servers = @(Get-DnsClientServerAddress "
+            "-InterfaceIndex $adapter.ifIndex -AddressFamily IPv4 "
+            "-ErrorAction Stop | Select-Object -ExpandProperty ServerAddresses); "
+            "$guid = ([guid]$adapter.InterfaceGuid).ToString('B'); "
+            "$path = 'HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\' + $guid; "
+            "$reg = Get-ItemProperty -LiteralPath $path -ErrorAction SilentlyContinue; "
+            "$automatic = if ($null -eq $reg) { $null } else { "
+            "[string]::IsNullOrWhiteSpace([string]$reg.NameServer) }; "
+            "[PSCustomObject]@{ AdapterName = $adapter.Name; Servers = $servers; "
+            "Automatic = $automatic } | ConvertTo-Json -Compress"
+        )
         try:
-            result = _run(
-                ["netsh", "interface", "ip", "show", "dnsservers"],
-            )
-            servers: list[str] = re.findall(
-                r"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})", result.stdout,
-            )
-            primary = servers[0] if len(servers) >= 1 else ""
-            secondary = servers[1] if len(servers) >= 2 else ""
-            return primary, secondary
+            result = _run(["powershell", "-NoProfile", "-Command", ps_command])
+            if result.returncode == 0 and result.stdout.strip():
+                data = json.loads(result.stdout)
+                if isinstance(data, dict):
+                    raw_servers = data.get("Servers", [])
+                    if isinstance(raw_servers, str):
+                        raw_servers = [raw_servers]
+                    servers = tuple(
+                        server for server in raw_servers
+                        if _is_ipv4_address(server)
+                    ) if isinstance(raw_servers, list) else ()
+                    automatic_raw = data.get("Automatic")
+                    automatic = automatic_raw if isinstance(automatic_raw, bool) else None
+                    actual_name = _sanitize_adapter_name(
+                        str(data.get("AdapterName") or adapter),
+                    )
+                    return DnsState(
+                        adapter_name=actual_name,
+                        servers=servers,
+                        automatic=automatic,
+                        detected=True,
+                    )
         except Exception as exc:
-            logger.warning("Failed to detect current DNS: %s", exc)
-            return "", ""
+            logger.debug("PowerShell DNS detection failed for %s: %s", adapter, exc)
+
+        try:
+            result = _run([
+                "netsh", "interface", "ipv4", "show", "dnsservers",
+                f"name={adapter}",
+            ])
+            output_lower = (result.stdout + result.stderr).lower()
+            if result.returncode != 0 or any(
+                marker in output_lower
+                for marker in ("not found", "no interface", "cannot find")
+            ):
+                return DnsState(adapter_name=adapter, detected=False)
+            servers = tuple(
+                address for address in re.findall(
+                    r"\b\d{1,3}(?:\.\d{1,3}){3}\b", result.stdout,
+                )
+                if _is_ipv4_address(address)
+            )
+            automatic: Optional[bool] = None
+            if "dhcp" in output_lower:
+                automatic = True
+            elif "static" in output_lower:
+                automatic = False
+            return DnsState(
+                adapter_name=adapter,
+                servers=servers,
+                automatic=automatic,
+                detected=True,
+            )
+        except Exception as exc:
+            logger.warning("Failed to detect DNS for adapter %s: %s", adapter, exc)
+            return DnsState(adapter_name=adapter, detected=False)
+
+    def get_current_dns(
+        self,
+        adapter_name: str | None = None,
+    ) -> tuple[str, str]:
+        """Return primary/secondary IPv4 DNS for one adapter.
+
+        When *adapter_name* is omitted, the active adapter is selected first.
+        No server from any other adapter is considered.
+        """
+        state = self._get_dns_state(adapter_name)
+        primary = state.servers[0] if state.servers else ""
+        secondary = state.servers[1] if len(state.servers) > 1 else ""
+        return primary, secondary
+
+    def _write_dns_state(self, desired: DnsState) -> _DnsWriteOutcome:
+        """Write and verify a complete DNS state on its named adapter."""
+        adapter = desired.adapter_name
+        if not adapter or _sanitize_adapter_name(adapter) != adapter:
+            return _DnsWriteOutcome(
+                success=False,
+                after=DnsState(adapter_name=adapter, detected=False),
+                commands=(), command_exit_code=None,
+                error="Unsafe or missing DNS adapter name",
+                verification="", changed=False,
+            )
+        if desired.automatic is None:
+            return _DnsWriteOutcome(
+                success=False,
+                after=DnsState(adapter_name=adapter, detected=False),
+                commands=(), command_exit_code=None,
+                error="DNS source mode is unknown; refusing an inexact write",
+                verification="", changed=False,
+            )
+        if len(desired.servers) > 16 or any(
+            not _is_ipv4_address(server) for server in desired.servers
+        ):
+            return _DnsWriteOutcome(
+                success=False,
+                after=DnsState(adapter_name=adapter, detected=False),
+                commands=(), command_exit_code=None,
+                error="Invalid backed-up DNS server list",
+                verification="", changed=False,
+            )
+
+        commands: list[list[str]] = []
+        if desired.automatic:
+            commands.append([
+                "netsh", "interface", "ipv4", "set", "dnsservers",
+                f"name={adapter}", "source=dhcp",
+            ])
+        else:
+            if not desired.servers:
+                return _DnsWriteOutcome(
+                    success=False,
+                    after=DnsState(adapter_name=adapter, detected=False),
+                    commands=(), command_exit_code=None,
+                    error="Static DNS backup contains no servers",
+                    verification="", changed=False,
+                )
+            commands.append([
+                "netsh", "interface", "ipv4", "set", "dnsservers",
+                f"name={adapter}", "source=static",
+                f"address={desired.servers[0]}", "register=primary", "validate=no",
+            ])
+            for index, server in enumerate(desired.servers[1:], start=2):
+                commands.append([
+                    "netsh", "interface", "ipv4", "add", "dnsservers",
+                    f"name={adapter}", f"address={server}",
+                    f"index={index}", "validate=no",
+                ])
+
+        error: Optional[str] = None
+        exit_code: Optional[int] = None
+        changed = False
+        for command in commands:
+            try:
+                proc = _run(command)
+                exit_code = proc.returncode
+                if proc.returncode != 0:
+                    detail = proc.stderr.strip() or proc.stdout.strip()
+                    error = detail or f"DNS command exited with code {proc.returncode}"
+                    break
+                changed = True
+            except Exception as exc:
+                error = str(exc)
+                break
+
+        after = self._get_dns_state(adapter)
+        verification = (
+            f"Post-apply DNS read on {adapter}: {self._dns_state_display(after)}"
+            if after.detected else ""
+        )
+        adapter_matches = (
+            after.detected
+            and after.adapter_name.casefold() == adapter.casefold()
+        )
+        if desired.automatic:
+            state_matches = adapter_matches and after.automatic is True
+        else:
+            state_matches = (
+                adapter_matches
+                and after.automatic is False
+                and after.servers == desired.servers
+            )
+        if error is None and not state_matches:
+            error = (
+                f"DNS verification failed for adapter {adapter}: expected "
+                f"{self._dns_state_display(desired)}, observed "
+                f"{self._dns_state_display(after)}"
+            )
+        return _DnsWriteOutcome(
+            success=error is None and state_matches,
+            after=after,
+            commands=tuple(tuple(command) for command in commands),
+            command_exit_code=exit_code,
+            error=error,
+            verification=verification,
+            changed=changed,
+        )
 
     def apply_dns(self, primary: str, secondary: str) -> OptimizeResult:
-        """Set DNS servers on the active network adapter (requires admin)."""
+        """Set and verify DNS on the active adapter (requires admin)."""
         name = "Set DNS servers"
-        cmd_primary_args = []
         if not self.check_admin():
             return _make_result(
-                name=name, success=False,
-                before="", after="",
-                needs_admin=True,
-                error="Administrator privileges required",
+                name=name, success=False, before="", after="",
+                needs_admin=True, error="Administrator privileges required",
             )
 
         from losshound.core.dns_bench import query_dns_server
         from losshound.core.validation import validate_target
 
-        before_primary, before_secondary = self.get_current_dns()
         adapter = self._active_adapter_name()
-        before_str = f"{before_primary}, {before_secondary}"
-        desired_str = f"{primary}, {secondary}"
+        before = self._get_dns_state(adapter)
+        before_str = self._dns_state_display(before)
+        desired_servers = (primary,) + ((secondary,) if secondary else ())
+        desired = DnsState(
+            adapter_name=adapter,
+            servers=desired_servers,
+            automatic=False,
+            detected=True,
+        )
+        desired_str = self._dns_state_display(desired)
 
-        # Target Validation Check
-        if not validate_target(primary):
+        if not before.detected or before.automatic is None:
             return _make_result(
-                name=name, success=False,
-                before=before_str, after="",
+                name=name, success=False, before=before_str, after="",
                 needs_admin=True,
-                error=f"Invalid primary DNS target: {primary!r}",
-            )
-        if secondary and not validate_target(secondary):
-            return _make_result(
-                name=name, success=False,
-                before=before_str, after="",
-                needs_admin=True,
-                error=f"Invalid secondary DNS target: {secondary!r}",
-            )
-
-        # Pre-test DNS servers before applying them to leave DNS untouched on failure
-        t_primary = query_dns_server(primary, "google.com", timeout=2.0)
-        if t_primary is None:
-            return _make_result(
-                name=name, success=False,
-                before=before_str, after="",
-                needs_admin=True,
-                error=f"DNS validation failed: primary server {primary} did not respond to UDP query",
-                desired=desired_str,
+                error=(
+                    "Could not capture the active adapter's DHCP/static DNS "
+                    "state; DNS was left unchanged"
+                ),
             )
 
-        if secondary:
-            t_secondary = query_dns_server(secondary, "google.com", timeout=2.0)
-            if t_secondary is None:
-                return _make_result(
-                    name=name, success=False,
-                    before=before_str, after="",
-                    needs_admin=True,
-                    error=f"DNS validation failed: secondary server {secondary} did not respond to UDP query",
-                    desired=desired_str,
+        # ``netsh`` accepts IP addresses here, not arbitrary validated hostnames.
+        if not validate_target(primary) or not _is_ipv4_address(primary):
+            return _make_result(
+                name=name, success=False, before=before_str, after="",
+                needs_admin=True, error=f"Invalid primary DNS target: {primary!r}",
+            )
+        if secondary and (
+            not validate_target(secondary) or not _is_ipv4_address(secondary)
+        ):
+            return _make_result(
+                name=name, success=False, before=before_str, after="",
+                needs_admin=True, error=f"Invalid secondary DNS target: {secondary!r}",
+            )
+
+        # Pre-test both resolvers before changing any system state.
+        if query_dns_server(primary, "google.com", timeout=2.0) is None:
+            return _make_result(
+                name=name, success=False, before=before_str, after="",
+                needs_admin=True,
+                error=(
+                    f"DNS validation failed: primary server {primary} did not "
+                    "respond to UDP query"
+                ),
+            )
+        if secondary and query_dns_server(
+            secondary, "google.com", timeout=2.0,
+        ) is None:
+            return _make_result(
+                name=name, success=False, before=before_str, after="",
+                needs_admin=True,
+                error=(
+                    f"DNS validation failed: secondary server {secondary} did "
+                    "not respond to UDP query"
+                ),
+            )
+
+        outcome = self._write_dns_state(desired)
+        final_after = outcome.after
+        error = outcome.error
+        note = (
+            f"DNS set and verified on {adapter}"
+            if outcome.success else "DNS change was not verified"
+        )
+        verification = outcome.verification
+        command_parts = [" ".join(command) for command in outcome.commands]
+
+        # A secondary-command failure otherwise leaves a half-applied static
+        # list.  Restore the exact captured DHCP/static state before returning.
+        if not outcome.success and outcome.changed:
+            rollback = self._write_dns_state(before)
+            command_parts.extend(
+                f"rollback: {' '.join(command)}" for command in rollback.commands
+            )
+            final_after = rollback.after
+            verification = "; ".join(
+                part for part in (
+                    outcome.verification,
+                    f"Rollback {rollback.verification}"
+                    if rollback.verification else "",
+                ) if part
+            )
+            if rollback.success:
+                note = "DNS change failed; original DNS state restored and verified"
+                error = f"{error or 'DNS change failed'}; rollback succeeded"
+            else:
+                note = "DNS change and automatic rollback both failed"
+                error = (
+                    f"{error or 'DNS change failed'}; rollback failed: "
+                    f"{rollback.error or 'verification unavailable'}"
                 )
 
-        cmd_primary_args = [
-            "netsh", "interface", "ip", "set", "dnsservers",
-            f"name={adapter}", "static", primary, "primary", "validate=no"
-        ]
-
-        try:
-            proc = _run(cmd_primary_args)
-            cmd_secondary_args = []
-            if secondary:
-                cmd_secondary_args = [
-                    "netsh", "interface", "ip", "add", "dnsservers",
-                    f"name={adapter}", secondary, "index=2", "validate=no"
-                ]
-                _run(cmd_secondary_args)
-
-            # Verify
-            after_primary, after_secondary = self.get_current_dns()
-            after_str = f"{after_primary}, {after_secondary}"
-            verified = after_primary == primary
-            verification = f"Verified DNS: {after_primary}, {after_secondary}"
-
-            cmd_str = " ".join(cmd_primary_args)
-            if cmd_secondary_args:
-                cmd_str += " && " + " ".join(cmd_secondary_args)
-
-            return _make_result(
-                name=name, success=verified,
-                before=before_str, after=after_str,
-                needs_admin=True,
-                command=cmd_str,
-                command_exit_code=proc.returncode,
-                verification=verification,
-                note=f"DNS set to {primary}" + (f", {secondary}" if secondary else "")
-                     if verified else f"DNS change failed; still {after_primary}",
-                desired=desired_str,
-            )
-        except Exception as exc:
-            logger.error("Failed to set DNS: %s", exc)
-            return _make_result(
-                name=name, success=False,
-                before=before_str, after="",
-                needs_admin=True, error=str(exc),
-                command=" ".join(cmd_primary_args),
-            )
+        return _make_result(
+            name=name, success=outcome.success,
+            before=before_str, after=self._dns_state_display(final_after),
+            desired=desired_str,
+            needs_admin=True, error=error,
+            command=" && ".join(command_parts),
+            command_exit_code=outcome.command_exit_code,
+            verification=verification,
+            note=note,
+        )
 
     # ------------------------------------------------------------------
     # TCP/IP stack
@@ -688,13 +1008,11 @@ class NetworkOptimizer:
         for label, command, before, desired, apply_note in tweaks:
             try:
                 proc = _run(command)
-                ok = proc.returncode == 0
-                error = proc.stderr.strip() if not ok else None
-                # Some commands succeed with non-zero return codes but write
-                # to stdout; treat empty stderr as success.
-                if not ok and not error:
-                    ok = True
-                    error = None
+                command_ok = proc.returncode == 0
+                error = None
+                if not command_ok:
+                    error = proc.stderr.strip() or proc.stdout.strip()
+                    error = error or f"Command exited with code {proc.returncode}"
 
                 # Verify by re-reading TCP settings
                 verified_settings = self.get_tcp_settings()
@@ -707,24 +1025,34 @@ class NetworkOptimizer:
                     "TCP timestamps": "timestamps",
                 }
                 field = field_map.get(label, "")
-                actual_after = getattr(verified_settings, field, desired) if field else desired
+                actual_after = (
+                    getattr(verified_settings, field, "unknown")
+                    if field else "unknown"
+                )
                 verification = f"Post-apply read: {actual_after}"
 
                 # Detect unsupported
                 out_lower = (proc.stdout + proc.stderr).lower()
                 if "not found" in out_lower or "not recognized" in out_lower:
                     error = error or proc.stdout.strip()
-                    ok = False
+                    command_ok = False
+
+                verified = command_ok and _values_equal(actual_after, desired)
+                if command_ok and not verified:
+                    error = (
+                        f"Post-apply verification failed: expected {desired}, "
+                        f"observed {actual_after}"
+                    )
 
                 results.append(_make_result(
-                    name=label, success=ok,
-                    before=before, after=actual_after if ok else before,
+                    name=label, success=verified,
+                    before=before, after=actual_after,
                     desired=desired,
                     needs_admin=True, error=error,
                     command=" ".join(command),
                     command_exit_code=proc.returncode,
                     verification=verification,
-                    note=apply_note if ok else "",
+                    note=apply_note if verified else "",
                 ))
             except Exception as exc:
                 logger.error("TCP tweak '%s' failed: %s", label, exc)
@@ -798,6 +1126,19 @@ class NetworkOptimizer:
 
     def _active_adapter_name(self) -> str:
         """Best-effort adapter name detection for use in netsh commands."""
+        # Prefer the shared structured route query.  It considers route and
+        # interface metrics together and never parses localized status text.
+        try:
+            from losshound.core.windows_network import (
+                get_active_network_interface,
+            )
+
+            active = get_active_network_interface()
+            if active and active.interface_alias:
+                return _sanitize_adapter_name(active.interface_alias)
+        except Exception as exc:
+            logger.debug("Structured active-adapter detection failed: %s", exc)
+
         try:
             result = _run(
                 [
@@ -1870,9 +2211,24 @@ class NetworkOptimizer:
                     logger.error("Failed to move corrupt backup file %s: %s", _BACKUP_FILE, exc)
 
         tcp = self.get_tcp_settings()
-        dns = self.get_current_dns()
+        dns_state = self._get_dns_state()
+        dns = (
+            dns_state.servers[0] if dns_state.servers else "",
+            dns_state.servers[1] if len(dns_state.servers) > 1 else "",
+        )
         mtu = self.get_current_mtu()
-        throttling = self.get_network_throttling_index()
+        multimedia_path = (
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
+            r"\SystemProfile"
+        )
+        throttling_present, throttling = _read_registry_dword_snapshot(
+            multimedia_path, "NetworkThrottlingIndex",
+        )
+        responsiveness_present, system_responsiveness = (
+            _read_registry_dword_snapshot(
+                multimedia_path, "SystemResponsiveness",
+            )
+        )
 
         # Check Nagle state and record the interface GUID
         nagle_disabled = False
@@ -1898,13 +2254,6 @@ class NetworkOptimizer:
                                     gw, _ = winreg.QueryValueEx(sub, val_name)
                                     if gw and any(g for g in gw if g):
                                         nagle_guid = guid
-                                        try:
-                                            nd, _ = winreg.QueryValueEx(
-                                                sub, "TCPNoDelay",
-                                            )
-                                            nagle_disabled = nd == 1
-                                        except OSError:
-                                            pass
                                         break
                                 except OSError:
                                     continue
@@ -1915,41 +2264,43 @@ class NetworkOptimizer:
         except OSError:
             pass
 
-        # Check TcpDelAckTicks state
-        tcp_del_ack_ticks: int | None = None
+        # Preserve exact presence and values for all Nagle-related overrides.
+        nagle_ack_present: Optional[bool] = None
+        nagle_ack: Optional[int] = None
+        nagle_no_delay_present: Optional[bool] = None
+        nagle_no_delay: Optional[int] = None
+        tcp_del_ack_ticks_present: Optional[bool] = None
+        tcp_del_ack_ticks: Optional[int] = None
         if nagle_guid:
             iface_path = f"{base_path}\\{nagle_guid}"
-            try:
-                with winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
-                    winreg.KEY_READ,
-                ) as key:
-                    try:
-                        val, _ = winreg.QueryValueEx(key, "TcpDelAckTicks")
-                        tcp_del_ack_ticks = int(val)
-                    except OSError:
-                        pass
-            except OSError:
-                pass
+            nagle_ack_present, nagle_ack = _read_registry_dword_snapshot(
+                iface_path, "TcpAckFrequency",
+            )
+            nagle_no_delay_present, nagle_no_delay = (
+                _read_registry_dword_snapshot(iface_path, "TCPNoDelay")
+            )
+            tcp_del_ack_ticks_present, tcp_del_ack_ticks = (
+                _read_registry_dword_snapshot(iface_path, "TcpDelAckTicks")
+            )
+            nagle_disabled = (
+                nagle_ack_present is True and nagle_ack == 1
+                and nagle_no_delay_present is True and nagle_no_delay == 1
+                and tcp_del_ack_ticks_present is True
+                and tcp_del_ack_ticks == 0
+            )
 
         # Check FastSendDatagramThreshold state
-        fast_send_datagram_threshold: int | None = None
         afd_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
-        try:
-            with winreg.OpenKey(
-                winreg.HKEY_LOCAL_MACHINE, afd_path, 0,
-                winreg.KEY_READ,
-            ) as key:
-                val, _ = winreg.QueryValueEx(key, "FastSendDatagramThreshold")
-                fast_send_datagram_threshold = int(val)
-        except OSError:
-            pass
+        fast_send_present, fast_send_datagram_threshold = (
+            _read_registry_dword_snapshot(
+                afd_path, "FastSendDatagramThreshold",
+            )
+        )
 
         # Snapshot adapter settings
         adapter_backup = self._backup_adapter_settings()
 
         tcp_heuristics = self.get_tcp_heuristics()
-        system_responsiveness = self.get_system_responsiveness()
 
         backup = BackupData(
             timestamp=datetime.now(timezone.utc).isoformat(),
@@ -1964,6 +2315,23 @@ class NetworkOptimizer:
             system_responsiveness=system_responsiveness,
             fast_send_datagram_threshold=fast_send_datagram_threshold,
             tcp_del_ack_ticks=tcp_del_ack_ticks,
+            dns_adapter_name=(
+                dns_state.adapter_name if dns_state.detected else ""
+            ),
+            dns_automatic=(
+                dns_state.automatic if dns_state.detected else None
+            ),
+            dns_server_list=(
+                dns_state.servers if dns_state.detected else ()
+            ),
+            network_throttling_present=throttling_present,
+            system_responsiveness_present=responsiveness_present,
+            fast_send_datagram_threshold_present=fast_send_present,
+            nagle_tcp_ack_frequency=nagle_ack,
+            nagle_tcp_ack_frequency_present=nagle_ack_present,
+            nagle_tcp_no_delay=nagle_no_delay,
+            nagle_tcp_no_delay_present=nagle_no_delay_present,
+            tcp_del_ack_ticks_present=tcp_del_ack_ticks_present,
         )
 
         # Persist to disk
@@ -2075,6 +2443,7 @@ class NetworkOptimizer:
         data = asdict(backup)
         # tuple -> list for JSON, will be restored on load
         data["dns_servers"] = list(data["dns_servers"])
+        data["dns_server_list"] = list(data["dns_server_list"])
         tmp_file = _BACKUP_FILE.with_suffix(".tmp")
         try:
             with open(tmp_file, "w", encoding="utf-8") as fh:
@@ -2100,6 +2469,7 @@ class NetworkOptimizer:
             tcp = TcpSettings(**data.pop("tcp_settings"))
             data["tcp_settings"] = tcp
             data["dns_servers"] = tuple(data["dns_servers"])
+            data["dns_server_list"] = tuple(data.get("dns_server_list", ()))
             # Handle adapter sub-object
             adapter_raw = data.pop("adapter", None)
             if adapter_raw and isinstance(adapter_raw, dict):
@@ -2120,6 +2490,19 @@ class NetworkOptimizer:
                 data["fast_send_datagram_threshold"] = None
             if "tcp_del_ack_ticks" not in data:
                 data["tcp_del_ack_ticks"] = None
+            for field_name, default in (
+                ("dns_adapter_name", ""),
+                ("dns_automatic", None),
+                ("network_throttling_present", None),
+                ("system_responsiveness_present", None),
+                ("fast_send_datagram_threshold_present", None),
+                ("nagle_tcp_ack_frequency", None),
+                ("nagle_tcp_ack_frequency_present", None),
+                ("nagle_tcp_no_delay", None),
+                ("nagle_tcp_no_delay_present", None),
+                ("tcp_del_ack_ticks_present", None),
+            ):
+                data.setdefault(field_name, default)
             return BackupData(**data)
         except Exception as exc:
             logger.warning("Failed to load backup: %s", exc)
@@ -2134,6 +2517,7 @@ class NetworkOptimizer:
         adapter power management, and interrupt moderation.
         """
         results: list[OptimizeResult] = []
+        loaded_from_disk = backup is None
 
         if backup is None:
             backup = self._load_backup()
@@ -2156,14 +2540,186 @@ class NetworkOptimizer:
                 error="Administrator privileges required",
             )
 
-        # --- DNS ---
-        if backup.dns_servers[0]:
-            if is_admin:
-                results.append(
-                    self.apply_dns(backup.dns_servers[0], backup.dns_servers[1]),
+        def _restore_dword(
+            *,
+            name: str,
+            key_path: str,
+            value_name: str,
+            present: Optional[bool],
+            value: Optional[int],
+            reboot_required: bool = False,
+        ) -> OptimizeResult:
+            """Restore one registry DWORD exactly and verify its presence."""
+            if not is_admin:
+                return _need_admin(name)
+            if not isinstance(present, bool):
+                return _make_result(
+                    name=name, success=False, before="", after="",
+                    needs_admin=True,
+                    error=(
+                        f"Backup does not record whether {value_name} existed; "
+                        "refusing an inexact registry restore"
+                    ),
                 )
-            else:
+            safe_value = (
+                _coerce_registry_dword_value(value) if present else None
+            )
+            if present and safe_value is None:
+                return _make_result(
+                    name=name, success=False, before="", after="",
+                    needs_admin=True,
+                    error=f"Invalid backed-up DWORD value for {value_name}",
+                )
+
+            before_present, before_value = _read_registry_dword_snapshot(
+                key_path, value_name,
+            )
+
+            def _display(
+                is_present: Optional[bool], current_value: Optional[int],
+            ) -> str:
+                if is_present is True:
+                    return str(current_value)
+                if is_present is False:
+                    return "Not set (default)"
+                return "Unreadable"
+
+            before_display = _display(before_present, before_value)
+            desired_display = str(value) if present else "Not set (default)"
+            command = (
+                f"Set registry {value_name} = {safe_value}"
+                if present else f"Delete registry override {value_name}"
+            )
+            try:
+                with winreg.OpenKey(
+                    winreg.HKEY_LOCAL_MACHINE, key_path, 0,
+                    winreg.KEY_SET_VALUE,
+                ) as key:
+                    if present:
+                        winreg.SetValueEx(
+                            key, value_name, 0, winreg.REG_DWORD,
+                            int(safe_value),
+                        )
+                    else:
+                        try:
+                            winreg.DeleteValue(key, value_name)
+                        except FileNotFoundError:
+                            pass
+                after_present, after_value = _read_registry_dword_snapshot(
+                    key_path, value_name,
+                )
+                verified = (
+                    after_present is True and after_value == int(safe_value)
+                    if present else after_present is False
+                )
+                after_display = _display(after_present, after_value)
+                error = None
+                if not verified:
+                    error = (
+                        f"Registry verification failed for {value_name}: "
+                        f"expected {desired_display}, observed {after_display}"
+                    )
+                return _make_result(
+                    name=name, success=verified,
+                    before=before_display, after=after_display,
+                    desired=desired_display,
+                    needs_admin=True, error=error,
+                    command=command,
+                    verification=f"Registry read-back: {after_display}",
+                    reboot_required=reboot_required,
+                    note="Restored exact backed-up registry state" if verified else "",
+                )
+            except OSError as exc:
+                return _make_result(
+                    name=name, success=False,
+                    before=before_display, after="",
+                    needs_admin=True, error=str(exc), command=command,
+                )
+
+        # --- DNS ---
+        dns_adapter = backup.dns_adapter_name or (
+            backup.adapter.name if backup.adapter else ""
+        )
+        legacy_dns = tuple(server for server in backup.dns_servers if server)
+        dns_servers = backup.dns_server_list or legacy_dns
+        dns_metadata_present = bool(
+            dns_adapter or dns_servers or backup.dns_automatic is not None
+        )
+        if dns_metadata_present:
+            if not is_admin:
                 results.append(_need_admin("Restore DNS"))
+            elif not dns_adapter or _sanitize_adapter_name(dns_adapter) != dns_adapter:
+                results.append(_make_result(
+                    name="Restore DNS", success=False,
+                    before="", after="", needs_admin=True,
+                    error=(
+                        "Backup does not contain a safe DNS adapter identity; "
+                        "refusing to restore a different adapter"
+                    ),
+                ))
+            elif not isinstance(backup.dns_automatic, bool):
+                results.append(_make_result(
+                    name="Restore DNS", success=False,
+                    before="", after="", needs_admin=True,
+                    error=(
+                        "Backup does not record whether DNS was automatic or "
+                        "static; refusing an inexact restore"
+                    ),
+                ))
+            else:
+                before_dns = self._get_dns_state(dns_adapter)
+                if (
+                    not before_dns.detected
+                    or before_dns.adapter_name.casefold() != dns_adapter.casefold()
+                ):
+                    results.append(_make_result(
+                        name="Restore DNS", success=False,
+                        before=self._dns_state_display(before_dns), after="",
+                        needs_admin=True,
+                        error=(
+                            f"Backed-up DNS adapter {dns_adapter!r} is not "
+                            "available; no other adapter was modified"
+                        ),
+                    ))
+                else:
+                    desired_dns = DnsState(
+                        adapter_name=dns_adapter,
+                        servers=tuple(dns_servers),
+                        automatic=backup.dns_automatic,
+                        detected=True,
+                    )
+                    dns_outcome = self._write_dns_state(desired_dns)
+                    if desired_dns.automatic:
+                        desired_dns_display = "Automatic (DHCP)"
+                        after_dns_display = (
+                            "Automatic (DHCP)"
+                            if dns_outcome.after.automatic is True
+                            else self._dns_state_display(dns_outcome.after)
+                        )
+                    else:
+                        desired_dns_display = self._dns_state_display(desired_dns)
+                        after_dns_display = self._dns_state_display(
+                            dns_outcome.after,
+                        )
+                    results.append(_make_result(
+                        name="Restore DNS", success=dns_outcome.success,
+                        before=self._dns_state_display(before_dns),
+                        after=after_dns_display,
+                        desired=desired_dns_display,
+                        needs_admin=True,
+                        error=dns_outcome.error,
+                        command=" && ".join(
+                            " ".join(command)
+                            for command in dns_outcome.commands
+                        ),
+                        command_exit_code=dns_outcome.command_exit_code,
+                        verification=dns_outcome.verification,
+                        note=(
+                            "Restored DNS mode and server order on the "
+                            "backed-up adapter"
+                            if dns_outcome.success else ""
+                        ),
+                    ))
 
         # --- MTU ---
         if is_admin:
@@ -2204,6 +2760,14 @@ class NetworkOptimizer:
                 backup.tcp_settings.timestamps,
             ),
         ]
+        tcp_restore_fields = {
+            "Restore TCP auto-tuning": "auto_tuning_level",
+            "Restore congestion provider": "congestion_provider",
+            "Restore ECN": "ecn_capability",
+            "Restore RSS": "rss",
+            "Restore DCA": "dca",
+            "Restore TCP timestamps": "timestamps",
+        }
 
         for label, cmd_args, value in tcp_tweaks:
             if not value or value == "unknown":
@@ -2213,19 +2777,29 @@ class NetworkOptimizer:
                 continue
             try:
                 proc = _run(cmd_args)
-                ok = proc.returncode == 0
-                error = proc.stderr.strip() if not ok else None
-                if not ok and not error:
-                    ok = True
-                    error = None
+                command_ok = proc.returncode == 0
+                error = None
+                if not command_ok:
+                    error = proc.stderr.strip() or proc.stdout.strip()
+                    error = error or f"Command exited with code {proc.returncode}"
+                after_settings = self.get_tcp_settings()
+                field_name = tcp_restore_fields[label]
+                actual_after = getattr(after_settings, field_name, "unknown")
+                verified = command_ok and _values_equal(actual_after, value)
+                if command_ok and not verified:
+                    error = (
+                        f"Restore verification failed: expected {value}, "
+                        f"observed {actual_after}"
+                    )
                 results.append(_make_result(
-                    name=label, success=ok,
-                    before="current", after=value if ok else "current",
+                    name=label, success=verified,
+                    before="current", after=actual_after,
                     desired=value,
                     needs_admin=True, error=error,
                     command=" ".join(cmd_args),
                     command_exit_code=proc.returncode,
-                    note=f"Restored to backed-up value" if ok else "",
+                    verification=f"Post-restore read: {actual_after}",
+                    note="Restored to backed-up value" if verified else "",
                 ))
             except Exception as exc:
                 results.append(_make_result(
@@ -2236,130 +2810,94 @@ class NetworkOptimizer:
                 ))
 
         # --- Network throttling ---
-        if backup.network_throttling is not None:
-            if not is_admin:
-                results.append(_need_admin("Restore network throttling"))
-            else:
-                key_path = (
-                    r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
-                    r"\SystemProfile"
-                )
-                cmd_desc = f"Set registry NetworkThrottlingIndex = {backup.network_throttling}"
-                try:
-                    with winreg.OpenKey(
-                        winreg.HKEY_LOCAL_MACHINE, key_path, 0,
-                        winreg.KEY_SET_VALUE,
-                    ) as key:
-                        winreg.SetValueEx(
-                            key, "NetworkThrottlingIndex", 0,
-                            winreg.REG_DWORD, backup.network_throttling,
-                        )
-                    results.append(_make_result(
-                        name="Restore network throttling", success=True,
-                        before="current",
-                        after=str(backup.network_throttling),
-                        desired=str(backup.network_throttling),
-                        needs_admin=True,
-                        command=cmd_desc,
-                        note="Restored to backed-up value",
-                    ))
-                except OSError as exc:
-                    results.append(_make_result(
-                        name="Restore network throttling", success=False,
-                        before="current", after="",
-                        needs_admin=True, error=str(exc),
-                        command=cmd_desc,
-                    ))
+        multimedia_path = (
+            r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Multimedia"
+            r"\SystemProfile"
+        )
+        throttling_present = backup.network_throttling_present
+        if throttling_present is None and backup.network_throttling is not None:
+            # A value in a legacy backup proves that the DWORD existed.
+            throttling_present = True
+        results.append(_restore_dword(
+            name="Restore network throttling",
+            key_path=multimedia_path,
+            value_name="NetworkThrottlingIndex",
+            present=throttling_present,
+            value=backup.network_throttling,
+        ))
 
         # --- Nagle's algorithm ---
-        if backup.nagle_interface_guid and not backup.nagle_disabled:
-            # Nagle was enabled before — remove the registry overrides
-            if not is_admin:
-                results.append(_need_admin("Restore Nagle's algorithm"))
+        if backup.nagle_interface_guid:
+            guid = backup.nagle_interface_guid
+            exact_flags = (
+                backup.nagle_tcp_ack_frequency_present,
+                backup.nagle_tcp_no_delay_present,
+                backup.tcp_del_ack_ticks_present,
+            )
+            if not re.fullmatch(r"\{?[0-9A-Fa-f-]{36}\}?", guid):
+                results.append(_make_result(
+                    name="Restore Nagle registry state", success=False,
+                    before="", after="", needs_admin=True,
+                    error="Invalid backed-up network interface GUID",
+                ))
+            elif not all(isinstance(flag, bool) for flag in exact_flags):
+                results.append(_make_result(
+                    name="Restore Nagle registry state", success=False,
+                    before="", after="", needs_admin=True,
+                    error=(
+                        "Backup lacks exact presence metadata for Nagle registry "
+                        "values; no values were guessed or deleted"
+                    ),
+                ))
             else:
                 iface_path = (
                     r"SYSTEM\CurrentControlSet\Services\Tcpip\Parameters"
-                    r"\Interfaces\\" + backup.nagle_interface_guid
+                    rf"\Interfaces\{guid}"
                 )
-                cmd_desc = f"Delete/Restore registry TcpAckFrequency, TCPNoDelay, TcpDelAckTicks from {backup.nagle_interface_guid}"
-                try:
-                    with winreg.OpenKey(
-                        winreg.HKEY_LOCAL_MACHINE, iface_path, 0,
-                        winreg.KEY_SET_VALUE,
-                    ) as key:
-                        # Delete overrides to return to default (Nagle enabled)
-                        for val_name in ("TcpAckFrequency", "TCPNoDelay"):
-                            try:
-                                winreg.DeleteValue(key, val_name)
-                            except OSError:
-                                pass
-                        if backup.tcp_del_ack_ticks is None:
-                            try:
-                                winreg.DeleteValue(key, "TcpDelAckTicks")
-                            except OSError:
-                                pass
-                        else:
-                            try:
-                                winreg.SetValueEx(
-                                    key, "TcpDelAckTicks", 0,
-                                    winreg.REG_DWORD, backup.tcp_del_ack_ticks,
-                                )
-                            except OSError:
-                                pass
-                    results.append(_make_result(
-                        name="Restore Nagle's algorithm", success=True,
-                        before="Disabled", after="Enabled (default)",
-                        needs_admin=True,
-                        command=cmd_desc,
+                for result_name, value_name, present, value in (
+                    (
+                        "Restore Nagle TcpAckFrequency",
+                        "TcpAckFrequency",
+                        backup.nagle_tcp_ack_frequency_present,
+                        backup.nagle_tcp_ack_frequency,
+                    ),
+                    (
+                        "Restore Nagle TCPNoDelay",
+                        "TCPNoDelay",
+                        backup.nagle_tcp_no_delay_present,
+                        backup.nagle_tcp_no_delay,
+                    ),
+                    (
+                        "Restore Nagle TcpDelAckTicks",
+                        "TcpDelAckTicks",
+                        backup.tcp_del_ack_ticks_present,
+                        backup.tcp_del_ack_ticks,
+                    ),
+                ):
+                    results.append(_restore_dword(
+                        name=result_name,
+                        key_path=iface_path,
+                        value_name=value_name,
+                        present=present,
+                        value=value,
                         reboot_required=True,
-                        note="Registry overrides removed/restored; reboot recommended",
-                    ))
-                except OSError as exc:
-                    results.append(_make_result(
-                        name="Restore Nagle's algorithm", success=False,
-                        before="Disabled", after="",
-                        needs_admin=True, error=str(exc),
-                        command=cmd_desc,
                     ))
 
         # --- FastSendDatagramThreshold ---
-        if hasattr(backup, "fast_send_datagram_threshold") and backup.fast_send_datagram_threshold is not None:
-            if not is_admin:
-                results.append(_need_admin("Restore FastSendDatagramThreshold"))
-            else:
-                afd_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
-                cmd_desc = "Restore registry FastSendDatagramThreshold"
-                try:
-                    with winreg.OpenKey(
-                        winreg.HKEY_LOCAL_MACHINE, afd_path, 0,
-                        winreg.KEY_SET_VALUE,
-                    ) as key:
-                        winreg.SetValueEx(
-                            key, "FastSendDatagramThreshold", 0,
-                            winreg.REG_DWORD, backup.fast_send_datagram_threshold,
-                        )
-                    results.append(_make_result(
-                        name="Restore FastSendDatagramThreshold", success=True,
-                        before="current", after=str(backup.fast_send_datagram_threshold),
-                        needs_admin=True, command=cmd_desc,
-                    ))
-                except OSError as exc:
-                    results.append(_make_result(
-                        name="Restore FastSendDatagramThreshold", success=False,
-                        before="current", after="",
-                        needs_admin=True, error=str(exc), command=cmd_desc,
-                    ))
-        elif is_admin:
-            # If it was originally not set (None), we delete the registry key override to return to default
-            afd_path = r"SYSTEM\CurrentControlSet\Services\AFD\Parameters"
-            try:
-                with winreg.OpenKey(
-                    winreg.HKEY_LOCAL_MACHINE, afd_path, 0,
-                    winreg.KEY_SET_VALUE,
-                ) as key:
-                    winreg.DeleteValue(key, "FastSendDatagramThreshold")
-            except OSError:
-                pass
+        fast_send_present = backup.fast_send_datagram_threshold_present
+        if (
+            fast_send_present is None
+            and backup.fast_send_datagram_threshold is not None
+        ):
+            fast_send_present = True
+        results.append(_restore_dword(
+            name="Restore FastSendDatagramThreshold",
+            key_path=r"SYSTEM\CurrentControlSet\Services\AFD\Parameters",
+            value_name="FastSendDatagramThreshold",
+            present=fast_send_present,
+            value=backup.fast_send_datagram_threshold,
+            reboot_required=True,
+        ))
 
         # --- Adapter power management ---
         if backup.adapter and backup.adapter.name:
@@ -2569,17 +3107,29 @@ class NetworkOptimizer:
                     ))
 
         # --- System Responsiveness ---
-        if backup.system_responsiveness is not None:
-            if not is_admin:
-                results.append(_need_admin("Restore system responsiveness"))
-            else:
-                res = self.apply_system_responsiveness(backup.system_responsiveness)
-                res.name = "Restore system responsiveness"
-                results.append(res)
+        responsiveness_present = backup.system_responsiveness_present
+        if (
+            responsiveness_present is None
+            and backup.system_responsiveness is not None
+        ):
+            responsiveness_present = True
+        results.append(_restore_dword(
+            name="Restore system responsiveness",
+            key_path=multimedia_path,
+            value_name="SystemResponsiveness",
+            present=responsiveness_present,
+            value=backup.system_responsiveness,
+            reboot_required=True,
+        ))
 
-        # Clear the backup after successful restore (every step succeeded or was unsupported)
-        all_succeeded = all(res.success or res.status == "Unsupported" for res in results)
-        if all_succeeded and _BACKUP_FILE.is_file():
+        # A retryable backup is more valuable than premature cleanup.  Delete
+        # it only when every attempted step both succeeded and supplied an
+        # independent read-back.  Unsupported or command-only results are not
+        # considered restored.
+        all_succeeded = bool(results) and all(
+            res.success and bool(res.verification) for res in results
+        )
+        if all_succeeded and loaded_from_disk and _BACKUP_FILE.is_file():
             try:
                 _BACKUP_FILE.unlink()
             except Exception as exc:

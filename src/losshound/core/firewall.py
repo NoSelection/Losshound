@@ -38,6 +38,15 @@ def _is_running_as_admin() -> bool:
 
 
 def _current_executable() -> str:
+    """Return the packaged Losshound executable, never a shared Python host.
+
+    A firewall rule scoped to ``python.exe`` would also apply to every other
+    script launched by that interpreter. Source checkouts therefore refuse to
+    create the rule; only a frozen Losshound build has a safely unique program
+    identity.
+    """
+    if not getattr(sys, "frozen", False):
+        return ""
     return sys.executable or ""
 
 
@@ -73,7 +82,10 @@ def ensure_lan_discovery_firewall_rules() -> bool:
 
     exe = _current_executable()
     if not exe:
-        logger.warning("Cannot determine current executable path; skipping firewall setup")
+        logger.warning(
+            "Skipping firewall setup: a packaged Losshound executable is required "
+            "so the rule is never scoped to a shared Python interpreter"
+        )
         return False
 
     # Read the program filter currently associated with our named rule (if any).

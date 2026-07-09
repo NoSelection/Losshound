@@ -1,15 +1,97 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 from losshound import __version__
 
 
+def _needs_console(argv: list[str] | tuple[str, ...] | None = None) -> bool:
+    """Return whether a windowed build was invoked from the command line.
+
+    A normal Explorer launch has no arguments and should remain console-free.
+    Any supplied argument can lead to argparse output (including an error for a
+    typo), so packaged command-line launches need real standard streams.
+    """
+
+    return len(sys.argv if argv is None else argv) > 1
+
+
+def _ensure_command_line_streams(
+    argv: list[str] | tuple[str, ...] | None = None,
+) -> None:
+    """Restore stdio for command-line use of PyInstaller's windowed build.
+
+    PyInstaller intentionally sets ``sys.stdout`` and ``sys.stderr`` to
+    ``None`` in a windowed executable.  argparse and every CLI command expect
+    writable streams, so attach to the caller's console (or create one when
+    launched outside a terminal) before parsing arguments.
+    """
+
+    if (
+        sys.platform != "win32"
+        or not getattr(sys, "frozen", False)
+        or not _needs_console(argv)
+    ):
+        return
+
+    console_available = False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.AttachConsole.argtypes = [wintypes.DWORD]
+        kernel32.AttachConsole.restype = wintypes.BOOL
+        kernel32.AllocConsole.argtypes = []
+        kernel32.AllocConsole.restype = wintypes.BOOL
+
+        # ATTACH_PARENT_PROCESS is DWORD(-1). ERROR_ACCESS_DENIED means the
+        # process already has a console, which is also a usable outcome.
+        if kernel32.AttachConsole(0xFFFFFFFF):
+            console_available = True
+        elif ctypes.get_last_error() == 5:
+            console_available = True
+        else:
+            console_available = bool(kernel32.AllocConsole())
+    except (AttributeError, OSError):
+        # Stream fallbacks below still prevent a secondary crash if console
+        # attachment is unavailable in an unusual host environment.
+        console_available = False
+
+    def _stream(name: str, mode: str):
+        target = name if console_available else os.devnull
+        try:
+            return open(
+                target,
+                mode,
+                encoding="utf-8",
+                errors="replace",
+                buffering=1,
+            )
+        except OSError:
+            return open(
+                os.devnull,
+                mode,
+                encoding="utf-8",
+                errors="replace",
+            )
+
+    if not callable(getattr(sys.stdin, "read", None)):
+        sys.stdin = _stream("CONIN$", "r")
+    if not callable(getattr(sys.stdout, "write", None)):
+        sys.stdout = _stream("CONOUT$", "w")
+    if not callable(getattr(sys.stderr, "write", None)):
+        sys.stderr = _stream("CONOUT$", "w")
+
+
 def main():
+    _ensure_command_line_streams()
+
     parser = argparse.ArgumentParser(
         prog="losshound",
-        description="Losshound — Lightweight Windows network diagnosis tool",
+        description="Losshound - Lightweight Windows network diagnosis tool",
     )
     parser.add_argument(
         "--cli", action="store_true",
@@ -133,6 +215,14 @@ def main():
             parser.error("drop-analyze --duration must be greater than 0 seconds")
         if args.interval < 1.0:
             parser.error("drop-analyze --interval must be at least 1.0 seconds")
+    elif args.command in {"benchmark", "score"} and args.pings <= 0:
+        parser.error(f"{args.command} --pings must be greater than 0")
+    elif args.command == "trends" and args.hours <= 0:
+        parser.error("trends --hours must be greater than 0")
+    elif args.command == "history" and args.count <= 0:
+        parser.error("history --count must be greater than 0")
+    elif args.command == "isp-report" and args.hours <= 0:
+        parser.error("isp-report --hours must be greater than 0")
 
     from losshound.core.config import load_config
     config = load_config(args.config)
@@ -142,6 +232,12 @@ def main():
 
     from losshound.core.logger import setup_logging
     setup_logging(config.log_level)
+
+    # Cover GUI and CLI subprocesses alike. On non-Windows platforms this is a
+    # safe no-op; on Windows it prevents ping/tracert/netsh children surviving
+    # an abrupt parent exit.
+    from losshound.core.job_object import install_kill_on_close_job
+    install_kill_on_close_job()
 
     if args.command:
         from losshound.cli.optimizer_cli import run_optimizer_command
@@ -155,17 +251,14 @@ def main():
 
 def _run_gui(config):
     from PySide6.QtWidgets import QApplication
-    from losshound.core.firewall import apply_firewall_preference
-    from losshound.core.job_object import install_kill_on_close_job
+    from losshound.core.firewall import ensure_lan_discovery_firewall_rules
     from losshound.gui.branding import app_icon
     from losshound.gui.main_window import MainWindow
 
-    # Tie ping/tracert/netsh children to this process so they die with us.
-    install_kill_on_close_job()
-
-    # Reconcile the LAN-discovery firewall rule with the user's saved preference.
-    # No-ops when not admin or when state already matches.
-    apply_firewall_preference(config.lan_discovery_firewall_enabled)
+    # The firewall rule is opt-in. Once the user has explicitly enabled it in
+    # Settings, an elevated packaged build may reconcile a moved executable.
+    if config.lan_discovery_firewall_enabled:
+        ensure_lan_discovery_firewall_rules()
 
     app = QApplication(sys.argv)
     app.setApplicationName("Losshound")
