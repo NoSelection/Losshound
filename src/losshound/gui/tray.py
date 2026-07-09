@@ -9,6 +9,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon, QWidget
 
+from losshound.core.config import AppConfig
 from losshound.core.models import Diagnosis, DiagnosisCategory, Observation
 from losshound.gui.branding import losshound_pixmap
 
@@ -53,12 +54,17 @@ class TrayIcon(QSystemTrayIcon):
     show_requested = Signal()
     quit_requested = Signal()
 
-    def __init__(self, parent: Optional[QWidget] = None,
-                 engine: "Optional[object]" = None):
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        engine: "Optional[object]" = None,
+        config: AppConfig | None = None,
+    ):
         super().__init__(parent)
         self._last_status = "unknown"
         self._notifications_enabled = True
         self._engine = engine
+        self._config = config or AppConfig()
 
         # Build icons
         self._status_icons = {
@@ -118,27 +124,52 @@ class TrayIcon(QSystemTrayIcon):
 
     def update_observation(self, obs: Observation):
         """Update tray icon and tooltip from a live observation."""
-        # Compute quick status
-        losses = []
-        rtts = []
+        losses: list[float] = []
+        rtts: list[float] = []
+        jitters: list[float] = []
+        diagnosis = self._config.diagnosis
+        loss_error = False
 
         if obs.gateway_ping:
             losses.append(obs.gateway_ping.loss_percent)
+            loss_error = (
+                obs.gateway_ping.timed_out
+                or obs.gateway_ping.loss_percent >= diagnosis.gateway_loss_threshold
+            )
             if obs.gateway_ping.rtt_avg is not None:
                 rtts.append(obs.gateway_ping.rtt_avg)
+            if obs.gateway_ping.rtt_jitter is not None:
+                jitters.append(obs.gateway_ping.rtt_jitter)
 
         for p in obs.public_pings:
             losses.append(p.loss_percent)
+            loss_error = loss_error or p.timed_out or (
+                p.loss_percent >= diagnosis.public_loss_threshold
+            )
             if p.rtt_avg is not None:
                 rtts.append(p.rtt_avg)
+            if p.rtt_jitter is not None:
+                jitters.append(p.rtt_jitter)
 
         avg_loss = sum(losses) / len(losses) if losses else 0
         avg_rtt = sum(rtts) / len(rtts) if rtts else 0
+        avg_jitter = sum(jitters) / len(jitters) if jitters else 0
 
-        # Determine status
-        if avg_loss > 20 or avg_rtt > 200:
+        dns_warning = False
+        if obs.dns_results:
+            failures = sum(1 for result in obs.dns_results if not result.resolved)
+            dns_warning = (
+                failures / len(obs.dns_results)
+                >= diagnosis.dns_failure_threshold
+            )
+
+        if loss_error:
             status = "error"
-        elif avg_loss > 5 or avg_rtt > 100:
+        elif (
+            any(rtt >= diagnosis.latency_warning_ms for rtt in rtts)
+            or any(jitter >= diagnosis.jitter_warning_ms for jitter in jitters)
+            or dns_warning
+        ):
             status = "warning"
         elif losses:
             status = "healthy"
@@ -151,9 +182,30 @@ class TrayIcon(QSystemTrayIcon):
         # Tooltip
         loss_str = f"{avg_loss:.0f}%" if losses else "N/A"
         rtt_str = f"{avg_rtt:.0f}ms" if rtts else "N/A"
-        tip = f"Losshound — Loss: {loss_str} | Latency: {rtt_str}"
+        jitter_str = f"{avg_jitter:.0f}ms" if jitters else "N/A"
+        tip = (
+            f"Losshound — Loss: {loss_str} | Latency: {rtt_str} | "
+            f"Jitter: {jitter_str}"
+        )
         self.setToolTip(tip)
         self._status_action.setText(f"Loss: {loss_str} | Latency: {rtt_str}")
+
+    def update_config(self, config: AppConfig) -> None:
+        self._config = config
+
+    def set_monitor_state(self, state: str, detail: str = "") -> None:
+        icon_state, label = {
+            "collecting": ("unknown", "Collecting baseline"),
+            "running": ("unknown", "Waiting for next reading"),
+            "paused": ("warning", "Monitoring paused"),
+            "stale": ("warning", "Data stale"),
+            "error": ("error", "Monitor error"),
+        }.get(state, ("unknown", "Starting"))
+        self._last_status = state
+        self.setIcon(self._status_icons[icon_state])
+        message = detail or label
+        self.setToolTip(f"Losshound — {message}")
+        self._status_action.setText(f"Status: {message}")
 
     def show_event(self, event):
         """Render an AlertEvent as a Windows toast notification."""

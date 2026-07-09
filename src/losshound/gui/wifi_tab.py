@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
@@ -441,11 +442,17 @@ class WifiTab(QWidget):
             return
 
         grade = snapshot.bufferbloat.grade
-        self._set_busy(
-            False,
-            f"Bufferbloat grade: {grade} — "
-            f"+{snapshot.bufferbloat.latency_increase_pct:.0f}% latency under load",
-        )
+        if grade == "N/A":
+            self._set_busy(
+                False,
+                "Bufferbloat unavailable — the test received no usable latency samples",
+            )
+        else:
+            self._set_busy(
+                False,
+                f"Bufferbloat grade: {grade} — "
+                f"+{snapshot.bufferbloat.latency_increase_pct:.0f}% latency under load",
+            )
         self._display_bufferbloat(snapshot)
 
     def _display_bufferbloat(self, snapshot: LoadBenchmarkSnapshot):
@@ -457,6 +464,22 @@ class WifiTab(QWidget):
         self._bb_grade_label.setStyleSheet(
             f"font-size: 48px; font-weight: bold; color: {color}; padding: 4px;"
         )
+
+        if grade == "N/A" or not (
+            math.isfinite(bb.idle_latency_ms)
+            and math.isfinite(bb.loaded_latency_ms)
+        ):
+            self._bb_detail_label.setText(
+                "No successful latency samples were received, so Losshound did not "
+                "assign a bufferbloat grade.\n\n"
+                f"Idle packet loss: {snapshot.idle.loss_pct:.0f}%\n"
+                f"Loaded packet loss: {snapshot.loaded.loss_pct:.0f}%\n\n"
+                "Check connectivity, then run the test again."
+            )
+            self._bb_detail_label.setStyleSheet(
+                f"color: {color}; padding: 8px; font-size: 13px;"
+            )
+            return
 
         explanations = {
             "A": "Excellent! Latency barely increases under load. Great for gaming.",

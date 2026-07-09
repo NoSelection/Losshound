@@ -32,6 +32,10 @@ def button_style(kind: str = "default") -> str:
     QPushButton:pressed {{
         background-color: {c("bg_window")};
     }}
+    QPushButton:focus {{
+        border: 2px solid {c("border_focus")};
+        padding: 6px 15px;
+    }}
     QPushButton:disabled {{
         background-color: {c("bg_panel_inner")};
         color: {c("text_dim")};
@@ -173,6 +177,11 @@ def get_dark_stylesheet() -> str:
         background-color: {c("bg_window")};
     }}
 
+    QPushButton:focus {{
+        border: 2px solid {c("border_focus")};
+        padding: 6px 15px;
+    }}
+
     QPushButton:disabled {{
         background-color: {c("bg_panel_inner")};
         color: {c("text_dim")};
@@ -296,6 +305,21 @@ def get_dark_stylesheet() -> str:
 
     QSpinBox:focus, QDoubleSpinBox:focus, QLineEdit:focus {{
         border-color: {c("mint")};
+        border-width: 2px;
+    }}
+
+    QComboBox:focus {{
+        border: 2px solid {c("border_focus")};
+        padding: 5px 9px;
+    }}
+
+    QCheckBox:focus {{
+        color: {c("text_primary")};
+        border: 1px dotted {c("border_focus")};
+    }}
+
+    QTableWidget:focus, QTableView:focus, QTextEdit:focus {{
+        border: 1px solid {c("border_focus")};
     }}
 
     QGroupBox {{

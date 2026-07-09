@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -14,8 +15,12 @@ from losshound.gui.theme import button_style
 from losshound.storage.history import HistoryStore
 
 
+logger = logging.getLogger(__name__)
+
+
 class _IspReportWorker(QThread):
     finished = Signal(str)  # formatted report text
+    error = Signal(str)
 
     def __init__(self, db_path: Path, hours: int):
         super().__init__()
@@ -23,11 +28,15 @@ class _IspReportWorker(QThread):
         self._hours = hours
 
     def run(self):
-        from losshound.core.isp_report import format_isp_report, generate_isp_report
-        with HistoryStore(self._db_path) as history:
-            report = generate_isp_report(history, self._hours)
-            text = format_isp_report(report)
+        try:
+            from losshound.core.isp_report import format_isp_report, generate_isp_report
+            with HistoryStore(self._db_path) as history:
+                report = generate_isp_report(history, self._hours)
+                text = format_isp_report(report)
             self.finished.emit(text)
+        except Exception as exc:
+            logger.exception("ISP report generation failed")
+            self.error.emit(str(exc))
 
 
 class _IspPdfWorker(QThread):
@@ -121,47 +130,53 @@ class ExportTab(QWidget):
         export_row = QHBoxLayout()
         export_row.addStretch()
 
-        copy_btn = QPushButton("Copy to Clipboard")
-        copy_btn.clicked.connect(self._copy)
-        export_row.addWidget(copy_btn)
+        self._copy_btn = QPushButton("Copy to Clipboard")
+        self._copy_btn.clicked.connect(self._copy)
+        export_row.addWidget(self._copy_btn)
 
-        txt_btn = QPushButton("Save as TXT")
-        txt_btn.clicked.connect(self._save_txt)
-        export_row.addWidget(txt_btn)
+        self._txt_btn = QPushButton("Save as TXT")
+        self._txt_btn.clicked.connect(self._save_txt)
+        export_row.addWidget(self._txt_btn)
 
-        json_btn = QPushButton("Save as JSON")
-        json_btn.clicked.connect(self._save_json)
-        export_row.addWidget(json_btn)
+        self._json_btn = QPushButton("Save as JSON")
+        self._json_btn.clicked.connect(self._save_json)
+        export_row.addWidget(self._json_btn)
 
         layout.addLayout(export_row)
 
         self._report_data: dict | None = None
+        self._set_export_availability(text=False, json_data=False)
 
     def _generate(self):
         if self._quick_worker is not None and self._quick_worker.isRunning():
             return
         hours = self._hours.value()
         self._preview.setText("Generating quick report...")
+        self._set_export_availability(text=False, json_data=False)
         self._quick_worker = DbQueryWorker(
             self._history._db_path,
             lambda store: store.export_report(hours),
             self,
         )
         self._quick_worker.finished.connect(self._on_quick_report_done)
+        self._quick_worker.error.connect(self._on_report_error)
         self._quick_worker.start()
 
     def _on_quick_report_done(self, data: dict):
         self._report_data = data
         self._preview.setText(self._format_report(data))
+        self._set_export_availability(text=True, json_data=True)
 
     def _generate_isp(self):
         if self._thread is not None and self._thread.isRunning():
             return
         hours = self._hours.value()
         self._preview.setText("Generating ISP report...")
+        self._set_export_availability(text=False, json_data=False)
 
         worker = _IspReportWorker(self._history._db_path, hours)
         worker.finished.connect(self._on_isp_done)
+        worker.error.connect(self._on_report_error)
         worker.start()
         self._thread = worker
 
@@ -169,6 +184,21 @@ class ExportTab(QWidget):
         self._thread = None
         self._preview.setText(text)
         self._report_data = None  # ISP report is text-only for now
+        self._set_export_availability(text=bool(text), json_data=False)
+
+    def _on_report_error(self, message: str):
+        self._thread = None
+        detail = (message or "Unknown report error")[:240]
+        self._preview.setText(
+            f"Report generation failed:\n{detail}\n\nCheck the log and try again."
+        )
+        self._report_data = None
+        self._set_export_availability(text=False, json_data=False)
+
+    def _set_export_availability(self, *, text: bool, json_data: bool) -> None:
+        self._copy_btn.setEnabled(text)
+        self._txt_btn.setEnabled(text)
+        self._json_btn.setEnabled(json_data)
 
     def _format_report(self, data: dict) -> str:
         lines = [
@@ -292,6 +322,7 @@ class ExportTab(QWidget):
             return
 
         self._preview.setText(f"Generating PDF report to:\n{path}\n\nPlease wait...")
+        self._set_export_availability(text=False, json_data=False)
 
         worker = _IspPdfWorker(self._history._db_path, hours, Path(path))
         worker.finished.connect(self._on_pdf_done)
@@ -303,10 +334,12 @@ class ExportTab(QWidget):
         out_path, error = result
         if out_path is None:
             self._preview.setText(f"PDF generation failed:\n{error}")
+            self._set_export_availability(text=False, json_data=False)
             QMessageBox.warning(self, "PDF failed", error)
             return
 
         self._preview.setText(f"PDF saved to:\n{out_path}")
+        self._set_export_availability(text=False, json_data=False)
         try:
             import os
             os.startfile(str(out_path))  # type: ignore[attr-defined]
