@@ -49,4 +49,5 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='assets/losshound.ico',
+    version='scripts/version_info.txt',
 )

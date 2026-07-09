@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-09
+
+Trust and clarity release: measurements now fail honestly, optimizer restores
+are exact and retryable, and the interface distinguishes collecting, paused,
+stale, and failed states from a healthy connection.
+
+### Added
+- Locale-independent active-interface discovery based on the effective Windows
+  default route, shared by gateway, LAN, drop-attribution, and optimizer flows.
+- Explicit loading, empty, and database-error states across the dashboard,
+  History, Routes, LAN Monitor, and Export views.
+- Windows executable version metadata and regression coverage for CLI argument
+  validation, configuration corruption, subprocess cleanup, UI truth states,
+  optimizer rollback, total outages, and multi-adapter behavior.
+
+### Changed
+- The LAN-discovery firewall rule is now off by default, requires explicit
+  confirmation, and is created only for a packaged Losshound executable—never
+  for a shared `python.exe` source interpreter.
+- The dashboard and tray use configured diagnosis thresholds and share truthful
+  collecting, healthy, warning, paused, error, and stale states.
+- All top-level tabs remain reachable at the 1200 px minimum window width;
+  keyboard focus and accessible control descriptions were also strengthened.
+- QoS rules distinguish saved configuration from policies verified during the
+  current session. A saved rule is retained when Windows cannot remove it.
+
+### Fixed
+- A disconnected interface can no longer match the word `connected` and skew
+  drop/cable attribution; link speed is read from the selected route interface.
+- A complete outage now records 100% loss and an unavailable bufferbloat grade
+  instead of synthetic 999 ms samples and grade A. Non-finite measurements are
+  persisted as strict JSON `null` values.
+- Trace routes are complete only when the requested or resolved destination is
+  reached, not merely when the last parsed hop has an IP address.
+- Adaptive monitoring runs gateway/public probes concurrently with deadlines,
+  so its fast cadence remains useful during timeout bursts.
+- Optimizer results say Verified only after desired-state read-back. DNS backup,
+  apply, rollback, and restore are adapter-scoped and preserve DHCP/static mode
+  plus the full server order.
+- Registry restores preserve exact value presence, verify every write/delete,
+  and retain the backup whenever a step fails or cannot be verified.
+- Malformed or wrongly typed configuration values fall back safely; settings
+  saves no longer discard hidden timeout/logging values and are atomic.
+- Failed `taskkill` operations fall back to direct termination, and the Windows
+  Job Object now protects CLI subprocesses as well as GUI subprocesses.
+- Corrected misleading labels such as Public IP, Packet logs, RTT-as-minimum,
+  and STEP; initial startup no longer claims the network is already stable.
+
 ## [0.1.2] - 2026-07-02
 
 ### Added
@@ -75,6 +123,7 @@ cleanly, and several actions that only *looked* like they worked now actually do
 
 Initial public release.
 
+[0.1.3]: https://github.com/NoSelection/Losshound/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/NoSelection/Losshound/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/NoSelection/Losshound/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/NoSelection/Losshound/releases/tag/v0.1.0
