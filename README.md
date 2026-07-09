@@ -1,7 +1,7 @@
 # Losshound
 
 <p align="center">
-  <img src="assets/losshound-readme-hero.svg" alt="Losshound — verified Windows network diagnostics" width="100%">
+  <img src="assets/dashboard_preview.png" alt="Losshound network diagnostics dashboard" width="100%">
 </p>
 
 Lightweight Windows network diagnosis and optimization tool that continuously monitors connectivity, determines the most likely cause of network issues, and can automatically tune your network stack for better performance.
@@ -45,12 +45,6 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 - **Load benchmark** — latency under load, bufferbloat grade (A-F), throughput, small packet responsiveness
 - **Before/after comparison** — see the real impact of optimizations with detailed metrics
 - **Persistent history** — benchmarks saved to disk for later comparison
-
-## Screenshots
-
-<p align="center">
-  <img src="assets/dashboard_preview.png" alt="Losshound dashboard" width="100%">
-</p>
 
 ## Installation
 
