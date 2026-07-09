@@ -1,5 +1,7 @@
 from datetime import datetime
+from unittest.mock import patch
 
+from losshound.core import drop_analyzer
 from losshound.core.drop_analyzer import (
     ConnSample,
     DropAnalysisReport,
@@ -7,6 +9,75 @@ from losshound.core.drop_analyzer import (
     WifiStateSnapshot,
     classify_drop_forensics,
 )
+from losshound.core.windows_network import ActiveNetworkInterface
+
+
+def test_active_route_interface_supplies_its_own_link_speed():
+    active = ActiveNetworkInterface(
+        interface_alias="Wi-Fi",
+        interface_index=7,
+        gateway="192.168.1.1",
+        ipv4_address="192.168.1.50",
+        prefix_length=24,
+        dns_servers=("1.1.1.1",),
+        dhcp_enabled=True,
+        connected=True,
+        link_speed_mbps=866.7,
+    )
+    with patch.object(
+        drop_analyzer,
+        "get_active_network_interface",
+        return_value=active,
+    ), patch.object(drop_analyzer, "_run") as run_mock:
+        result = drop_analyzer._get_active_nic_info()
+
+    assert result == ("wifi", True, 866.7)
+    run_mock.assert_not_called()
+
+
+def test_disconnected_interface_is_not_mistaken_for_connected():
+    netsh_output = """
+Admin State    State          Type             Interface Name
+-------------------------------------------------------------------------
+Enabled        Disconnected   Dedicated        Wi-Fi
+"""
+    with patch.object(
+        drop_analyzer,
+        "get_active_network_interface",
+        return_value=None,
+    ), patch.object(
+        drop_analyzer,
+        "_run",
+        return_value=drop_analyzer._CommandResult(stdout=netsh_output),
+    ):
+        assert drop_analyzer._get_active_nic_info() == ("wifi", False, 0.0)
+
+
+def test_active_interface_speed_comes_from_matching_adapter():
+    netsh_output = """
+Admin State    State          Type             Interface Name
+-------------------------------------------------------------------------
+Enabled        Disconnected   Dedicated        Wi-Fi
+Enabled        Connected      Dedicated        Ethernet 2
+"""
+    wmic_output = """
+Node,NetConnectionID,Speed
+HOST,Wi-Fi,866000000
+HOST,Ethernet 2,1000000000
+"""
+    with patch.object(
+        drop_analyzer,
+        "get_active_network_interface",
+        return_value=None,
+    ), patch.object(
+        drop_analyzer,
+        "_run",
+        side_effect=[
+            drop_analyzer._CommandResult(stdout=netsh_output),
+            drop_analyzer._CommandResult(stdout=wmic_output),
+        ],
+    ):
+        assert drop_analyzer._get_active_nic_info() == ("ethernet", True, 1000.0)
 
 
 def _sample(gateway=True, wan=True, link=True, connection_type="ethernet"):

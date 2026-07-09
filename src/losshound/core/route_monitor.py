@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import subprocess
@@ -15,6 +16,7 @@ logger = logging.getLogger(__name__)
 _RE_HOP_LINE = re.compile(r"^\s*(\d+)\s+(.+)$")
 _RE_IP = re.compile(r"(\d+\.\d+\.\d+\.\d+)")
 _RE_RTT = re.compile(r"(\d+)\s*ms|(<1)\s*ms")
+_RE_BRACKETED_IP = re.compile(r"\[(\d+\.\d+\.\d+\.\d+)\]")
 
 
 def trace_route(
@@ -89,7 +91,26 @@ def _parse_tracert_output(
 
         hops.append(RouteHop(hop_number=hop_num, ip=ip, rtt_samples=rtt_samples))
 
-    completed = bool(hops) and hops[-1].ip is not None
+    try:
+        destination_ip = str(ipaddress.IPv4Address(target))
+    except ipaddress.AddressValueError:
+        # For hostname targets, tracert prints the resolved destination in
+        # square brackets in its header even with ``-d`` enabled.
+        destination_ip = None
+        for match in _RE_BRACKETED_IP.finditer(output):
+            try:
+                destination_ip = str(ipaddress.IPv4Address(match.group(1)))
+                break
+            except ipaddress.AddressValueError:
+                continue
+
+    # A responsive final hop is not necessarily the requested destination;
+    # tracert can stop at max_hops immediately after an unrelated router.
+    completed = (
+        bool(hops)
+        and destination_ip is not None
+        and hops[-1].ip == destination_ip
+    )
 
     return RouteSnapshot(
         target=target,

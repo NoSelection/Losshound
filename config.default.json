@@ -10,6 +10,7 @@
     "ping_count": 4,
     "ping_timeout_ms": 2000,
     "auto_benchmark_interval_minutes": 0,
+    "lan_discovery_firewall_enabled": false,
     "lan_http_scan_enabled": false,
     "diagnosis": {
         "gateway_loss_threshold": 20.0,

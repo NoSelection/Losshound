@@ -14,6 +14,7 @@ from losshound.core.lan_monitor import lookup_vendor
 from losshound.core.local_monitor import get_active_connections
 from losshound.storage.history import HistoryStore
 from losshound.gui.db_workers import DbQueryWorker, DbWriteWorker
+from losshound.gui.palette import c
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 class LanScanWorker(QThread):
     """Background worker for LAN subnet discovery sweep to prevent GUI lag."""
     scan_complete = Signal(list)
+    error = Signal(str)
 
     def __init__(self, history: HistoryStore, enable_http_scan: bool = False):
         super().__init__()
@@ -38,12 +40,13 @@ class LanScanWorker(QThread):
             self.scan_complete.emit(devices)
         except Exception as exc:
             logger.exception("LAN Scan worker failed")
-            self.scan_complete.emit([])
+            self.error.emit(str(exc))
 
 
 class ConnectionRefreshWorker(QThread):
     """Background worker to fetch local network connections to prevent main thread blocking."""
     connections_ready = Signal(list)
+    error = Signal(str)
 
     def run(self):
         try:
@@ -51,7 +54,7 @@ class ConnectionRefreshWorker(QThread):
             self.connections_ready.emit(conns)
         except Exception as exc:
             logger.warning("Background connection refresh failed: %s", exc)
-            self.connections_ready.emit([])
+            self.error.emit(str(exc))
 
 
 class LANTab(QWidget):
@@ -151,6 +154,11 @@ class LANTab(QWidget):
         
         connections_layout.addLayout(filter_layout)
 
+        self._conn_state = QLabel("Open this tab to load active local connections.")
+        self._conn_state.setWordWrap(True)
+        self._conn_state.setProperty("role", "muted")
+        connections_layout.addWidget(self._conn_state)
+
         # Connections Table
         self._conn_table = QTableWidget(0, 6)
         self._conn_table.setHorizontalHeaderLabels([
@@ -235,6 +243,7 @@ class LANTab(QWidget):
             enable_http_scan = self._config.lan_http_scan_enabled
         self._scan_worker = LanScanWorker(self._history, enable_http_scan=enable_http_scan)
         self._scan_worker.scan_complete.connect(self._on_scan_complete)
+        self._scan_worker.error.connect(self._on_scan_error)
         self._scan_worker.start()
 
     @Slot(list)
@@ -244,6 +253,13 @@ class LANTab(QWidget):
         self._progress.setVisible(False)
         self._status_label.setText(f"Scan complete. Found {len(devices)} active devices.")
         self._refresh_devices_table()
+
+    def _on_scan_error(self, message: str):
+        self._scan_in_progress = False
+        self._scan_btn.setEnabled(True)
+        self._progress.setVisible(False)
+        detail = (message or "Unknown scan error")[:180]
+        self._status_label.setText(f"LAN scan failed: {detail}. Try again.")
 
     def _clear_devices(self):
         reply = QMessageBox.question(
@@ -259,6 +275,7 @@ class LANTab(QWidget):
                 self,
             )
             self._write_worker.finished.connect(self._on_clear_complete)
+            self._write_worker.error.connect(self._on_db_error)
             self._write_worker.start()
 
     def _on_clear_complete(self):
@@ -275,6 +292,7 @@ class LANTab(QWidget):
             self,
         )
         self._query_worker.finished.connect(self._on_devices_loaded)
+        self._query_worker.error.connect(self._on_db_error)
         self._query_worker.start()
 
     def _on_devices_loaded(self, devices: list[dict]):
@@ -307,26 +325,26 @@ class LANTab(QWidget):
                 # Stash the MAC so the edit handler knows which device this row belongs to
                 hostname_item.setData(Qt.ItemDataRole.UserRole, dev["mac_address"])
                 if not dev["is_active"]:
-                    hostname_item.setForeground(QColor("#4f5b66"))
+                    hostname_item.setForeground(QColor(c("text_dim")))
                 hostname_item.setToolTip("Double-click to set a custom name. Clear the text to revert to auto-detected hostname.")
                 self._devices_table.setItem(row, 0, hostname_item)
 
                 ip_item = QTableWidgetItem(dev["ip_address"])
                 ip_item.setFlags(readonly_flags)
                 if not dev["is_active"]:
-                    ip_item.setForeground(QColor("#4f5b66"))
+                    ip_item.setForeground(QColor(c("text_dim")))
                 self._devices_table.setItem(row, 1, ip_item)
 
                 mac_item = QTableWidgetItem(dev["mac_address"])
                 mac_item.setFlags(readonly_flags)
                 if not dev["is_active"]:
-                    mac_item.setForeground(QColor("#4f5b66"))
+                    mac_item.setForeground(QColor(c("text_dim")))
                 self._devices_table.setItem(row, 2, mac_item)
 
                 vendor_item = QTableWidgetItem(dev["vendor"] or "Unknown")
                 vendor_item.setFlags(readonly_flags)
                 if not dev["is_active"]:
-                    vendor_item.setForeground(QColor("#4f5b66"))
+                    vendor_item.setForeground(QColor(c("text_dim")))
                 self._devices_table.setItem(row, 3, vendor_item)
 
                 status_text = dev["status"].upper()
@@ -354,6 +372,13 @@ class LANTab(QWidget):
         finally:
             self._suppress_item_changed = False
 
+        if not devices:
+            self._status_label.setText("No saved devices yet. Select Scan Now to discover them.")
+
+    def _on_db_error(self, message: str):
+        detail = (message or "Unknown database error")[:180]
+        self._status_label.setText(f"LAN data couldn't be updated: {detail}. Try again.")
+
     @Slot(QTableWidgetItem)
     def _on_hostname_edited(self, item):
         if self._suppress_item_changed:
@@ -371,6 +396,7 @@ class LANTab(QWidget):
             self,
         )
         self._write_worker.finished.connect(self._refresh_devices_table)
+        self._write_worker.error.connect(self._on_db_error)
         self._write_worker.start()
         logger.info("Custom name for %s set to %r", mac, new_text or None)
 
@@ -384,6 +410,7 @@ class LANTab(QWidget):
             self,
         )
         self._write_worker.finished.connect(self._refresh_devices_table)
+        self._write_worker.error.connect(self._on_db_error)
         self._write_worker.start()
         logger.info("Device %s authorization status changed to %s", mac, new_status)
 
@@ -398,6 +425,7 @@ class LANTab(QWidget):
         
         self._conn_worker = ConnectionRefreshWorker(self)
         self._conn_worker.connections_ready.connect(self._on_connections_ready)
+        self._conn_worker.error.connect(self._on_connections_error)
         self._conn_worker.start()
 
     @Slot(list)
@@ -405,6 +433,19 @@ class LANTab(QWidget):
         self._conn_refresh_in_progress = False
         self._all_connections = conns
         self._display_connections()
+        self._conn_state.setText(
+            "No active local connections found."
+            if not conns
+            else f"Showing {len(conns)} active local connections."
+        )
+
+    def _on_connections_error(self, message: str):
+        self._conn_refresh_in_progress = False
+        self._conn_table.setRowCount(0)
+        detail = (message or "Unknown connection error")[:180]
+        self._conn_state.setText(
+            f"Connections couldn't be loaded: {detail}. This view will retry automatically."
+        )
 
     def _display_connections(self):
         """Filter and render connections list based on filter query."""

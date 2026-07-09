@@ -46,6 +46,12 @@ class HistoryTab(QWidget):
 
         layout.addLayout(controls)
 
+        self._state = QLabel("Loading diagnosis history…")
+        self._state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state.setWordWrap(True)
+        self._state.setProperty("role", "muted")
+        layout.addWidget(self._state)
+
         # Table
         self._table = QTableWidget(0, 5)
         self._table.setHorizontalHeaderLabels([
@@ -68,12 +74,16 @@ class HistoryTab(QWidget):
         if self._worker is not None and self._worker.isRunning():
             return
 
+        self._state.setText("Loading diagnosis history…")
+        self._state.setVisible(True)
+
         self._worker = DbQueryWorker(
             self._history._db_path,
             lambda store: store.get_recent_diagnoses(200),
             self,
         )
         self._worker.finished.connect(self._on_refresh_done)
+        self._worker.error.connect(self._on_refresh_error)
         self._worker.start()
 
     def _on_refresh_done(self, entries: list[dict]):
@@ -140,4 +150,18 @@ class HistoryTab(QWidget):
 
         # Scroll to bottom (latest)
         if self._table.rowCount() > 0:
+            self._state.setVisible(False)
             self._table.scrollToBottom()
+        else:
+            self._state.setText(
+                "No diagnoses match this filter yet. Keep monitoring or choose another filter."
+            )
+            self._state.setVisible(True)
+
+    def _on_refresh_error(self, message: str):
+        self._table.setRowCount(0)
+        detail = (message or "Unknown database error")[:180]
+        self._state.setText(
+            f"History couldn't be loaded: {detail}\nSelect Refresh to try again."
+        )
+        self._state.setVisible(True)

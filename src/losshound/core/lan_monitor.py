@@ -460,7 +460,23 @@ def run_command_resilient(args: List[str]) -> str:
 
 
 def get_local_network_info() -> Dict[str, str]:
-    """Parse ipconfig to get local IPv4 address and subnet mask."""
+    """Get the default-route IPv4 network, with ipconfig as a fallback."""
+    from losshound.core.windows_network import get_active_network_interface
+
+    active = get_active_network_interface()
+    if active:
+        try:
+            mask = str(
+                ipaddress.IPv4Network(f"0.0.0.0/{active.prefix_length}").netmask
+            )
+            return {"ip": active.ipv4_address, "mask": mask}
+        except (ipaddress.AddressValueError, ipaddress.NetmaskValueError):
+            logger.debug(
+                "Invalid active-interface prefix: %s/%s",
+                active.ipv4_address,
+                active.prefix_length,
+            )
+
     output = run_command_resilient(["ipconfig"])
     
     # We look for sections containing "IPv4 Address" and "Subnet Mask"

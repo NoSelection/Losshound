@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import platform
 import socket
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QGridLayout,
@@ -23,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from losshound.core.config import AppConfig
 from losshound.core.models import (
     Diagnosis,
     DiagnosisCategory,
@@ -43,6 +45,47 @@ from losshound.gui.widgets import (
 )
 
 
+def _loss_status(loss: float, threshold: float, *, timed_out: bool = False) -> str:
+    return "error" if timed_out or loss >= threshold else "healthy"
+
+
+def _warning_status(value: float, threshold: float) -> str:
+    return "warning" if value >= threshold else "healthy"
+
+
+def _empty_state_label(title: str, detail: str) -> QLabel:
+    label = QLabel(f"{title}\n{detail}")
+    label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    label.setWordWrap(True)
+    label.setMinimumHeight(72)
+    label.setAccessibleName(title.title())
+    label.setAccessibleDescription(detail)
+    label.setStyleSheet(
+        f"color: {c('text_dim')}; "
+        f"font-family: {FONT_CHROME_FAMILIES}; "
+        "font-size: 11px; font-weight: 500; letter-spacing: 0.5px; "
+        f"border: 1px dashed {c('border_faint')}; padding: 12px;"
+    )
+    return label
+
+
+class _InterfaceSignals(QObject):
+    """Thread-safe bridge for the one-shot active-interface lookup."""
+
+    result_ready = Signal(object)
+
+
+def _resolve_active_interface(signals: _InterfaceSignals) -> None:
+    from losshound.core.windows_network import get_active_network_interface
+
+    result = get_active_network_interface(timeout=2.0)
+    try:
+        signals.result_ready.emit(result)
+    except RuntimeError:
+        # The dashboard may have closed while the bounded lookup was running.
+        return
+
+
 # ---------------------------------------------------------------------------
 # Left-column composite panels
 # ---------------------------------------------------------------------------
@@ -57,8 +100,9 @@ class StatusPanel(BracketedPanel):
 
 
 class TargetsPanel(BracketedPanel):
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(title="Targets", parent=parent)
+        self._config = config
         self.rows: dict[str, KeyValueRow] = {}
         for key in ("Primary", "Secondary", "Gateway", "DNS"):
             row = KeyValueRow(key, "—", with_dot=True, dot_token="text_dim")
@@ -66,26 +110,47 @@ class TargetsPanel(BracketedPanel):
             self.layout().addWidget(row)
         self.layout().addStretch()
 
+    def update_config(self, config: AppConfig) -> None:
+        self._config = config
+
     def update_from_observation(self, obs: Observation) -> None:
         public = [p for p in obs.public_pings if p.target]
         if public:
             primary = public[0]
             self.rows["Primary"].set_value(primary.target)
             self.rows["Primary"].set_dot(
-                "mint" if primary.is_healthy else "error"
+                "mint"
+                if _loss_status(
+                    primary.loss_percent,
+                    self._config.diagnosis.public_loss_threshold,
+                    timed_out=primary.timed_out,
+                ) == "healthy"
+                else "error"
             )
         if len(public) > 1:
             secondary = public[1]
             self.rows["Secondary"].set_value(secondary.target)
             self.rows["Secondary"].set_dot(
-                "mint" if secondary.is_healthy else "error"
+                "mint"
+                if _loss_status(
+                    secondary.loss_percent,
+                    self._config.diagnosis.public_loss_threshold,
+                    timed_out=secondary.timed_out,
+                ) == "healthy"
+                else "error"
             )
 
         if obs.gateway_ip:
             self.rows["Gateway"].set_value(obs.gateway_ip)
         if obs.gateway_ping:
             self.rows["Gateway"].set_dot(
-                "mint" if obs.gateway_ping.is_healthy else "error"
+                "mint"
+                if _loss_status(
+                    obs.gateway_ping.loss_percent,
+                    self._config.diagnosis.gateway_loss_threshold,
+                    timed_out=obs.gateway_ping.timed_out,
+                ) == "healthy"
+                else "error"
             )
 
         if obs.dns_results:
@@ -94,8 +159,11 @@ class TargetsPanel(BracketedPanel):
                 primary_dns.resolved_ip or primary_dns.hostname or "—"
             )
             resolved = sum(1 for d in obs.dns_results if d.resolved)
+            failure_rate = 1 - (resolved / len(obs.dns_results))
             self.rows["DNS"].set_dot(
-                "mint" if resolved == len(obs.dns_results) else "warn"
+                "mint"
+                if failure_rate < self._config.diagnosis.dns_failure_threshold
+                else "warn"
             )
 
 
@@ -103,7 +171,7 @@ class SystemPanel(BracketedPanel):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(title="System", parent=parent)
         self.rows: dict[str, KeyValueRow] = {}
-        for key in ("Interface", "Local IP", "MAC", "Uptime", "OS"):
+        for key in ("Interface", "Local IP", "MAC", "Session", "OS"):
             row = KeyValueRow(key, "—", with_dot=False)
             self.rows[key] = row
             self.layout().addWidget(row)
@@ -114,6 +182,17 @@ class SystemPanel(BracketedPanel):
         self._tick.timeout.connect(self._refresh_uptime)
         self._tick.start(1000)
         self._refresh_uptime()
+
+        self.rows["Interface"].set_value("Detecting…")
+        self._interface_signals = _InterfaceSignals(self)
+        self._interface_signals.result_ready.connect(self._on_interface_ready)
+        self._interface_thread = threading.Thread(
+            target=_resolve_active_interface,
+            args=(self._interface_signals,),
+            name="losshound-interface-lookup",
+            daemon=True,
+        )
+        self._interface_thread.start()
 
     def _populate_static(self) -> None:
         # Local IP best-effort.
@@ -144,9 +223,17 @@ class SystemPanel(BracketedPanel):
         except Exception:
             self.rows["OS"].set_value("—")
 
-        self.rows["Interface"].set_value(
-            "Ethernet" if platform.system() == "Windows" else "—"
-        )
+    def _on_interface_ready(self, interface) -> None:
+        if interface is None:
+            self.rows["Interface"].set_value("Unavailable")
+            return
+        self.rows["Interface"].set_value(interface.interface_alias)
+        self.rows["Local IP"].set_value(interface.ipv4_address)
+        if interface.mac_address:
+            self.rows["MAC"].set_value(interface.mac_address.replace("-", ":"))
+
+    def shutdown(self) -> None:
+        self._tick.stop()
 
     def _refresh_uptime(self) -> None:
         delta = datetime.now() - self._launched_at
@@ -155,9 +242,9 @@ class SystemPanel(BracketedPanel):
         mins, secs = divmod(rem, 60)
         if hours >= 24:
             days, hrs = divmod(hours, 24)
-            self.rows["Uptime"].set_value(f"{days}d {hrs}h {mins}m")
+            self.rows["Session"].set_value(f"{days}d {hrs}h {mins}m")
         else:
-            self.rows["Uptime"].set_value(f"{hours:02d}:{mins:02d}:{secs:02d}")
+            self.rows["Session"].set_value(f"{hours:02d}:{mins:02d}:{secs:02d}")
 
 
 # ---------------------------------------------------------------------------
@@ -174,9 +261,21 @@ class AlertsFeed(BracketedPanel):
         super().__init__(title="Alerts", parent=parent)
         self.layout().setSpacing(2)
         self._rows: list[QWidget] = []
+        self._last_signature: tuple[str, str] | None = None
+        self._empty = _empty_state_label(
+            "NO ACTIVE ALERTS",
+            "Actionable connection issues will appear here.",
+        )
+        self.layout().addWidget(self._empty)
         self.layout().addStretch()
 
     def add_alert(self, when: datetime, level: str, text: str) -> None:
+        signature = (level, text.strip())
+        if signature == self._last_signature:
+            return
+        self._last_signature = signature
+        self._empty.setVisible(False)
+
         row = QWidget()
         h = QHBoxLayout(row)
         h.setContentsMargins(0, 2, 0, 2)
@@ -194,6 +293,8 @@ class AlertsFeed(BracketedPanel):
         h.addWidget(glyph)
 
         msg = QLabel(text)
+        msg.setWordWrap(True)
+        msg.setToolTip(text)
         msg.setStyleSheet(
             f"color: {c('text_primary')}; "
             f"font-family: {FONT_CHROME_FAMILIES}; "
@@ -208,6 +309,10 @@ class AlertsFeed(BracketedPanel):
             old = self._rows.pop()
             old.setParent(None)
             old.deleteLater()
+
+    def mark_clear(self) -> None:
+        """Allow a recurring issue to be shown again after a clean transition."""
+        self._last_signature = None
 
 
 class QosMitigationPanel(BracketedPanel):
@@ -379,12 +484,20 @@ class RouteSnapshotPanel(BracketedPanel):
         self._table.setColumnWidth(2, 70)
         self._table.setColumnWidth(3, 90)
         self._table.setMinimumHeight(170)
+        self._empty = _empty_state_label(
+            "WAITING FOR ROUTE DATA",
+            "A route snapshot will appear after the scheduled trace completes.",
+        )
+        self.layout().addWidget(self._empty)
+        self._table.setVisible(False)
         self.layout().addWidget(self._table)
 
     def update_route(self, obs: Observation) -> None:
         snap = obs.route_snapshot
         if snap is None:
             return
+        self._empty.setVisible(False)
+        self._table.setVisible(True)
         self.set_title(f"Route snapshot ({snap.target})")
         self._table.setRowCount(0)
         for hop in snap.hops:
@@ -413,8 +526,9 @@ class RouteSnapshotPanel(BracketedPanel):
 class LiveReadingsPanel(BracketedPanel):
     MAX_ROWS = 18
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(self, config: AppConfig, parent: Optional[QWidget] = None):
         super().__init__(title="Live readings", parent=parent)
+        self._config = config
         self._table = QTableWidget(0, 7)
         self._table.setHorizontalHeaderLabels(
             ["Time", "Target", "Type", "RTT (ms)", "Loss %", "Jitter (ms)", "Status"]
@@ -430,13 +544,31 @@ class LiveReadingsPanel(BracketedPanel):
         header.setFixedHeight(30)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._table.setMinimumHeight(220)
+        self._empty = _empty_state_label(
+            "WAITING FOR FIRST CHECK",
+            "Live target readings will appear when the monitor completes a cycle.",
+        )
+        self.layout().addWidget(self._empty)
+        self._table.setVisible(False)
         self.layout().addWidget(self._table)
 
+    def update_config(self, config: AppConfig) -> None:
+        self._config = config
+
     def push(self, obs: Observation) -> None:
-        rows: list[tuple[str, str, str, Optional[float], Optional[float], Optional[float]]] = []
+        self._empty.setVisible(False)
+        self._table.setVisible(True)
+        rows: list[
+            tuple[
+                str, str, str, Optional[float], Optional[float], Optional[float], float,
+            ]
+        ] = []
         time_str = obs.timestamp.strftime("%H:%M:%S")
         for p in obs.public_pings:
-            rows.append((time_str, p.target, "ICMP", p.rtt_avg, p.loss_percent, p.rtt_jitter))
+            rows.append((
+                time_str, p.target, "ICMP", p.rtt_avg, p.loss_percent,
+                p.rtt_jitter, self._config.diagnosis.public_loss_threshold,
+            ))
         if obs.gateway_ping:
             rows.append((
                 time_str,
@@ -445,6 +577,7 @@ class LiveReadingsPanel(BracketedPanel):
                 obs.gateway_ping.rtt_avg,
                 obs.gateway_ping.loss_percent,
                 obs.gateway_ping.rtt_jitter,
+                self._config.diagnosis.gateway_loss_threshold,
             ))
         for d in obs.dns_results:
             rows.append((
@@ -454,14 +587,22 @@ class LiveReadingsPanel(BracketedPanel):
                 d.resolution_time_ms,
                 0.0 if d.resolved else 100.0,
                 None,
+                self._config.diagnosis.dns_failure_threshold * 100.0,
             ))
 
-        for time_s, target, kind, rtt, loss, jitter in rows:
+        for time_s, target, kind, rtt, loss, jitter, loss_threshold in rows:
             row = 0
             self._table.insertRow(row)
-            healthy = (loss or 0.0) < 5 and (rtt is not None)
-            status_text = "OK" if healthy else "FAIL"
-            status_token = "mint" if healthy else "error"
+            failed = rtt is None or (loss or 0.0) >= loss_threshold
+            warned = not failed and (
+                rtt >= self._config.diagnosis.latency_warning_ms
+                or (
+                    jitter is not None
+                    and jitter >= self._config.diagnosis.jitter_warning_ms
+                )
+            )
+            status_text = "FAIL" if failed else ("WARN" if warned else "OK")
+            status_token = "error" if failed else ("warn" if warned else "mint")
             self._table.setItem(row, 0, _cell(time_s, color="info"))
             self._table.setItem(row, 1, _cell(target, color="text_primary"))
             self._table.setItem(row, 2, _cell(kind))
@@ -473,7 +614,9 @@ class LiveReadingsPanel(BracketedPanel):
                 row, 4,
                 _cell(
                     f"{loss:.2f}" if loss is not None else "—",
-                    color="error" if (loss or 0) > 5 else "text_primary",
+                    color="error"
+                    if (loss or 0.0) >= loss_threshold
+                    else "text_primary",
                 ),
             )
             self._table.setItem(
@@ -507,9 +650,17 @@ class RecentEventsPanel(BracketedPanel):
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
         self._table.setMinimumHeight(220)
+        self._empty = _empty_state_label(
+            "COLLECTING EVENTS",
+            "Diagnosis changes and monitor activity will appear here.",
+        )
+        self.layout().addWidget(self._empty)
+        self._table.setVisible(False)
         self.layout().addWidget(self._table)
 
     def add(self, when: datetime, level: str, source: str, event: str) -> None:
+        self._empty.setVisible(False)
+        self._table.setVisible(True)
         row = 0
         self._table.insertRow(row)
         level = level.upper()
@@ -581,8 +732,14 @@ class DashboardTab(QWidget):
     qos_apply_requested = Signal(str)
     diagnosis_action_requested = Signal(str)
 
-    def __init__(self, parent: Optional[QWidget] = None):
+    def __init__(
+        self,
+        config: AppConfig | None = None,
+        parent: Optional[QWidget] = None,
+    ):
         super().__init__(parent)
+        self._config = config or AppConfig()
+        self._last_diagnosis: Diagnosis | None = None
         self.setStyleSheet("background: transparent;")
 
         # Scrollable so very small windows still work.
@@ -609,7 +766,7 @@ class DashboardTab(QWidget):
 
         # ------------------------------------------------------------- Left column
         self.status_panel = StatusPanel()
-        self.targets_panel = TargetsPanel()
+        self.targets_panel = TargetsPanel(self._config)
         self.system_panel = SystemPanel()
 
         left_col = QVBoxLayout()
@@ -625,20 +782,25 @@ class DashboardTab(QWidget):
         grid.addWidget(left_holder, 0, 0, 3, 1)
 
         # ------------------------------------------------------------ Centre cards
-        self.gateway_card = MetricCard("Gateway", sub_columns=("RTT", "Logs"))
-        self.dns_card = MetricCard("DNS", sub_columns=("RTT", "Loss"))
-        self.latency_card = MetricCard("Latency", sub_columns=("RTT", "AVG", "MAX"))
+        self.gateway_card = MetricCard("Gateway", sub_columns=("RTT", "LOSS"))
+        self.dns_card = MetricCard("DNS", sub_columns=("RESOLVE", "FAIL"))
+        self.latency_card = MetricCard("Latency", sub_columns=("MIN", "AVG", "MAX"))
 
-        self.public_ip_card = MetricCard("Public IP", sub_columns=("RTT", "Logs"), sparkline=False)
-        self.packet_logs_card = MetricCard("Packet logs", sub_columns=("Packet", "Peak"))
-        self.jitter_card = MetricCard("Jitter", sub_columns=("KTN", "AVG", "MAX"))
+        self.public_target_card = MetricCard(
+            "Public target", sub_columns=("RTT", "LOSS"), sparkline=False
+        )
+        self.packet_loss_card = MetricCard("Packet loss", sub_columns=("AVG", "PEAK"))
+        self.jitter_card = MetricCard("Jitter", sub_columns=("MIN", "AVG", "MAX"))
+        # Compatibility aliases for callers/tests from the previous dashboard.
+        self.public_ip_card = self.public_target_card
+        self.packet_logs_card = self.packet_loss_card
 
         grid.addWidget(self.gateway_card,    0, 1)
         grid.addWidget(self.dns_card,        1, 1)
         grid.addWidget(self.latency_card,    2, 1)
 
-        grid.addWidget(self.public_ip_card,  0, 2)
-        grid.addWidget(self.packet_logs_card, 1, 2)
+        grid.addWidget(self.public_target_card,  0, 2)
+        grid.addWidget(self.packet_loss_card, 1, 2)
         grid.addWidget(self.jitter_card,     2, 2)
 
         # ------------------------------------------------------------ Right column
@@ -667,7 +829,7 @@ class DashboardTab(QWidget):
         grid.addWidget(right_holder, 0, 3, 3, 1)
 
         # ----------------------------------------------------------- Bottom row
-        self.readings_panel = LiveReadingsPanel()
+        self.readings_panel = LiveReadingsPanel(self._config)
         self.events_panel = RecentEventsPanel()
 
         grid.addWidget(self.readings_panel, 3, 0, 1, 2)
@@ -684,13 +846,22 @@ class DashboardTab(QWidget):
 
     # ----------------------------------------------------------------- API
 
+    def shutdown(self) -> None:
+        self.system_panel.shutdown()
+
     def update_observation(self, obs: Observation):
         # Status banner & targets/system reflect the current observation.
         self.targets_panel.update_from_observation(obs)
+        diag_config = self._config.diagnosis
 
         # GATEWAY
         if obs.gateway_ping:
             gp = obs.gateway_ping
+            gateway_loss_status = _loss_status(
+                gp.loss_percent,
+                diag_config.gateway_loss_threshold,
+                timed_out=gp.timed_out,
+            )
             self.gateway_card.set_hero(
                 obs.gateway_ip or "—",
                 status="neutral",
@@ -698,12 +869,16 @@ class DashboardTab(QWidget):
             self.gateway_card.set_sub(
                 0,
                 f"{gp.rtt_avg:.2f} ms" if gp.rtt_avg is not None else "—",
-                status="healthy" if gp.is_healthy else "error",
+                status=(
+                    _warning_status(gp.rtt_avg, diag_config.latency_warning_ms)
+                    if gp.rtt_avg is not None
+                    else gateway_loss_status
+                ),
             )
             self.gateway_card.set_sub(
                 1,
                 f"{gp.loss_percent:.1f} %",
-                status="healthy" if gp.loss_percent < 5 else "error",
+                status=gateway_loss_status,
             )
             self.gateway_card.push_sample(gp.rtt_avg)
         else:
@@ -712,16 +887,25 @@ class DashboardTab(QWidget):
         # PUBLIC IP — first public ping target IP and stats.
         if obs.public_pings:
             primary = obs.public_pings[0]
-            self.public_ip_card.set_hero(primary.target, status="neutral")
-            self.public_ip_card.set_sub(
+            public_loss_status = _loss_status(
+                primary.loss_percent,
+                diag_config.public_loss_threshold,
+                timed_out=primary.timed_out,
+            )
+            self.public_target_card.set_hero(primary.target, status="neutral")
+            self.public_target_card.set_sub(
                 0,
                 f"{primary.rtt_avg:.2f} ms" if primary.rtt_avg is not None else "—",
-                status="healthy" if primary.is_healthy else "error",
+                status=(
+                    _warning_status(primary.rtt_avg, diag_config.latency_warning_ms)
+                    if primary.rtt_avg is not None
+                    else public_loss_status
+                ),
             )
-            self.public_ip_card.set_sub(
+            self.public_target_card.set_sub(
                 1,
                 f"{primary.loss_percent:.1f} %",
-                status="healthy" if primary.loss_percent < 5 else "error",
+                status=public_loss_status,
             )
 
         # DNS card
@@ -733,15 +917,22 @@ class DashboardTab(QWidget):
             )
             self.dns_card.set_sub(
                 0,
-                f"{primary_dns.resolution_time_ms:.2f} ms" if primary_dns.resolution_time_ms else "—",
+                f"{primary_dns.resolution_time_ms:.2f} ms"
+                if primary_dns.resolution_time_ms is not None
+                else "—",
                 status="healthy" if primary_dns.resolved else "error",
             )
             resolved = sum(1 for d in obs.dns_results if d.resolved)
             total = len(obs.dns_results)
+            dns_failure_rate = (1 - resolved / total) if total else 0.0
             self.dns_card.set_sub(
                 1,
-                f"{(1 - resolved / total) * 100:.1f} %" if total else "—",
-                status="healthy" if resolved == total else "warning",
+                f"{dns_failure_rate * 100:.1f} %" if total else "—",
+                status=(
+                    "healthy"
+                    if dns_failure_rate < diag_config.dns_failure_threshold
+                    else "warning"
+                ),
             )
             if primary_dns.resolution_time_ms is not None:
                 self.dns_card.push_sample(primary_dns.resolution_time_ms)
@@ -754,13 +945,29 @@ class DashboardTab(QWidget):
         if all_losses:
             mean_loss = sum(all_losses) / len(all_losses)
             peak_loss = max(all_losses)
-            self.packet_logs_card.set_hero(
-                f"{mean_loss:.2f} %",
-                status="healthy" if mean_loss < 2 else ("warning" if mean_loss < 10 else "error"),
+            loss_breached = bool(
+                obs.gateway_ping
+                and _loss_status(
+                    obs.gateway_ping.loss_percent,
+                    diag_config.gateway_loss_threshold,
+                    timed_out=obs.gateway_ping.timed_out,
+                ) == "error"
+            ) or any(
+                _loss_status(
+                    ping.loss_percent,
+                    diag_config.public_loss_threshold,
+                    timed_out=ping.timed_out,
+                ) == "error"
+                for ping in obs.public_pings
             )
-            self.packet_logs_card.set_sub(0, f"{mean_loss:.2f} %", status="healthy" if mean_loss < 2 else "warning")
-            self.packet_logs_card.set_sub(1, f"{peak_loss:.2f} %", status="healthy" if peak_loss < 5 else "warning")
-            self.packet_logs_card.push_sample(mean_loss)
+            loss_status = "error" if loss_breached else "healthy"
+            self.packet_loss_card.set_hero(
+                f"{mean_loss:.2f} %",
+                status=loss_status,
+            )
+            self.packet_loss_card.set_sub(0, f"{mean_loss:.2f} %", status=loss_status)
+            self.packet_loss_card.set_sub(1, f"{peak_loss:.2f} %", status=loss_status)
+            self.packet_loss_card.push_sample(mean_loss)
 
         # LATENCY aggregated
         all_rtts: list[float] = []
@@ -773,11 +980,23 @@ class DashboardTab(QWidget):
             mn = min(all_rtts)
             self.latency_card.set_hero(
                 f"{avg:.2f} ms",
-                status="healthy" if avg < 50 else ("warning" if avg < 150 else "error"),
+                status=_warning_status(avg, diag_config.latency_warning_ms),
             )
-            self.latency_card.set_sub(0, f"{mn:.2f}", status="healthy")
-            self.latency_card.set_sub(1, f"{avg:.2f}", status="healthy")
-            self.latency_card.set_sub(2, f"{mx:.2f}", status="healthy" if mx < 200 else "warning")
+            self.latency_card.set_sub(
+                0,
+                f"{mn:.2f}",
+                status=_warning_status(mn, diag_config.latency_warning_ms),
+            )
+            self.latency_card.set_sub(
+                1,
+                f"{avg:.2f}",
+                status=_warning_status(avg, diag_config.latency_warning_ms),
+            )
+            self.latency_card.set_sub(
+                2,
+                f"{mx:.2f}",
+                status=_warning_status(mx, diag_config.latency_warning_ms),
+            )
             self.latency_card.push_sample(avg)
 
         # JITTER aggregated
@@ -791,17 +1010,30 @@ class DashboardTab(QWidget):
             mn_j = min(jitters)
             self.jitter_card.set_hero(
                 f"{avg_j:.2f} ms",
-                status="healthy" if avg_j < 10 else ("warning" if avg_j < 50 else "error"),
+                status=_warning_status(avg_j, diag_config.jitter_warning_ms),
             )
-            self.jitter_card.set_sub(0, f"{mn_j:.2f}", status="healthy")
-            self.jitter_card.set_sub(1, f"{avg_j:.2f}", status="healthy")
-            self.jitter_card.set_sub(2, f"{mx_j:.2f}", status="healthy" if mx_j < 30 else "warning")
+            self.jitter_card.set_sub(
+                0,
+                f"{mn_j:.2f}",
+                status=_warning_status(mn_j, diag_config.jitter_warning_ms),
+            )
+            self.jitter_card.set_sub(
+                1,
+                f"{avg_j:.2f}",
+                status=_warning_status(avg_j, diag_config.jitter_warning_ms),
+            )
+            self.jitter_card.set_sub(
+                2,
+                f"{mx_j:.2f}",
+                status=_warning_status(mx_j, diag_config.jitter_warning_ms),
+            )
             self.jitter_card.push_sample(avg_j)
 
         # Tables
         self.readings_panel.push(obs)
 
     def update_diagnosis(self, diag: Diagnosis):
+        self._last_diagnosis = diag
         self.status_panel.banner.update_status(
             diag.summary, diag.explanation, diag.category.value
         )
@@ -817,13 +1049,39 @@ class DashboardTab(QWidget):
             DiagnosisCategory.UNKNOWN: "info",
         }
         level = level_for_category.get(diag.category, "info")
-        self.alerts_panel.add_alert(diag.timestamp, level, diag.summary)
+        # The Alerts panel is reserved for actionable conditions. Healthy and
+        # baseline-collection updates remain available in Recent events.
+        if diag.category not in {DiagnosisCategory.HEALTHY, DiagnosisCategory.UNKNOWN}:
+            self.alerts_panel.add_alert(diag.timestamp, level, diag.summary)
+        else:
+            self.alerts_panel.mark_clear()
         self.events_panel.add(
             diag.timestamp,
             "INFO" if level == "info" else ("WARN" if level == "warn" else "ERROR"),
             "SYSTEM",
             diag.summary,
         )
+
+    def update_config(self, config: AppConfig) -> None:
+        self._config = config
+        self.targets_panel.update_config(config)
+        self.readings_panel.update_config(config)
+
+    def set_monitor_state(self, state: str, message: str = "") -> None:
+        """Show monitor lifecycle truth without discarding the last diagnosis."""
+        if state == "running":
+            if self._last_diagnosis is not None:
+                self.status_panel.banner.update_status(
+                    self._last_diagnosis.summary,
+                    self._last_diagnosis.explanation,
+                    self._last_diagnosis.category.value,
+                )
+            else:
+                self.status_panel.banner.set_state(
+                    "collecting", message or "Waiting for the first completed check"
+                )
+            return
+        self.status_panel.banner.set_state(state, message)
 
     def update_route(self, obs: Observation) -> None:
         self.route_panel.update_route(obs)

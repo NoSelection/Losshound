@@ -138,6 +138,8 @@ class BracketedPanel(QWidget):
         self._title = title.upper() if title else None
         self._spotlight = spotlight
         self._title_color = qc(title_color_token)
+        if title:
+            self.setAccessibleName(title)
 
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
         self.setAutoFillBackground(False)
@@ -151,6 +153,7 @@ class BracketedPanel(QWidget):
 
     def set_title(self, title: str) -> None:
         self._title = title.upper()
+        self.setAccessibleName(title)
         margins = self.layout().contentsMargins()
         self.layout().setContentsMargins(
             margins.left(), 32, margins.right(), margins.bottom()
@@ -327,6 +330,11 @@ class LiveDot(QWidget):
         self._anim.stop()
         self._effect.setOpacity(0.4)
 
+    def start(self) -> None:
+        if self._anim.state() != QPropertyAnimation.State.Running:
+            self._effect.setOpacity(1.0)
+            self._anim.start()
+
     def paintEvent(self, event):  # type: ignore[override]
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
@@ -409,13 +417,18 @@ class LosshoundTabBar(QTabBar):
         super().__init__(parent)
         self.setDrawBase(False)
         self.setExpanding(True)
-        self.setUsesScrollButtons(False)
+        self.setUsesScrollButtons(True)
+        self.setElideMode(Qt.TextElideMode.ElideRight)
+        self.setAccessibleName("Primary navigation")
         self.setFont(mono_font(10))
 
     def tabSizeHint(self, index: int) -> QSize:  # type: ignore[override]
         size = super().tabSizeHint(index)
         size.setHeight(38)
-        size.setWidth(max(size.width() + 28, 122))
+        # Eleven tool tabs must remain reachable at the 1200 px window minimum.
+        # Compact cells fit at that width; scroll buttons remain as a fallback
+        # for high text scaling and narrower host layouts.
+        size.setWidth(max(72, min(size.width() + 14, 108)))
         return size
 
     def paintEvent(self, event):  # type: ignore[override]
@@ -450,6 +463,13 @@ class LosshoundTabBar(QTabBar):
             if selected:
                 painter.setPen(active_pen)
                 painter.drawLine(r.left() + 1, r.bottom() - 2, r.right() - 1, r.bottom() - 2)
+                if self.hasFocus():
+                    focus_pen = QPen(qc("border_focus"))
+                    focus_pen.setWidth(1)
+                    focus_pen.setStyle(Qt.PenStyle.DashLine)
+                    focus_pen.setCosmetic(True)
+                    painter.setPen(focus_pen)
+                    painter.drawRect(r.adjusted(3, 3, -4, -5))
 
         pen = QPen(qc("border"))
         pen.setWidth(1)

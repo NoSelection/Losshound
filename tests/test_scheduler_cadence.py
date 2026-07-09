@@ -1,8 +1,10 @@
+import threading
+import time
 from datetime import datetime
 from unittest.mock import MagicMock
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QTimer
+from PySide6.QtCore import QCoreApplication, QThread, QTimer
 
 from losshound.core.config import AppConfig
 from losshound.core.models import Diagnosis, DiagnosisCategory, PingResult
@@ -97,6 +99,116 @@ def test_fast_interval_never_exceeds_configured(qapp):
     worker._config.ping_interval_seconds = 3  # user already faster than fast mode
     worker._update_cadence(_ping(loss=100.0, timed_out=True), [])
     assert worker._ping_timer.interval() == 3 * 1000
+
+
+def test_fast_cycle_reuses_cached_gateway_instead_of_rediscovering(
+    qapp, monkeypatch
+):
+    import losshound.core.scheduler as scheduler
+
+    worker = _worker(qapp)
+    worker._fast_mode = True
+    worker._gateway_ip = "192.168.1.1"
+    worker._last_dns_check_monotonic = time.monotonic()
+    worker._config.public_ping_targets = ["1.1.1.1"]
+    worker._run_ping_probes = MagicMock(return_value=[_ping(), _ping()])
+    detect_gateway = MagicMock(side_effect=AssertionError("must use cached gateway"))
+    monkeypatch.setattr(scheduler, "detect_gateway", detect_gateway)
+
+    worker._run_ping_cycle()
+
+    detect_gateway.assert_not_called()
+    worker._run_ping_probes.assert_called_once()
+
+
+def test_ping_targets_run_concurrently_in_cancellable_qthreads(
+    qapp, monkeypatch
+):
+    import losshound.core.scheduler as scheduler
+
+    barrier = threading.Barrier(3)
+
+    def fake_ping(target, count, timeout_ms):
+        barrier.wait(timeout=1.0)
+        return PingResult(
+            target=target,
+            timestamp=datetime.now(),
+            packets_sent=count,
+            packets_received=count,
+            loss_percent=0.0,
+        )
+
+    monkeypatch.setattr(scheduler, "ping", fake_ping)
+    worker = _worker(qapp)
+    results = worker._run_ping_probes(
+        ["192.168.1.1", "1.1.1.1", "8.8.8.8"],
+        count=1,
+        timeout_ms=1000,
+        deadline=time.monotonic() + 2.0,
+    )
+
+    assert [result.target for result in results] == [
+        "192.168.1.1",
+        "1.1.1.1",
+        "8.8.8.8",
+    ]
+
+
+def test_probe_deadline_cancels_stragglers_and_records_timeout(qapp, monkeypatch):
+    import losshound.core.scheduler as scheduler
+
+    def fake_ping(target, count, timeout_ms):
+        while not QThread.currentThread().isInterruptionRequested():
+            time.sleep(0.005)
+        raise InterruptedError
+
+    monkeypatch.setattr(scheduler, "ping", fake_ping)
+    worker = _worker(qapp)
+    started = time.monotonic()
+    results = worker._run_ping_probes(
+        ["1.1.1.1", "8.8.8.8"],
+        count=2,
+        timeout_ms=2000,
+        deadline=started + 0.1,
+    )
+
+    assert time.monotonic() - started < 1.0
+    assert all(result.timed_out for result in results)
+    assert all(result.loss_percent == 100.0 for result in results)
+    assert all("deadline" in result.error.lower() for result in results)
+
+
+def test_mark_stopped_interrupts_in_flight_parallel_probes(qapp, monkeypatch):
+    import losshound.core.scheduler as scheduler
+
+    probes_started = threading.Event()
+
+    def fake_ping(target, count, timeout_ms):
+        probes_started.set()
+        while not QThread.currentThread().isInterruptionRequested():
+            time.sleep(0.005)
+        raise InterruptedError
+
+    monkeypatch.setattr(scheduler, "ping", fake_ping)
+    worker = _worker(qapp)
+
+    def stop_when_started():
+        assert probes_started.wait(timeout=1.0)
+        worker.mark_stopped()
+
+    stopper = threading.Thread(target=stop_when_started, daemon=True)
+    stopper.start()
+    started = time.monotonic()
+    with pytest.raises(InterruptedError):
+        worker._run_ping_probes(
+            ["1.1.1.1", "8.8.8.8"],
+            count=2,
+            timeout_ms=2000,
+            deadline=started + 5.0,
+        )
+    stopper.join(timeout=1.0)
+
+    assert time.monotonic() - started < 1.0
 
 
 # --------------------------------------------------------- Lag spike detection

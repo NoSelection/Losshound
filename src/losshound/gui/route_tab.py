@@ -62,6 +62,11 @@ class RouteTab(QWidget):
         changes_label = QLabel("ROUTE CHANGES")
         changes_label.setStyleSheet("font-size: 11px; color: #788596; font-weight: bold;")
         layout.addWidget(changes_label)
+
+        self._changes_state = QLabel("Loading route history…")
+        self._changes_state.setWordWrap(True)
+        self._changes_state.setProperty("role", "muted")
+        layout.addWidget(self._changes_state)
  
         self._changes_table = QTableWidget(0, 3)
         self._changes_table.setHorizontalHeaderLabels([
@@ -121,6 +126,9 @@ class RouteTab(QWidget):
     def _load_changes(self):
         if self._worker is not None and self._worker.isRunning():
             return
+
+        self._changes_state.setText("Loading route history…")
+        self._changes_state.setVisible(True)
  
         self._worker = DbQueryWorker(
             self._history._db_path,
@@ -128,12 +136,17 @@ class RouteTab(QWidget):
             self,
         )
         self._worker.finished.connect(self._on_changes_loaded)
+        self._worker.error.connect(self._on_changes_error)
         self._worker.start()
  
     def _on_changes_loaded(self, snapshots: list[RouteSnapshot]):
         self._changes_table.setRowCount(0)
  
         if len(snapshots) < 2:
+            self._changes_state.setText(
+                "No route comparison yet. Losshound needs at least two route samples."
+            )
+            self._changes_state.setVisible(True)
             return
  
         for i in range(1, len(snapshots)):
@@ -162,3 +175,17 @@ class RouteTab(QWidget):
             else:
                 sig_item.setForeground(QColor("#788596"))
             self._changes_table.setItem(row, 2, sig_item)
+
+        if self._changes_table.rowCount() == 0:
+            self._changes_state.setText("No route changes detected in the last 24 hours.")
+            self._changes_state.setVisible(True)
+        else:
+            self._changes_state.setVisible(False)
+
+    def _on_changes_error(self, message: str):
+        self._changes_table.setRowCount(0)
+        detail = (message or "Unknown database error")[:180]
+        self._changes_state.setText(
+            f"Route history couldn't be loaded: {detail}\nSelect Refresh History to try again."
+        )
+        self._changes_state.setVisible(True)

@@ -88,37 +88,47 @@ class LosshoundHeader(QWidget):
         row.addStretch()
 
         # Action group — Pause / Run Now / Settings cog.
-        self._pause_btn = QPushButton("▶  Pause monitor")
+        self._pause_btn = QPushButton("⏸  PAUSE MONITOR")
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pause_btn.setText("▶  PAUSE MONITOR")
+        self._pause_btn.setAccessibleName("Pause monitoring")
+        self._pause_btn.setToolTip("Pause monitoring and freeze the current readings")
         self._pause_btn.setStyleSheet(_header_button_qss(primary=True))
         self._pause_btn.clicked.connect(self.pause_clicked.emit)
         row.addWidget(self._pause_btn)
 
-        self._run_btn = QPushButton("STEP")
+        self._run_btn = QPushButton("RUN CHECK")
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.setAccessibleName("Run network check")
+        self._run_btn.setToolTip("Run a monitoring check now")
         self._run_btn.setStyleSheet(_header_button_qss(primary=False))
         self._run_btn.clicked.connect(self.run_now_clicked.emit)
         row.addWidget(self._run_btn)
 
-        cog = QPushButton("⚙")
-        cog.setCursor(Qt.CursorShape.PointingHandCursor)
-        cog.setFixedSize(QSize(40, 36))
-        cog.setText("")
-        cog.setIcon(_gear_icon())
-        cog.setIconSize(QSize(18, 18))
-        cog.setStyleSheet(_header_cog_qss())
-        cog.clicked.connect(self.settings_clicked.emit)
-        row.addWidget(cog)
+        self._settings_btn = QPushButton("")
+        self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._settings_btn.setFixedSize(QSize(40, 36))
+        self._settings_btn.setIcon(_gear_icon())
+        self._settings_btn.setIconSize(QSize(18, 18))
+        self._settings_btn.setAccessibleName("Open settings")
+        self._settings_btn.setAccessibleDescription(
+            "Open monitoring targets, thresholds, alerts, and behavior settings"
+        )
+        self._settings_btn.setToolTip("Open settings")
+        self._settings_btn.setStyleSheet(_header_cog_qss())
+        self._settings_btn.clicked.connect(self.settings_clicked.emit)
+        row.addWidget(self._settings_btn)
 
     def set_paused(self, paused: bool) -> None:
-        if paused:
-            self._pause_btn.setText("▶  Resume monitor")
-        else:
-            self._pause_btn.setText("▶  Pause monitor")
-
         self._pause_btn.setText(
-            "▶  RESUME MONITOR" if paused else "▶  PAUSE MONITOR"
+            "▶  RESUME MONITOR" if paused else "⏸  PAUSE MONITOR"
+        )
+        self._pause_btn.setAccessibleName(
+            "Resume monitoring" if paused else "Pause monitoring"
+        )
+        self._pause_btn.setToolTip(
+            "Resume live monitoring"
+            if paused
+            else "Pause monitoring and freeze the current readings"
         )
 
 
@@ -193,6 +203,10 @@ def _header_button_qss(primary: bool) -> str:
         QPushButton:pressed {{
             background-color: {c('bg_window')};
         }}
+        QPushButton:focus {{
+            border: 2px solid {c('border_focus')};
+            padding: 7px 17px;
+        }}
     """
 
 
@@ -208,6 +222,9 @@ def _header_cog_qss() -> str:
         QPushButton:hover {{
             border-color: {c('info')};
             color: {c('info')};
+        }}
+        QPushButton:focus {{
+            border: 2px solid {c('border_focus')};
         }}
     """
 
@@ -330,6 +347,8 @@ class MetricCard(BracketedPanel):
         # Hero row
         self._hero = QLabel("--")
         self._hero.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._hero.setAccessibleName(f"{title} current value")
+        self._hero.setProperty("status", "collecting")
         hero_font = mono_font(38, QFont.Weight.Light)
         self._hero.setFont(hero_font)
         self._hero.setStyleSheet(
@@ -387,6 +406,8 @@ class MetricCard(BracketedPanel):
             col.addWidget(label)
 
             value = QLabel("--")
+            value.setAccessibleName(f"{title} {name}")
+            value.setProperty("status", "collecting")
             value.setStyleSheet(
                 f"color: {c('mint')}; "
                 f"font-family: {FONT_MONO_FAMILIES}; "
@@ -400,6 +421,8 @@ class MetricCard(BracketedPanel):
     # ------------------------------------------------------------------ API
     def set_hero(self, text: str, status: str = "neutral") -> None:
         self._hero.setText(text)
+        self._hero.setProperty("status", status)
+        self._hero.setAccessibleDescription(f"Status: {status}")
         size = 27 if len(text) > 15 else (31 if len(text) > 11 else 36)
         self._hero.setFont(mono_font(size, QFont.Weight.Light))
         token = self.STATUS_TOKEN.get(status, "text_primary")
@@ -414,6 +437,8 @@ class MetricCard(BracketedPanel):
             token = self.STATUS_TOKEN.get(status, "mint")
             label = self._sub_values[idx]
             label.setText(value)
+            label.setProperty("status", status)
+            label.setAccessibleDescription(f"Status: {status}")
             label.setStyleSheet(
                 f"color: {c(token)}; "
                 f"font-family: {FONT_MONO_FAMILIES}; "
@@ -443,10 +468,12 @@ class StatusBanner(QFrame):
     """Compact HEALTH banner with a coloured outline and pulsing live dot."""
 
     LEVELS = {
-        "healthy":  ("mint",  "HEALTH: MONITORING", "Network is stable"),
-        "warning":  ("warn",  "HEALTH: WARN",       "Anomalies detected"),
-        "error":    ("error", "HEALTH: ALERT",      "Connectivity issue"),
-        "unknown":  ("text_secondary", "HEALTH: STANDBY",  "Collecting data"),
+        "collecting": ("info", "HEALTH: COLLECTING", "Building a reliable baseline"),
+        "healthy":    ("mint", "HEALTH: MONITORING", "Network is stable"),
+        "warning":    ("warn", "HEALTH: WARN", "Anomalies detected"),
+        "error":      ("error", "HEALTH: ALERT", "Connectivity issue"),
+        "paused":     ("warn", "MONITOR: PAUSED", "Readings are frozen"),
+        "stale":      ("warn", "DATA: STALE", "No fresh readings received"),
     }
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -458,15 +485,17 @@ class StatusBanner(QFrame):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(4)
 
-        self._headline = QLabel("HEALTH: MONITORING")
+        self.setAccessibleName("Network health status")
+
+        self._headline = QLabel("HEALTH: COLLECTING")
         self._headline.setStyleSheet(
-            f"color: {c('mint')}; "
+            f"color: {c('info')}; "
             f"font-family: {FONT_MONO_FAMILIES}; "
             "font-size: 13px; font-weight: 700; letter-spacing: 1.5px;"
         )
         layout.addWidget(self._headline)
 
-        self._explanation = QLabel("Network is stable")
+        self._explanation = QLabel("Building a reliable baseline")
         self._explanation.setStyleSheet(
             f"color: {c('text_secondary')}; "
             f"font-family: {FONT_CHROME_FAMILIES}; "
@@ -502,7 +531,7 @@ class StatusBanner(QFrame):
 
         layout.addLayout(bottom)
 
-        self._level = "healthy"
+        self._level = "collecting"
         self._apply_level()
 
     def update_status(self, summary: str, explanation: str, category: str):
@@ -513,16 +542,23 @@ class StatusBanner(QFrame):
             "dns_issue": "warning",
             "upstream_route_issue": "warning",
             "intermittent": "warning",
-            "unknown": "unknown",
+            "unknown": "collecting",
         }
-        level = level_map.get(category, "unknown")
-        self._level = level
-        _token, default_head, _default_sub = self.LEVELS[level]
+        level = level_map.get(category, "collecting")
+        _token, _default_head, default_sub = self.LEVELS[level]
         # Headline stays anchored to the level so the panel reads as a
         # status indicator, not a rolling log. The diagnosis copy goes to
         # the subtitle.
-        self._headline.setText(default_head)
-        self._explanation.setText(summary or explanation or _default_sub)
+        self.set_state(level, summary or explanation or default_sub)
+
+    def set_state(self, level: str, message: str = "") -> None:
+        """Apply a truthful monitor/diagnosis state to the banner."""
+        if level not in self.LEVELS:
+            level = "collecting"
+        self._level = level
+        _token, headline, default_sub = self.LEVELS[level]
+        self._headline.setText(headline)
+        self._explanation.setText(message or default_sub)
         self._apply_level()
 
     def set_uptime(self, text: str) -> None:
@@ -537,6 +573,13 @@ class StatusBanner(QFrame):
             "font-size: 13px; font-weight: 700; letter-spacing: 1.5px;"
         )
         self._dot.set_color(token)
+        if self._level in {"paused", "stale"}:
+            self._dot.stop()
+        else:
+            self._dot.start()
+        self.setAccessibleDescription(
+            f"{self._headline.text()}. {self._explanation.text()}"
+        )
         # Transparent inside, mint outline so the dashboard texture flows
         # behind the banner and only the border reads as a frame.
         self.setStyleSheet(
@@ -588,14 +631,28 @@ class KeyValueRow(QWidget):
         self._dot: Optional[LiveDot] = None
         if with_dot:
             self._dot = LiveDot(dot_token, 7)
+            self._dot.setAccessibleName(f"{key} status")
             layout.addWidget(self._dot)
+        self.setAccessibleName(key)
+        self.setAccessibleDescription(f"{key}: {value}")
 
     def set_value(self, text: str) -> None:
         self._value.setText(text)
+        self.setAccessibleDescription(f"{self._key.text()}: {text}")
 
     def set_dot(self, token: str) -> None:
         if self._dot is not None:
             self._dot.set_color(token)
+            state = {
+                "mint": "healthy",
+                "warn": "warning",
+                "error": "unreachable",
+                "text_dim": "waiting for data",
+            }.get(token, token.replace("_", " "))
+            self._dot.setAccessibleDescription(state)
+            self.setAccessibleDescription(
+                f"{self._key.text()}: {self._value.text()}; status {state}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -619,6 +676,7 @@ class MonitorStatusBar(QFrame):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("monitor-statusbar")
+        self.setAccessibleName("Monitoring status")
         self.setFixedHeight(32)
         self.setStyleSheet(
             f"QFrame#monitor-statusbar {{"
@@ -640,15 +698,15 @@ class MonitorStatusBar(QFrame):
         )
         row.addWidget(self._mon_label)
 
-        self._mon_value = QLabel("ON")
+        self._mon_value = QLabel("STARTING")
         self._mon_value.setStyleSheet(
-            f"color: {c('mint')}; "
+            f"color: {c('info')}; "
             f"font-family: {FONT_MONO_FAMILIES}; "
             "font-size: 11px; font-weight: 600;"
         )
         row.addWidget(self._mon_value)
 
-        self._mon_dot = LiveDot("mint", 7)
+        self._mon_dot = LiveDot("info", 7)
         row.addWidget(self._mon_dot)
 
         row.addWidget(_footer_separator())
@@ -671,7 +729,19 @@ class MonitorStatusBar(QFrame):
             if key in {"targets", "threads"}:
                 row.addWidget(_footer_separator())
 
-        row.addStretch()
+        self._status_message = QLabel("")
+        self._status_message.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self._status_message.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+        self._status_message.setStyleSheet(
+            f"color: {c('text_dim')}; "
+            f"font-family: {FONT_CHROME_FAMILIES}; "
+            "font-size: 10px;"
+        )
+        row.addWidget(self._status_message, 1)
 
         # Right cluster: countdown + DB + version
         self._countdown = QLabel("")
@@ -700,14 +770,28 @@ class MonitorStatusBar(QFrame):
         row.addWidget(self._version_label)
 
     def set_monitoring(self, on: bool) -> None:
-        self._mon_value.setText("ON" if on else "PAUSED")
-        token = "mint" if on else "warn"
+        self.set_monitor_state("running" if on else "paused")
+
+    def set_monitor_state(self, state: str) -> None:
+        label, token = {
+            "running": ("ON", "mint"),
+            "collecting": ("STARTING", "info"),
+            "paused": ("PAUSED", "warn"),
+            "error": ("ERROR", "error"),
+            "stale": ("STALE", "warn"),
+        }.get(state, ("STARTING", "info"))
+        self._mon_value.setText(label)
         self._mon_value.setStyleSheet(
             f"color: {c(token)}; "
             f"font-family: {FONT_MONO_FAMILIES}; "
             "font-size: 11px; font-weight: 600;"
         )
         self._mon_dot.set_color(token)
+        if state in {"paused", "stale"}:
+            self._mon_dot.stop()
+        else:
+            self._mon_dot.start()
+        self.setAccessibleDescription(f"Monitoring state: {label.lower()}")
 
     def set_interval(self, seconds: float) -> None:
         self._items["interval"].setText(f"Interval: {seconds:.1f}s")
@@ -725,11 +809,8 @@ class MonitorStatusBar(QFrame):
             self._countdown.setText("")
 
     def set_status_text(self, text: str) -> None:
-        # Tucked into the monitoring label slot to surface short messages.
-        if text:
-            self._mon_label.setText(text)
-        else:
-            self._mon_label.setText("Monitoring:")
+        self._status_message.setText(text)
+        self._status_message.setToolTip(text)
 
 
 # ---------------------------------------------------------------------------

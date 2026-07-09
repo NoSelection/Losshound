@@ -30,15 +30,30 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
 
     if sys.platform == "win32":
         try:
-            subprocess.run(
+            result = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=2.0,
                 creationflags=CREATE_NO_WINDOW,
             )
-            return
-        except Exception:
+            if result.returncode == 0:
+                try:
+                    proc.wait(timeout=1.0)
+                except subprocess.TimeoutExpired:
+                    logger.debug(
+                        "taskkill returned success but PID %s is still alive; falling back",
+                        proc.pid,
+                    )
+                if proc.poll() is not None:
+                    return
+            else:
+                logger.debug(
+                    "taskkill failed for PID %s with exit code %s; falling back",
+                    proc.pid,
+                    result.returncode,
+                )
+        except (OSError, subprocess.SubprocessError):
             logger.debug("taskkill failed for PID %s; falling back", proc.pid)
 
     proc.terminate()
@@ -87,8 +102,9 @@ def run_subprocess_interruptible(args: list[str], timeout_sec: float) -> tuple[s
                 raise subprocess.TimeoutExpired(args, timeout_sec)
 
             time.sleep(0.05)
-    except Exception:
-        # Guarantee cleanup of subprocess on any other unexpected exception (e.g. GeneratorExit/KeyboardInterrupt)
+    except BaseException:
+        # Guarantee cleanup on ordinary failures and control-flow exceptions
+        # such as KeyboardInterrupt and GeneratorExit.
         if proc.poll() is None:
             _terminate_process_tree(proc)
         raise

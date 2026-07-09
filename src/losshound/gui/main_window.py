@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import logging
+import time
 
 from PySide6.QtCore import QThread, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent
@@ -169,6 +170,8 @@ class MainWindow(QMainWindow):
         self._history = HistoryStore()
         self._really_quit = False
         self._paused = False
+        self._monitor_ui_state = "collecting"
+        self._last_observation_monotonic: float | None = None
 
         self.setWindowTitle("Losshound — Network Diagnosis")
         self.setWindowIcon(app_icon())
@@ -203,7 +206,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._tabs)
 
         # Create tabs
-        self._dashboard = DashboardTab()
+        self._dashboard = DashboardTab(config)
         self._dashboard.setObjectName("dashboard-tab")
         self._history_tab = HistoryTab(self._history)
         self._route_tab = RouteTab(self._history)
@@ -240,7 +243,8 @@ class MainWindow(QMainWindow):
         self._status_bar.set_interval(config.ping_interval_seconds)
         self._status_bar.set_targets(len(getattr(config, "public_ping_targets", [])))
         self._status_bar.set_threads(1)
-        self._status_bar.set_monitoring(True)
+        self._status_bar.set_monitor_state("collecting")
+        self._status_bar.set_status_text("Waiting for first completed check")
 
         # Countdown timer. _current_interval tracks the monitor's effective
         # cadence, which densifies during instability (see scheduler).
@@ -255,10 +259,11 @@ class MainWindow(QMainWindow):
         from losshound.core.notifications import NotificationDispatcher
         self._alert_engine = AlertEngine(config.alerts, self._history)
         self._notification_dispatcher = NotificationDispatcher(config.alerts)
-        self._tray = TrayIcon(self, engine=self._alert_engine)
+        self._tray = TrayIcon(self, engine=self._alert_engine, config=config)
         self._tray.show_requested.connect(self._show_from_tray)
         self._tray.quit_requested.connect(self._quit_from_tray)
         self._tray.show()
+        self._tray.set_monitor_state("collecting", "Waiting for first check")
 
         # Connect settings changes
         self._settings_tab.config_changed.connect(self._on_config_changed)
@@ -331,6 +336,11 @@ class MainWindow(QMainWindow):
         self._status_bar.set_status_text(f"Drop forensics: {episode.cause}")
 
     def _on_observation(self, obs: Observation):
+        self._last_observation_monotonic = time.monotonic()
+        if not self._paused and self._monitor_ui_state != "running":
+            self._monitor_ui_state = "running"
+            self._dashboard.set_monitor_state("running")
+            self._status_bar.set_monitor_state("running")
         self._dashboard.update_observation(obs)
         self._dashboard.update_route(obs)
         self._route_tab.update_route(obs)
@@ -415,7 +425,11 @@ class MainWindow(QMainWindow):
 
     def _on_error(self, msg: str):
         logger.error("Monitor error: %s", msg)
+        self._monitor_ui_state = "error"
+        self._dashboard.set_monitor_state("error", msg[:180])
+        self._status_bar.set_monitor_state("error")
         self._status_bar.set_status_text(f"Error: {msg[:60]}")
+        self._tray.set_monitor_state("error", msg[:100])
 
     def _on_config_changed(self, config: AppConfig):
         self._config = config
@@ -423,6 +437,8 @@ class MainWindow(QMainWindow):
         self._alert_engine.update_config(config.alerts)
         self._notification_dispatcher.update_config(config.alerts)
         self._lan_tab.update_config(config)
+        self._dashboard.update_config(config)
+        self._tray.update_config(config)
         # The worker's queued update_config re-emits cadence_changed with the
         # effective interval, which corrects these if fast mode is active.
         self._current_interval = config.ping_interval_seconds
@@ -436,6 +452,20 @@ class MainWindow(QMainWindow):
             return
         self._seconds_until_next = max(0, self._seconds_until_next - 1)
         self._status_bar.set_countdown(self._seconds_until_next)
+        if (
+            self._last_observation_monotonic is not None
+            and self._monitor_ui_state == "running"
+        ):
+            elapsed = time.monotonic() - self._last_observation_monotonic
+            stale_after = max(15.0, self._current_interval * 2.5)
+            if elapsed >= stale_after:
+                seconds = int(elapsed)
+                self._monitor_ui_state = "stale"
+                message = f"No fresh reading for {seconds} seconds"
+                self._dashboard.set_monitor_state("stale", message)
+                self._status_bar.set_monitor_state("stale")
+                self._status_bar.set_status_text(message)
+                self._tray.set_monitor_state("stale", message)
 
     # ----------------------------------------------------------- Header actions
 
@@ -446,9 +476,15 @@ class MainWindow(QMainWindow):
             self._wire_monitor(self._monitor)
             self._monitor.start()
             self._paused = False
+            self._monitor_ui_state = "collecting"
+            self._last_observation_monotonic = time.monotonic()
             self._header.set_paused(False)
-            self._status_bar.set_monitoring(True)
-            self._status_bar.set_status_text("Monitoring resumed")
+            self._dashboard.set_monitor_state(
+                "collecting", "Monitoring resumed; waiting for a fresh check"
+            )
+            self._status_bar.set_monitor_state("collecting")
+            self._status_bar.set_status_text("Monitoring resumed; checking now")
+            self._tray.set_monitor_state("collecting", "Monitoring resumed")
         else:
             # Pause — stop the monitor thread.
             try:
@@ -456,9 +492,14 @@ class MainWindow(QMainWindow):
             except Exception:
                 logger.exception("Error stopping monitor for pause")
             self._paused = True
+            self._monitor_ui_state = "paused"
             self._header.set_paused(True)
-            self._status_bar.set_monitoring(False)
+            self._dashboard.set_monitor_state(
+                "paused", "Monitoring is paused; displayed readings are frozen"
+            )
+            self._status_bar.set_monitor_state("paused")
             self._status_bar.set_status_text("Monitoring paused")
+            self._tray.set_monitor_state("paused", "Monitoring paused")
 
     def _run_now(self) -> None:
         # We don't have a scheduler API for immediate runs; surface a
@@ -532,7 +573,7 @@ class MainWindow(QMainWindow):
             logger.exception("Error stopping dashboard action worker")
 
         tab_attrs = (
-            "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",
+            "_dashboard", "_optimizer_tab", "_wifi_tab", "_qos_tab", "_score_tab",
             "_drop_tab", "_export_tab", "_lan_tab", "_history_tab", "_route_tab",
         )
         for name in tab_attrs:

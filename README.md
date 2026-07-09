@@ -19,7 +19,7 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 - **CLI mode** — run from the terminal with `--cli` flag
 - **Export reports** — save diagnostic reports as TXT or JSON
 - **Local storage** — SQLite-based history with automatic pruning
-- **No telemetry** — fully offline, no data collection
+- **No telemetry by default** — diagnostics stay local; optional webhooks send alerts only when you configure them
 
 ### LAN Monitor & Connection Tracking
 - **Offline Subnet Scanning:** Discovers active devices on your local network completely offline with zero telemetry or remote API calls.
@@ -28,7 +28,7 @@ Losshound identifies whether failures originate from your **LAN**, **router/gate
 - **HTTP Homepage Title Resolution:** Queries local router and hardware homepages (ports 80/443), following same-host meta-refresh redirects to extract admin page titles.
 - **Manual Hostname Customization:** Allows double-clicking any device hostname in the table to set a persistent custom label.
 - **Active Connection Tracker:** Maps local process IDs (PIDs) to active network sockets (TCP/UDP) using backgrounded `netstat` and `tasklist` sweeps.
-- **Dynamic Firewall Helper:** Automatically configures and scopes a narrow inbound Windows Firewall rule to allow multicast name resolution replies for the running executable.
+- **Opt-in Firewall Helper:** With explicit confirmation and Administrator access, scopes a narrow inbound discovery rule to the packaged Losshound executable (never a shared `python.exe`).
 
 ### Network Optimizer
 - **One-click optimization** — automatically tune your Windows network stack
@@ -71,12 +71,31 @@ cd Losshound
 python -m venv venv
 venv\Scripts\activate
 
-# Install dependencies
-pip install -r requirements.txt
+# Install Losshound and its dependencies in editable mode
+pip install -e .
 
 # Run the application
 python -m losshound
 ```
+
+### `run_as_admin.bat` (source checkout only)
+
+The batch launcher starts the source version of Losshound with Windows
+Administrator privileges. It activates the repository's `venv` when present,
+requests elevation through the standard UAC prompt, and then runs
+`python -m losshound` from the project directory.
+
+1. Complete the **From source** installation above first.
+2. Inspect `run_as_admin.bat` before running it, as you should with any script
+   that requests Administrator access.
+3. Double-click the file and approve the Windows UAC prompt, or launch a
+   specific command from a terminal, such as `run_as_admin.bat restore`.
+
+Normal diagnostics do not require elevation. Use this launcher only when you
+intend to apply or restore Optimizer, QoS, or firewall changes. If you downloaded
+`Losshound.exe` instead, right-click that executable and choose **Run as
+administrator** when one of those actions requires it; the batch file is not
+needed.
 
 ### Requirements
 
@@ -91,6 +110,14 @@ python -m losshound
 ```bash
 python -m losshound
 ```
+
+For a useful first session:
+
+1. Leave Dashboard monitoring for several minutes so Losshound can establish a baseline.
+2. Follow the diagnosis action when a warning appears; Routes, WiFi, LAN Monitor, and Drops provide the supporting evidence.
+3. Run a Score or load benchmark before changing network settings.
+4. Apply only the reviewed Optimizer/QoS actions you want, then benchmark again.
+5. Use Export to create an ISP-ready report when the problem is upstream.
 
 ### CLI mode
 
@@ -150,6 +177,13 @@ losshound load-compare
 | `compare` | Compare before vs after idle benchmarks |
 | `load-benchmark` | Run network load benchmark (bufferbloat, throughput) |
 | `load-compare` | Compare before vs after load benchmarks |
+| `score` | Run a benchmark and calculate the current network score |
+| `trends` | Summarize performance trends over a selected time window |
+| `history` | List recent benchmark snapshots and scores |
+| `wifi` | Run Wi-Fi signal, channel, and interference diagnostics |
+| `drop-analyze` | Capture and attribute a connectivity-drop episode |
+| `qos`, `qos-list`, `qos-clear` | Manage per-application QoS policies |
+| `isp-report` | Generate a text or PDF evidence report for ISP support |
 
 ## What the Optimizer Does
 
@@ -185,6 +219,7 @@ You can also edit settings through the GUI's Settings tab.
 | `public_ping_targets` | 1.1.1.1, 8.8.8.8 | IPs to ping for WAN testing |
 | `dns_test_hostnames` | google.com, chatgpt.com | Domains to resolve for DNS testing |
 | `history_retention_hours` | 24 | How long to keep history |
+| `lan_discovery_firewall_enabled` | false | Opt in to the packaged-app LAN discovery firewall rule |
 
 ### Diagnosis thresholds
 
@@ -201,42 +236,43 @@ You can also edit settings through the GUI's Settings tab.
 
 ```
 src/losshound/
-├── app.py                 # Application entry point
-├── core/
-│   ├── config.py          # Configuration management
-│   ├── diagnosis.py       # Rule-based diagnosis engine
-│   ├── dns_checks.py      # DNS resolution testing
-│   ├── dns_bench.py       # Raw UDP DNS server benchmarking
-│   ├── firewall.py        # Scoped Windows Firewall rule manager
-│   ├── gateway.py         # Default gateway detection
-│   ├── lan_monitor.py     # Subnet scan, mDNS, LLMNR, SSDP, HTTP resolver
-│   ├── local_monitor.py   # Connection tracker (tasklist & netstat)
-│   ├── logger.py          # Logging setup
-│   ├── models.py          # Data models (dataclasses)
-│   ├── optimizer.py       # Network performance optimizer
-│   ├── benchmark.py       # Idle network benchmarking
-│   ├── load_benchmark.py  # Load benchmarking (bufferbloat, throughput)
-│   ├── ping.py            # Subprocess ping wrapper
-│   ├── route_monitor.py   # Tracert wrapper and route diffing
-│   └── scheduler.py       # Background test scheduler (QThread)
-├── storage/
-│   └── history.py         # SQLite persistence
-├── gui/
-│   ├── main_window.py     # Main window with tabs
-│   ├── dashboard.py       # Dashboard tab
-│   ├── history_tab.py     # History/events tab
-│   ├── route_tab.py       # Route details tab
-│   ├── lan_tab.py         # LAN Monitor tab
-│   ├── optimizer_tab.py   # Network optimizer tab
-│   ├── settings_tab.py    # Settings tab
-│   ├── export_tab.py      # Export/report tab
-│   ├── theme.py           # Dark theme stylesheet (Catppuccin)
-│   └── widgets.py         # Reusable widgets
-├── cli/
-│   ├── runner.py          # CLI mode runner
-│   └── optimizer_cli.py   # Optimizer/benchmark CLI commands
-└── utils/
-    └── formatting.py      # Display helpers
+|-- app.py                  # GUI/CLI entry point and validation
+|-- core/
+|   |-- config.py           # Validated, atomic configuration management
+|   |-- diagnosis.py        # Rule-based fault-domain diagnosis
+|   |-- scheduler.py        # Concurrent, deadline-aware monitor worker
+|   |-- windows_network.py  # Locale-independent active-route interface state
+|   |-- ping.py             # Native ICMP + subprocess fallback
+|   |-- route_monitor.py    # Tracert parsing and route comparison
+|   |-- drop_analyzer.py    # Disconnect capture and attribution
+|   |-- lag_attribution.py  # Local-process vs upstream lag attribution
+|   |-- dns_checks.py       # DNS resolution checks
+|   |-- dns_bench.py        # Raw UDP resolver benchmark
+|   |-- benchmark.py        # Idle network benchmark
+|   |-- load_benchmark.py   # Loaded latency, throughput, and bufferbloat
+|   |-- optimizer.py        # Verified optimization, backup, and rollback
+|   |-- qos.py              # Per-application Windows QoS policies
+|   |-- lan_monitor.py      # LAN scan and local name discovery
+|   |-- wifi_diag.py        # Wi-Fi signal/channel diagnostics
+|   `-- isp_report_pdf.py   # ISP evidence report rendering
+|-- storage/
+|   `-- history.py          # SQLite persistence
+|-- gui/
+|   |-- main_window.py      # Application lifecycle and navigation
+|   |-- dashboard.py        # Live overview and diagnosis actions
+|   |-- history_tab.py      # Diagnosis history
+|   |-- route_tab.py        # Current route and changes
+|   |-- optimizer_tab.py    # Optimizer and benchmark workflow
+|   |-- qos_tab.py          # Saved and applied QoS policies
+|   |-- score_tab.py        # Score and trends
+|   |-- wifi_tab.py         # Wi-Fi and bufferbloat workflow
+|   |-- lan_tab.py          # LAN devices and connections
+|   |-- drop_tab.py         # Drop capture and forensics
+|   |-- settings_tab.py     # Monitoring, alert, and behavior settings
+|   `-- export_tab.py       # Quick, ISP, JSON, TXT, and PDF reports
+`-- cli/
+    |-- runner.py           # Continuous CLI monitor
+    `-- optimizer_cli.py    # Optimizer/benchmark/report commands
 ```
 
 ### Data flow
@@ -262,7 +298,7 @@ The engine uses a priority-ordered rule cascade:
 ### Development
 
 ```bash
-pip install -r requirements-dev.txt
+pip install -e ".[dev]"
 pytest
 ```
 
@@ -300,7 +336,7 @@ That's everything — no leftovers.
 ## Known limitations
 
 - Windows only (uses Windows-specific tools: ping, tracert, ipconfig, netstat, tasklist)
-- CLI tool outputs are parsed with resilient OEM code page fallback to prevent crashes on non-English Windows locales
+- Default-route interface, gateway, LAN subnet, DNS, and optimizer selection use locale-independent Windows objects; detailed Wi-Fi text parsing may still vary by Windows language
 - Tracert checks are slow (30-90 seconds) and run on a longer interval
 - VPN connections may confuse gateway detection
 - No IPv6 support currently

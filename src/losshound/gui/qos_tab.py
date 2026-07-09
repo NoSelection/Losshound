@@ -104,6 +104,8 @@ class QosTab(QWidget):
         super().__init__(parent)
         self._rules: list[QosRule] = load_saved_rules()
         self._threads: list[QThread] = []
+        self._verified_rules: set[str] = set()
+        self._pending_deletes: dict[QThread, QosRule] = {}
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -278,7 +280,13 @@ class QosTab(QWidget):
             self._table.setItem(row, 1, QTableWidgetItem(rule.priority_preset))
             self._table.setItem(row, 2, QTableWidgetItem(str(rule.dscp_value)))
 
-            status_item = QTableWidgetItem("Saved" if rule.active else "Disabled")
+            if not rule.active:
+                status = "Disabled"
+            elif rule.name in self._verified_rules:
+                status = "Applied"
+            else:
+                status = "Ready to apply"
+            status_item = QTableWidgetItem(status)
             self._table.setItem(row, 3, status_item)
 
             # Action buttons
@@ -312,22 +320,36 @@ class QosTab(QWidget):
             self._threads.remove(worker)
 
         if result.success:
+            self._verified_rules.add(result.rule_name)
             self._status_label.setText(f"{result.rule_name}: {result.action}")
             self._status_label.setStyleSheet("color: #75c884;")
         else:
+            self._verified_rules.discard(result.rule_name)
             self._status_label.setText(f"{result.rule_name}: {result.message[:60]}")
             self._status_label.setStyleSheet("color: #e06363;")
+        self._refresh_table()
         self.rule_apply_finished.emit(result)
 
     def _delete_rule(self, rule: QosRule):
-        self._rules = [r for r in self._rules if r.name != rule.name]
-        save_rules(self._rules)
-        self._refresh_table()
-        self._status_label.setText(f"Deleted saved rule: {rule.name}; removing policy...")
-        self._status_label.setStyleSheet("color: #788596;")
+        if any(pending.name == rule.name for pending in self._pending_deletes.values()):
+            return
+        reply = QMessageBox.question(
+            self,
+            "Delete QoS rule",
+            f"Remove the Windows policy and delete the saved rule '{rule.name}'?\n\n"
+            "The saved rule will be kept if Windows cannot verify policy removal.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._status_label.setText(f"Removing Windows policy for {rule.name}...")
+        self._status_label.setStyleSheet("color: #d9b65f;")
 
         worker = _RemoveWorker(rule.name)
         worker.finished.connect(self._on_delete_policy_done)
+        self._pending_deletes[worker] = rule
         worker.start()
         self._threads.append(worker)
 
@@ -335,14 +357,19 @@ class QosTab(QWidget):
         worker = self.sender()
         if worker in self._threads:
             self._threads.remove(worker)
-        name = worker._name if worker else "policy"
+        pending_rule = self._pending_deletes.pop(worker, None)
+        name = pending_rule.name if pending_rule else result.rule_name
 
         if result.success:
+            self._rules = [r for r in self._rules if r.name != name]
+            self._verified_rules.discard(name)
+            save_rules(self._rules)
+            self._refresh_table()
             self._status_label.setText(f"Removed Windows policy: {name}")
             self._status_label.setStyleSheet("color: #75c884;")
         else:
             self._status_label.setText(
-                f"Saved rule deleted. Policy removal skipped/failed: {result.message[:70]}"
+                f"Policy removal failed; saved rule kept: {result.message[:70]}"
             )
             self._status_label.setStyleSheet("color: #d9b65f;")
 
@@ -378,5 +405,8 @@ class QosTab(QWidget):
             self._threads.remove(worker)
 
         removed = sum(1 for r in results if r.success)
+        if removed:
+            self._verified_rules.clear()
+            self._refresh_table()
         self._status_label.setText(f"Removed {removed} policies")
         self._status_label.setStyleSheet("color: #d9b65f;")
