@@ -115,9 +115,27 @@ Refresh vendor advisories when changing pins; the native checks are not an
 exhaustive advisory feed.
 
 After the gate passes: run the full tests, build the executable, check packaged
---help exits successfully within 60 seconds, and inspect the uploaded artifact.
-That smoke check proves process startup/exit, not console output rendering or
-the GUI/network feature set. Hosted-run evidence is recorded below.
+--help and --gui-smoke-test each exit successfully within 60 seconds, and inspect
+the uploaded artifact. The Qt smoke test imports the GUI modules, initializes the
+platform plugin, and renders a small widget with the app icon. It starts no
+monitoring, database, firewall setup, or application workers. It does not replace
+a walkthrough of the full GUI/network feature set.
+
+## Native library discovery during packaging
+
+The 2026-09-05 GUI walkthrough exposed a local packaging failure: ambient PATH
+entries let PyInstaller collect Poppler's ICU DLL from Codex's document tools.
+Its versioned exports did not match the unversioned ICU functions required by Qt.
+The previous packaged --help check passed because it did not import QtWidgets.
+
+Losshound.spec now limits Windows PATH during analysis to the selected Python
+installation and Windows directories. Package hooks can still locate the reviewed
+wheels' own DLLs. A post-analysis check rejects native binaries whose resolved
+sources are outside the selected Python environment, its base interpreter, or
+Windows System32. These controls apply to local and CI builds; no system-wide
+PATH or Windows DLLs are changed. CI additionally runs the packaged Qt smoke test
+before uploading an artifact. The stdlib tests exercise both ambient PATH
+exclusion and rejection of an unexpected native-library source.
 
 ## Fresh local environment: 2026-09-05
 
@@ -223,8 +241,77 @@ version; its test report, dependency lock, EXE and checksum are uploaded togethe
 Interpreter and bundled native-library reviews remain necessary when updating
 this pin; the PyPI/OSV gate is not an exhaustive interpreter or OS advisory scan.
 
+## Runtime security fixes: 2026-09-05
+
+The focused review identified three issues, now addressed in the local source:
+
+- **SEC-01: Windows command lookup.** Every subprocess launch resolves an
+  allowlisted tool to an absolute path beneath the system directory returned by
+  `GetSystemDirectoryW`. Unknown or missing tools fail without falling back to
+  CWD, PATH, WINDIR, or SystemRoot. Wi-Fi diagnostics invoke netsh directly,
+  without cmd/chcp. Tests cover hostile search paths, process cleanup, and a
+  source guard against bypassing resolution. This assumes the Windows system
+  directory itself has its normal protected permissions.
+  The Drop Analyzer follow-up adds its previously omitted `nslookup` and
+  `wevtutil` commands to the same System32 resolution policy, with regression
+  tests for both call paths.
+- **SEC-02: LAN discovery downloads.** HTTP titles and SSDP descriptions share
+  a direct-IP fetcher with no HTTP proxy lookup. Initial URLs and every redirect
+  must use HTTP(S), contain no credentials, and remain on the responding private
+  or link-local device IP. Loopback, public IPs, DNS names, and redirects to other
+  devices are rejected. Downloads allow at most three redirects and 256 KiB;
+  socket timeouts plus a shared deadline/watchdog interrupt slow response headers,
+  bodies, and chunk framing. Tests use real HTTP parsing over in-memory streams,
+  without contacting real devices. HTTPS may use a self-signed certificate only
+  inside this unauthenticated local discovery helper. Devices that require a
+  hostname/cloud redirect, proxy, compressed response, or larger description may
+  fall back to their other discovered name or vendor label.
+- **SEC-03: Webhook logs.** Failure logs contain channel/status/error category,
+  never the webhook URL or raw exception/traceback. Synthetic credentials test
+  HTTP errors, network errors, unexpected errors, unsuccessful responses, and
+  malformed URLs. This prevents future log leakage; existing logs are not
+  rewritten. Rotate a webhook credential if an older log containing it was shared.
+  Webhook credentials in the local configuration remain a separate storage
+  hardening opportunity.
+
+These controls address the three findings, not all possible vulnerabilities.
+They use the standard library and do not add or upgrade dependencies. The Qt XML
+exception and packaged startup checks above remain required. Local validation
+is separate from a hosted CI run; use the linked Windows CI runs to verify the
+result for a published commit.
+
+Local validation passed: 297 application tests (37 additional security regression
+cases), all 16 dependency/packaging guard tests, and the rebuilt executable's
+offscreen Qt startup check (exit 0). All 110 bundled native payloads match their
+approved sources, Qt XML remains absent, and the two new security modules are
+included. The tested executable is copied to `dist/Losshound.exe` with a matching
+SHA-256 file:
+
+`b2dfb018b883a9dede1f944152568287231405d84553149dfc691852e2070006`
+
+The ignored `build/gui-walkthrough` directory retains `security-test-results.xml`,
+`security-package-verification.json`, and `security-startup-verification.json`.
+This verifies startup and automated regressions, not a new full visual walkthrough.
+
+## Latest local checkpoint: 2026-09-05
+
+Following the Drop Analyzer and UI updates, all 335 application tests and all
+16 dependency/packaging guard tests passed. The rebuilt executable passed its
+offscreen Qt startup check (exit 0); all 110 native payloads matched their approved
+sources and Qt XML remained absent. Actual Qt widget renders and controlled
+interaction checks covered grouped navigation, contextual links, and the
+Optimizer approval/cancellation flow without applying real network changes.
+
+The tested executable's SHA-256 is
+`2ff22edfb1eed12dddc885479742ec522c8f7240745ffe0427427e7876323fc3`.
+Local profiles, logs, databases, review renders, and executables remain excluded
+from Git. These checks do not constitute a complete security audit.
+
 ## Sources
 
+- [Windows GetSystemDirectoryW](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getsystemdirectoryw)
+- [Python subprocess executable lookup](https://docs.python.org/3.13/library/subprocess.html)
+- [Python HTTP client response handling](https://docs.python.org/3.13/library/http.client.html)
 - [Python 3.12.11 security release and binary-support transition](https://www.python.org/downloads/release/python-31211/)
 - [Python 3.13.15 release](https://www.python.org/downloads/release/python-31315/)
 - [Official Actions Python versions](https://github.com/actions/python-versions/blob/main/versions-manifest.json)

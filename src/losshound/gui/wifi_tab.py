@@ -6,6 +6,7 @@ import logging
 import math
 
 from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
@@ -19,8 +20,8 @@ from losshound.core.load_benchmark import (
     LoadBenchmarkSnapshot, run_load_benchmark, save_load_snapshot,
     format_load_snapshot, get_latest_load_snapshot,
 )
-from losshound.gui.theme import button_style
 from losshound.gui.widgets import TelemetryHeader
+from losshound.gui.diagnostic_widgets import ReadingTile, compact_table, page_style, style_action
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +97,11 @@ class WifiTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
+        content.setObjectName("wifi-page")
+        content.setStyleSheet(page_style("wifi-page"))
         main_layout = QVBoxLayout(content)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(16)
 
         main_layout.addWidget(TelemetryHeader(
             "WiFi Diagnostics & Bufferbloat",
@@ -109,19 +112,22 @@ class WifiTab(QWidget):
         ))
 
         # --- Action buttons ---
-        btn_group = QGroupBox("Actions")
+        btn_group = QWidget()
         btn_layout = QHBoxLayout(btn_group)
-        btn_layout.setSpacing(8)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(10)
+        self._status_label = QLabel("Ready to scan nearby WiFi networks")
+        self._status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._status_label.setWordWrap(True)
+        btn_layout.addWidget(self._status_label, 1)
 
         self._wifi_scan_btn = QPushButton("Scan WiFi")
-        self._wifi_scan_btn.setStyleSheet(button_style("primary"))
-        self._wifi_scan_btn.setMinimumHeight(42)
+        style_action(self._wifi_scan_btn, "primary")
         self._wifi_scan_btn.clicked.connect(self._on_wifi_scan)
         btn_layout.addWidget(self._wifi_scan_btn)
 
         self._bufferbloat_btn = QPushButton("Test Bufferbloat")
-        self._bufferbloat_btn.setStyleSheet(button_style("warning"))
-        self._bufferbloat_btn.setMinimumHeight(42)
+        style_action(self._bufferbloat_btn)
         self._bufferbloat_btn.setToolTip(
             "Tests if your latency spikes under load (~60s). "
             "This is the most important test for gaming quality."
@@ -137,14 +143,23 @@ class WifiTab(QWidget):
         self._progress_bar.setValue(0)
         self._progress_bar.setTextVisible(True)
         self._progress_bar.setFormat("Idle")
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.hide()
         main_layout.addWidget(self._progress_bar)
 
         # --- WiFi status cards ---
-        wifi_status_group = QGroupBox("WiFi Connection")
-        self._wifi_status_grid = QGridLayout(wifi_status_group)
-        self._wifi_status_grid.setSpacing(8)
+        wifi_status_group = QGroupBox("WiFi connection")
+        wifi_status_layout = QVBoxLayout(wifi_status_group)
+        wifi_status_layout.setContentsMargins(0, 4, 0, 0)
+        self._wifi_state_label = QLabel("Run a scan to read your WiFi connection. The load test also works over Ethernet.")
+        self._wifi_state_label.setWordWrap(True)
+        wifi_status_layout.addWidget(self._wifi_state_label)
+        self._wifi_status_grid = QGridLayout()
+        self._wifi_status_grid.setSpacing(12)
+        wifi_status_layout.addLayout(self._wifi_status_grid)
 
-        self._wifi_cards: dict[str, QLabel] = {}
+        self._wifi_cards: dict[str, ReadingTile] = {}
         card_defs = [
             ("ssid", "SSID"),
             ("signal", "Signal"),
@@ -154,7 +169,7 @@ class WifiTab(QWidget):
             ("band", "Band"),
         ]
         for i, (key, label) in enumerate(card_defs):
-            card = self._make_card(label)
+            card = ReadingTile(label)
             self._wifi_cards[key] = card
             row, col = divmod(i, 3)
             self._wifi_status_grid.addWidget(card, row, col)
@@ -162,30 +177,51 @@ class WifiTab(QWidget):
         main_layout.addWidget(wifi_status_group)
 
         # --- Bufferbloat result ---
-        bb_group = QGroupBox("Bufferbloat")
-        bb_layout = QVBoxLayout(bb_group)
+        bb_group = QGroupBox("Latency under load · bufferbloat")
+        bb_layout = QGridLayout(bb_group)
+        bb_layout.setContentsMargins(0, 4, 0, 0)
+        bb_layout.setHorizontalSpacing(20)
 
         self._bb_grade_label = QLabel("--")
         self._bb_grade_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._bb_grade_label.setMinimumWidth(120)
         self._bb_grade_label.setStyleSheet(
-            "font-size: 48px; font-weight: bold; color: #4a5565; padding: 4px;"
+            "font-family: 'Consolas'; font-size: 56px; color: #90a4b2; padding: 12px;"
         )
-        bb_layout.addWidget(self._bb_grade_label)
+        bb_layout.addWidget(self._bb_grade_label, 0, 0)
 
         self._bb_detail_label = QLabel(
-            "Click 'Test Bufferbloat' to measure how your latency "
-            "changes under load (~60 seconds)."
+            "No load-test result yet.\n"
+            "Test Bufferbloat downloads data for about 60 seconds to measure latency under load. "
+            "Your connection will be busy during the test."
         )
-        self._bb_detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._bb_detail_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._bb_detail_label.setTextFormat(Qt.TextFormat.PlainText)
         self._bb_detail_label.setWordWrap(True)
         self._bb_detail_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
-        bb_layout.addWidget(self._bb_detail_label)
+        bb_layout.addWidget(self._bb_detail_label, 0, 1)
+        bb_layout.setColumnStretch(1, 1)
+        self._bb_metrics_widget = QWidget()
+        bb_metrics_layout = QHBoxLayout(self._bb_metrics_widget)
+        bb_metrics_layout.setContentsMargins(0, 0, 0, 0)
+        bb_metrics_layout.setSpacing(12)
+        self._bb_metrics = {}
+        for key, title in (("idle", "Idle latency"), ("loaded", "Under load"),
+                           ("increase", "Latency increase"), ("speed", "Download speed")):
+            tile = ReadingTile(title)
+            bb_metrics_layout.addWidget(tile, 1)
+            self._bb_metrics[key] = tile
+        bb_layout.addWidget(self._bb_metrics_widget, 1, 0, 1, 2)
+        self._bb_metrics_widget.hide()
 
         main_layout.addWidget(bb_group)
 
         # --- Visible networks table ---
-        nets_group = QGroupBox("Visible Networks")
+        nets_group = QGroupBox("Visible networks")
         nets_layout = QVBoxLayout(nets_group)
+        nets_layout.setContentsMargins(0, 4, 0, 0)
+        self._nets_empty = QLabel("Nearby networks appear here after a scan.")
+        nets_layout.addWidget(self._nets_empty)
 
         self._nets_table = QTableWidget(0, 6)
         self._nets_table.setHorizontalHeaderLabels([
@@ -196,15 +232,16 @@ class WifiTab(QWidget):
         )
         self._nets_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._nets_table.setAlternatingRowColors(True)
-        self._nets_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #252538; }
-        """)
+        compact_table(self._nets_table, self._nets_empty)
         nets_layout.addWidget(self._nets_table)
         main_layout.addWidget(nets_group)
 
         # --- Channel congestion table ---
-        ch_group = QGroupBox("Channel Congestion")
+        ch_group = QGroupBox("Channel congestion")
         ch_layout = QVBoxLayout(ch_group)
+        ch_layout.setContentsMargins(0, 4, 0, 0)
+        self._ch_empty = QLabel("A scan shows which channels nearby networks use.")
+        ch_layout.addWidget(self._ch_empty)
 
         self._ch_table = QTableWidget(0, 4)
         self._ch_table.setHorizontalHeaderLabels([
@@ -215,18 +252,18 @@ class WifiTab(QWidget):
         )
         self._ch_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._ch_table.setAlternatingRowColors(True)
-        self._ch_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #252538; }
-        """)
+        compact_table(self._ch_table, self._ch_empty)
         ch_layout.addWidget(self._ch_table)
         main_layout.addWidget(ch_group)
 
         # --- Issues & recommendation ---
-        advice_group = QGroupBox("Issues & Recommendations")
+        advice_group = QGroupBox("Findings and recommendations")
         advice_layout = QVBoxLayout(advice_group)
+        advice_layout.setContentsMargins(0, 4, 0, 0)
 
         self._advice_label = QLabel("Run a WiFi scan to check for issues.")
         self._advice_label.setWordWrap(True)
+        self._advice_label.setTextFormat(Qt.TextFormat.PlainText)
         self._advice_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
         advice_layout.addWidget(self._advice_label)
 
@@ -246,37 +283,20 @@ class WifiTab(QWidget):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _make_card(self, label: str) -> QLabel:
-        card = QLabel(f"{label}\n--")
-        card.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card.setStyleSheet("""
-            background-color: #1b2028;
-            border: 1px solid #3a4350;
-            border-radius: 0px;
-            padding: 12px;
-            font-size: 12px;
-            color: #d8dee9;
-        """)
-        card.setMinimumHeight(70)
-        card.setWordWrap(True)
-        return card
-
     def _update_card(self, key: str, title: str, value: str, color: str = "#d8dee9"):
         card = self._wifi_cards.get(key)
         if card:
-            card.setText(f"{title}\n{value}")
-            card.setStyleSheet(f"""
-                background-color: #1b2028;
-                border: 1px solid #3a4350;
-                border-radius: 0px;
-                padding: 12px;
-                font-size: 12px;
-                color: {color};
-            """)
+            card.set_reading(title, value, color)
+
+    def _show_progress(self, message: str):
+        self._status_label.setText(message)
+        self._progress_bar.setFormat(message)
 
     def _set_busy(self, busy: bool, message: str = ""):
         self._wifi_scan_btn.setEnabled(not busy)
         self._bufferbloat_btn.setEnabled(not busy)
+        self._show_progress(message or ("Working..." if busy else "Ready"))
+        self._progress_bar.setVisible(busy)
         if busy:
             self._progress_bar.setRange(0, 0)
             self._progress_bar.setFormat(message or "Working...")
@@ -312,7 +332,7 @@ class WifiTab(QWidget):
     def _on_wifi_scan(self):
         self._set_busy(True, "Scanning WiFi networks...")
         self._worker = _WifiScanWorker()
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_wifi_scan_done)
         self._worker.start()
 
@@ -333,8 +353,9 @@ class WifiTab(QWidget):
     def _display_wifi_report(self, report: WifiDiagReport):
         """Update all WiFi display widgets."""
         # Status cards
-        if report.interface:
+        if report.interface and report.interface.state.lower() == "connected":
             iface = report.interface
+            self._wifi_state_label.setText("Current WiFi connection · readings from the latest scan")
             sig_color = self._signal_color(iface.signal_pct)
             self._update_card("ssid", "SSID", iface.ssid or "--")
             self._update_card(
@@ -346,10 +367,15 @@ class WifiTab(QWidget):
             self._update_card("speed", "Speed", f"{iface.speed_mbps:.0f} Mbps")
             self._update_card("radio", "Radio", iface.radio_type or "--")
             self._update_card("band", "Band", iface.band or "--")
+        else:
+            self._wifi_state_label.setText("No connected WiFi interface reported. You can still test latency under load over Ethernet.")
+            for key, card in self._wifi_cards.items():
+                card.set_reading(card.title_label.text(), "Not connected" if key == "ssid" else "--", "#90a4b2")
 
         # Networks table
         sorted_nets = sorted(report.visible_networks, key=lambda n: -n.signal_pct)
         self._nets_table.setRowCount(len(sorted_nets))
+        self._nets_empty.setText("No visible networks were reported by the latest scan.")
         for row, net in enumerate(sorted_nets):
             items = [
                 QTableWidgetItem(net.ssid),
@@ -360,7 +386,6 @@ class WifiTab(QWidget):
                 QTableWidgetItem(net.auth),
             ]
             sig_color = self._signal_color(net.signal_pct)
-            from PySide6.QtGui import QColor
             items[1].setForeground(QColor(sig_color))
 
             # Highlight current network
@@ -377,8 +402,10 @@ class WifiTab(QWidget):
 
         # Channel congestion
         self._ch_table.setRowCount(len(report.channel_congestion))
+        self._ch_empty.setText("No channel data was reported by the latest scan.")
         for row, ch in enumerate(report.channel_congestion):
-            is_current = (report.interface and ch.channel == report.interface.channel)
+            is_current = (report.interface and report.interface.state.lower() == "connected"
+                          and ch.channel == report.interface.channel and ch.band == report.interface.band)
             ch_text = f"{ch.channel}" + (" (you)" if is_current else "")
             items = [
                 QTableWidgetItem(ch_text),
@@ -430,7 +457,7 @@ class WifiTab(QWidget):
 
         self._set_busy(True, "Testing bufferbloat (this takes ~60s)...")
         self._worker = _BufferbloatWorker()
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_bufferbloat_done)
         self._worker.start()
 
@@ -462,13 +489,14 @@ class WifiTab(QWidget):
 
         self._bb_grade_label.setText(grade)
         self._bb_grade_label.setStyleSheet(
-            f"font-size: 48px; font-weight: bold; color: {color}; padding: 4px;"
+            f"font-family: 'Consolas'; font-size: 56px; color: {color}; padding: 12px;"
         )
 
         if grade == "N/A" or not (
             math.isfinite(bb.idle_latency_ms)
             and math.isfinite(bb.loaded_latency_ms)
         ):
+            self._bb_metrics_widget.hide()
             self._bb_detail_label.setText(
                 "No successful latency samples were received, so Losshound did not "
                 "assign a bufferbloat grade.\n\n"
@@ -482,7 +510,7 @@ class WifiTab(QWidget):
             return
 
         explanations = {
-            "A": "Excellent! Latency barely increases under load. Great for gaming.",
+            "A": "Excellent. Latency barely increases under load.",
             "B": "Good. Slight latency increase but still very usable.",
             "C": "Fair. Noticeable lag spikes when downloading.",
             "D": "Poor. Significant lag when network is busy. Gaming will suffer.",
@@ -499,14 +527,15 @@ class WifiTab(QWidget):
                 "  3. Check if your router firmware supports OpenWrt/DD-WRT"
             )
 
-        detail = (
-            f"Idle latency: {bb.idle_latency_ms:.1f}ms\n"
-            f"Loaded latency: {bb.loaded_latency_ms:.1f}ms\n"
-            f"Increase: +{bb.latency_increase_ms:.1f}ms "
-            f"(+{bb.latency_increase_pct:.0f}%)\n"
-            f"Speed: {snapshot.throughput.speed_mbps:.1f} Mbps\n\n"
-            f"{explanation}{advice}"
-        )
+        self._bb_metrics_widget.show()
+        for key, title, value in (
+            ("idle", "Idle latency", f"{bb.idle_latency_ms:.1f} ms"),
+            ("loaded", "Under load", f"{bb.loaded_latency_ms:.1f} ms"),
+            ("increase", "Latency increase", f"{bb.latency_increase_ms:+.1f} ms ({bb.latency_increase_pct:+.0f}%)"),
+            ("speed", "Download speed", f"{snapshot.throughput.speed_mbps:.1f} Mbps"),
+        ):
+            self._bb_metrics[key].set_reading(title, value, color if key == "increase" else "#eef3f5")
+        detail = f"Last test: {snapshot.timestamp[:19].replace('T', ' ')}\n{explanation}{advice}"
 
         self._bb_detail_label.setText(detail)
         self._bb_detail_label.setStyleSheet(

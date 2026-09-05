@@ -84,9 +84,10 @@ class LANTab(QWidget):
         devices_layout.setSpacing(10)
 
         info_label = QLabel(
-            "Tip: double-click a hostname to set a custom name. If devices show as "
-            "generic \"Vendor Device\" labels, your router likely has AP/client "
-            "isolation enabled — disable it in the router's wireless settings."
+            "Tip: double-click a hostname to set a custom name. Generic names mean a device name "
+            "could not be resolved; they do not identify a router problem. Check the device or "
+            "your router's device list to confirm its identity. Keep guest/client isolation enabled "
+            "unless you intentionally want those devices to communicate."
         )
         info_label.setWordWrap(True)
         info_label.setStyleSheet("color: #788596; font-size: 11px; padding: 2px 0;")

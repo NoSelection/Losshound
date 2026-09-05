@@ -1,5 +1,9 @@
 from datetime import datetime
 
+import logging
+import urllib.error
+from unittest.mock import MagicMock
+
 import pytest
 
 from losshound.core.alerts import AlertEvent
@@ -244,3 +248,39 @@ def test_dispatcher_treats_blank_urls_as_unconfigured(monkeypatch):
         t.join(timeout=2.0)
 
     assert calls == []
+
+
+@pytest.mark.parametrize("failure", ["http", "network", "unexpected", "non_2xx"])
+def test_failed_webhooks_never_log_url_credentials_or_exception_text(monkeypatch, caplog, failure):
+    from losshound.core.notifications import _send
+
+    url = "https://SYNTHETIC_USER:SYNTHETIC_PASSWORD@example.invalid/SYNTHETIC_PATH?token=SYNTHETIC_TOKEN"
+
+    def fail_request(req, timeout):
+        if failure == "http":
+            raise urllib.error.HTTPError(url, 401, url, {}, None)
+        if failure == "network":
+            raise urllib.error.URLError(url)
+        if failure == "unexpected":
+            raise RuntimeError(url)
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 400
+        return response
+
+    monkeypatch.setattr("urllib.request.urlopen", fail_request)
+    with caplog.at_level(logging.WARNING, logger="losshound.core.notifications"):
+        _send(url, {}, "discord")
+    assert "discord webhook FAILED" in caplog.text
+    for secret in (url, "SYNTHETIC_USER", "SYNTHETIC_PASSWORD", "SYNTHETIC_PATH", "SYNTHETIC_TOKEN"):
+        assert secret not in caplog.text
+    assert all(record.exc_info is None for record in caplog.records)
+
+
+def test_invalid_webhook_url_does_not_leak_into_logs(caplog):
+    from losshound.core.notifications import post_webhook
+
+    with caplog.at_level(logging.WARNING, logger="losshound.core.notifications"):
+        assert post_webhook("SYNTHETIC_INVALID_SECRET", {}) is False
+    assert "SYNTHETIC_INVALID_SECRET" not in caplog.text
+    assert "ValueError" in caplog.text

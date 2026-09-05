@@ -1,5 +1,6 @@
 import json
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 from losshound.core.windows_network import (
@@ -52,7 +53,8 @@ def test_active_interface_query_uses_locale_independent_json():
 
     assert state is not None
     command = run.call_args.args[0]
-    assert command[0] == "powershell.exe"
+    assert Path(command[0]).is_absolute()
+    assert Path(command[0]).name.lower() == "powershell.exe"
     assert "ConvertTo-Json" in command[-1]
 
 

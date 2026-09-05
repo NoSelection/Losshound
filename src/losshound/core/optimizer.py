@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from losshound.core.windows_commands import windows_command
 from losshound.core.dns_bench import (
     DNS_SERVERS,
     DnsBenchmarkResult,
@@ -274,7 +275,7 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     """Execute a subprocess with common defaults using list arguments (no shell)."""
     return subprocess.run(
-        cmd,
+        windows_command(cmd),
         capture_output=True,
         text=True,
         timeout=timeout,

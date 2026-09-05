@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Signal, Slot, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from losshound.core.drop_analyzer import (
-    DropAnalysisReport, run_drop_analysis,
+    ConnSample, DropAnalysisReport, run_drop_analysis,
 )
 from losshound.core.gateway import detect_gateway
 from losshound.gui.theme import button_style
@@ -29,12 +29,14 @@ logger = logging.getLogger(__name__)
 class _DropAnalyzeWorker(QThread):
     """Run drop analysis in a background thread."""
 
-    finished = Signal(object)   # DropAnalysisReport
+    report_ready = Signal(object)   # Keep QThread.finished for native thread exit.
     progress = Signal(str)
+    scan_started = Signal()
+    sample_ready = Signal(object)
 
     def __init__(self, gateway: str, wan_target: str,
-                 duration: int, interval: float):
-        super().__init__()
+                 duration: int, interval: float, parent=None):
+        super().__init__(parent)
         self._gateway = gateway
         self._wan_target = wan_target
         self._duration = duration
@@ -47,10 +49,11 @@ class _DropAnalyzeWorker(QThread):
             gw = self._gateway or detect_gateway()
             if not gw:
                 self.progress.emit("Could not detect gateway")
-                self.finished.emit(None)
+                self.report_ready.emit(None)
                 return
 
             self.progress.emit(f"Monitoring (GW: {gw})...")
+            self.scan_started.emit()
             report = run_drop_analysis(
                 gateway=gw,
                 wan_target=self._wan_target,
@@ -58,15 +61,17 @@ class _DropAnalyzeWorker(QThread):
                 poll_interval=self._interval,
                 progress_callback=lambda msg: self.progress.emit(msg),
                 stop_check=lambda: self._stop_requested,
+                sample_callback=self.sample_ready.emit,
             )
-            self.finished.emit(report)
+            self.report_ready.emit(report)
         except Exception as exc:
             logger.error("Drop analysis failed: %s", exc)
             self.progress.emit(f"Error: {exc}")
-            self.finished.emit(None)
+            self.report_ready.emit(None)
 
     def request_stop(self):
         self._stop_requested = True
+        self.requestInterruption()
 
 
 # ---------------------------------------------------------------------------
@@ -77,6 +82,7 @@ class DropTab(QWidget):
     """Connectivity drop analyzer tab."""
 
     def shutdown(self):
+        self._refresh_timer.stop()
         from losshound.gui._shutdown import stop_qthread
         worker = getattr(self, "_worker", None)
         if worker is not None:
@@ -84,11 +90,21 @@ class DropTab(QWidget):
                 worker.request_stop()
             except Exception:
                 pass
-        stop_qthread(worker)
+        # Active-interface discovery has an 8-second bounded Windows query.
+        stop_qthread(worker, wait_ms=10000)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._worker: _DropAnalyzeWorker | None = None
+        self._stopping = False
+        self._completion_message = "Analysis finished"
+        self._sample_count = 0
+        self._live_drop_count = 0
+        self._in_drop = False
+        self._scan_clock = QElapsedTimer()
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(1000)
+        self._refresh_timer.timeout.connect(self._refresh_countdown)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -148,6 +164,10 @@ class DropTab(QWidget):
         main_layout.addWidget(ctrl_group)
 
         # --- Progress ---
+        # Native Windows busy bars do not reliably paint their text.
+        self._status_label = QLabel("Idle — press Start to begin monitoring")
+        self._status_label.setWordWrap(True)
+        main_layout.addWidget(self._status_label)
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
@@ -213,7 +233,7 @@ class DropTab(QWidget):
         main_layout.addWidget(cards_group)
 
         # --- Drop episodes table ---
-        drops_group = QGroupBox("Drop Episodes")
+        drops_group = self._drops_group = QGroupBox("Drop Episodes")
         drops_layout = QVBoxLayout(drops_group)
 
         self._drops_table = QTableWidget(0, 7)
@@ -231,8 +251,8 @@ class DropTab(QWidget):
         main_layout.addWidget(drops_group)
 
         # --- Timeline table ---
-        timeline_group = QGroupBox("Connectivity Timeline")
-        timeline_layout = QVBoxLayout(timeline_group)
+        self._timeline_group = QGroupBox("Connectivity Timeline")
+        timeline_layout = QVBoxLayout(self._timeline_group)
 
         self._timeline_table = QTableWidget(0, 6)
         self._timeline_table.setHorizontalHeaderLabels([
@@ -247,7 +267,7 @@ class DropTab(QWidget):
         self._timeline_table.setMaximumHeight(250)
         timeline_layout.addWidget(self._timeline_table)
 
-        main_layout.addWidget(timeline_group)
+        main_layout.insertWidget(main_layout.indexOf(drops_group), self._timeline_group)
 
         # --- Event log ---
         events_group = QGroupBox("Network Event Log (last 3 hours)")
@@ -329,19 +349,123 @@ class DropTab(QWidget):
         self._stop_btn.setEnabled(busy)
         self._duration_combo.setEnabled(not busy)
         self._interval_spin.setEnabled(not busy)
+        self._status_label.setText(message)
         if busy:
-            self._progress_bar.setRange(0, 0)  # indeterminate
+            self._progress_bar.setRange(0, self._duration_seconds())
             self._progress_bar.setFormat(message or "Monitoring...")
         else:
+            self._refresh_timer.stop()
             self._progress_bar.setRange(0, 1)
-            self._progress_bar.setValue(0)
+            self._progress_bar.setValue(1 if self._sample_count else 0)
             self._progress_bar.setFormat(message or "Done")
+
+    def _reset_readings(self):
+        self._sample_count = self._live_drop_count = 0
+        self._in_drop = False
+        self._scan_clock.invalidate()
+        self._progress_bar.setValue(0)
+        self._verdict_label.setText("Collecting live readings")
+        self._verdict_label.setStyleSheet(
+            "font-size: 20px; font-weight: bold; color: #62c7d8; "
+            "background: transparent; border: none; padding: 0;"
+        )
+        self._style_verdict("#62c7d8", "#17212b", "#315469")
+        self._confidence_label.setText(
+            "Stops automatically after the selected duration. Stop ends early and keeps completed samples."
+        )
+        self._confidence_label.setWordWrap(True)
+        for key, title in (
+            ("conn_type", "Connection"), ("link", "Link State"),
+            ("gateway", "Gateway"), ("wan", "WAN / Internet"),
+            ("dns", "DNS — last check"), ("drops", "Drop Episodes — live"),
+        ):
+            self._update_card(key, title, "Waiting for first sample", "#788596")
+        for table in (self._timeline_table, self._drops_table, self._events_table):
+            table.setRowCount(0)
+        self._timeline_group.setTitle("Connectivity Timeline — latest 40 samples (live)")
+        self._drops_group.setTitle("Drop Episodes — classification after scan")
+        self._recs_label.setText("Drop classifications, event logs, and recommendations appear when the scan ends.")
+        self._recs_label.setStyleSheet("color: #8f9aaa; padding: 8px; font-size: 13px;")
+
+    @Slot()
+    def _on_scan_started(self):
+        if self._stopping:
+            return
+        self._scan_clock.start()
+        self._refresh_timer.start()
+        self._refresh_countdown()
+
+    @Slot()
+    def _refresh_countdown(self):
+        if self._stopping or not self._scan_clock.isValid():
+            return
+        duration = self._duration_seconds()
+        elapsed = min(duration, self._scan_clock.elapsed() // 1000)
+        remaining = duration - elapsed
+        self._progress_bar.setValue(elapsed)
+        message = (
+            f"{remaining // 60}:{remaining % 60:02d} remaining"
+            if remaining else "Finishing current check and preparing report..."
+        )
+        self._progress_bar.setFormat(message)
+
+    @Slot(object)
+    def _on_sample(self, sample: ConnSample):
+        self._sample_count += 1
+        bad = not (sample.link_up and sample.gateway_reachable and sample.wan_reachable)
+        if bad and not self._in_drop:
+            self._live_drop_count += 1
+        self._in_drop = bad
+        self._update_card("conn_type", "Connection", sample.connection_type.upper(), "#62c7d8")
+        for key, title, ok, rtt in (
+            ("link", "Link State — latest", sample.link_up, None),
+            ("gateway", "Gateway — latest", sample.gateway_reachable, sample.gateway_rtt_ms),
+            ("wan", "WAN / Internet — latest", sample.wan_reachable, sample.wan_rtt_ms),
+        ):
+            value = ("UP" if key == "link" else "OK") if ok else ("DOWN" if key == "link" else "LOST")
+            if ok and rtt is not None:
+                value += f" · {rtt:.1f} ms"
+            self._update_card(key, title, value, "#75c884" if ok else "#e06363")
+        if sample.dns_checked:
+            self._update_card(
+                "dns", "DNS — last check",
+                f"{'OK' if sample.dns_ok else 'FAILED'} · {sample.timestamp:%H:%M:%S}",
+                "#75c884" if sample.dns_ok else "#e06363",
+            )
+        self._update_card("drops", "Drop Episodes — live", str(self._live_drop_count),
+                          "#d9b65f" if self._live_drop_count else "#75c884")
+        if not self._stopping:
+            self._status_label.setText(
+                f"Monitoring — {self._sample_count} samples · Latest reading {sample.timestamp:%H:%M:%S}"
+            )
+        table = self._timeline_table
+        if table.rowCount() >= 40:
+            table.removeRow(0)
+        row = table.rowCount()
+        table.insertRow(row)
+        values = (
+            sample.timestamp.strftime("%H:%M:%S"), "UP" if sample.link_up else "DOWN",
+            "OK" if sample.gateway_reachable else "LOST",
+            f"{sample.gateway_rtt_ms:.1f} ms" if sample.gateway_rtt_ms is not None else "--",
+            "OK" if sample.wan_reachable else "LOST",
+            f"{sample.wan_rtt_ms:.1f} ms" if sample.wan_rtt_ms is not None else "--",
+        )
+        for col, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            if col in (1, 2, 4):
+                item.setForeground(QColor("#75c884" if value in ("UP", "OK") else "#e06363"))
+            table.setItem(row, col, item)
+        table.scrollToBottom()
 
     # ------------------------------------------------------------------
     # Start / Stop
     # ------------------------------------------------------------------
 
     def _on_start(self):
+        # A result can arrive before its native thread finishes exiting.
+        if self._worker is not None:
+            return
         gw = detect_gateway()
         if not gw:
             self._verdict_label.setText("Could not detect gateway")
@@ -355,24 +479,36 @@ class DropTab(QWidget):
         duration = self._duration_seconds()
         interval = self._interval_spin.value()
 
+        self._stopping = False
+        self._completion_message = "Analysis finished"
+        self._reset_readings()
         self._set_busy(True, f"Monitoring for {duration}s...")
         self._worker = _DropAnalyzeWorker(
             gateway=gw,
             wan_target="8.8.8.8",
             duration=duration,
             interval=float(interval),
+            parent=self,
         )
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(self._on_finished)
+        self._worker.scan_started.connect(self._on_scan_started)
+        self._worker.sample_ready.connect(self._on_sample)
+        self._worker.report_ready.connect(self._on_finished)
+        self._worker.finished.connect(self._on_worker_finished)
         self._worker.start()
 
     def _on_stop(self):
         if self._worker and self._worker.isRunning():
+            self._stopping = True
+            self._refresh_timer.stop()
             self._worker.request_stop()
-            self._set_busy(False, "Stopping...")
+            self._set_busy(True, "Stopping...")
+            self._stop_btn.setEnabled(False)
 
+    @Slot(str)
     def _on_progress(self, msg: str):
-        self._progress_bar.setFormat(msg)
+        if not self._stopping:
+            self._status_label.setText(msg)
 
     def _style_verdict(self, text_color: str, bg: str, border: str):
         self._verdict_frame.setStyleSheet(f"""
@@ -384,27 +520,39 @@ class DropTab(QWidget):
             }}
         """)
 
+    @Slot(object)
     def _on_finished(self, report: DropAnalysisReport | None):
-        self._worker = None
+        # Display the result, but retain ownership until QThread.finished.
+        self._refresh_timer.stop()
+        self._stop_btn.setEnabled(False)
         if report is None:
-            self._set_busy(False, "Analysis failed")
+            self._completion_message = "Analysis failed"
             self._verdict_label.setText("Analysis failed — check logs")
             self._style_verdict("#e06363", "#2d1b1d", "#73353a")
             return
 
         drop_count = len(report.drops)
-        self._set_busy(
-            False,
-            f"Done — {report.total_samples} samples, {drop_count} drops detected",
+        state = "Stopped" if self._stopping else "Done"
+        self._completion_message = (
+            f"{state} — {report.total_samples} samples, {drop_count} drops detected"
         )
         self._display_report(report)
 
+    @Slot()
+    def _on_worker_finished(self):
+        worker = self.sender()
+        if worker is self._worker:
+            self._worker = None
+            self._set_busy(False, self._completion_message)
+        if worker is not None:
+            worker.deleteLater()
+
     def show_forensics_episode(self, episode) -> None:
         """Display an automatic scheduler-triggered forensic capture."""
-        self._set_busy(
-            False,
-            f"Auto forensics captured: {episode.cause}",
-        )
+        # Automatic captures are persisted separately; do not overwrite live readings.
+        if self._worker is not None:
+            return
+        self._set_busy(False, f"Auto forensics captured: {episode.cause}")
         self._display_report(episode.report)
 
         cause_labels = {
@@ -438,7 +586,7 @@ class DropTab(QWidget):
         )
 
         # If no drops, use green
-        if not report.drops:
+        if report.samples and not report.drops:
             text_color, bg, border = "#75c884", "#111a14", "#315a3c"
 
         self._verdict_label.setText(report.verdict)
@@ -459,7 +607,8 @@ class DropTab(QWidget):
         gw_fails = sum(1 for s in report.samples if not s.gateway_reachable)
         wan_fails = sum(1 for s in report.samples if not s.wan_reachable)
         link_fails = sum(1 for s in report.samples if not s.link_up)
-        dns_fails = sum(1 for s in report.samples if not s.dns_ok)
+        dns_samples = [s for s in report.samples if s.dns_checked]
+        dns_fails = sum(1 for s in dns_samples if not s.dns_ok)
 
         self._update_card(
             "conn_type", "Connection",
@@ -488,7 +637,7 @@ class DropTab(QWidget):
         )
         self._update_card(
             "dns", "DNS",
-            f"OK ({total - dns_fails}/{total})" if dns_fails == 0
+            f"OK ({len(dns_samples)}/{len(dns_samples)} checks)" if dns_fails == 0
             else f"FAILED {dns_fails}x",
             "#75c884" if dns_fails == 0 else "#d9b65f",
         )
@@ -499,8 +648,15 @@ class DropTab(QWidget):
                 "#d9b65f" if len(report.drops) <= 2 else "#e06363"
             ),
         )
+        if not total:
+            for key, title in (("link", "Link State"), ("gateway", "Gateway"),
+                               ("wan", "WAN / Internet"), ("drops", "Drop Episodes")):
+                self._update_card(key, title, "No samples", "#788596")
+        if not dns_samples:
+            self._update_card("dns", "DNS", "Not checked", "#788596")
 
         # --- Drop episodes table ---
+        self._drops_group.setTitle("Drop Episodes")
         pattern_labels = {
             "link_flap": "LINK FLAP",
             "full_outage": "FULL OUTAGE",
@@ -561,6 +717,7 @@ class DropTab(QWidget):
                 self._drops_table.setItem(row, col, item)
 
         # --- Timeline table (show samples, chunked) ---
+        self._timeline_group.setTitle("Connectivity Timeline — scan summary")
         samples = report.samples
         chunk_size = max(1, len(samples) // 40)
         chunks = [samples[i:i + chunk_size] for i in range(0, len(samples), chunk_size)]
@@ -621,7 +778,7 @@ class DropTab(QWidget):
                 f"color: {rec_color}; padding: 8px; font-size: 13px;"
             )
         else:
-            self._recs_label.setText("No issues found.")
+            self._recs_label.setText("No issues found." if total else "No samples collected; start another scan.")
             self._recs_label.setStyleSheet(
                 "color: #75c884; padding: 8px; font-size: 13px;"
             )

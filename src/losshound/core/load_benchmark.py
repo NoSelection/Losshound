@@ -177,6 +177,7 @@ def _ping_continuous(
     """
     import subprocess
     from losshound.core.validation import validate_target
+    from losshound.core.windows_commands import windows_command
 
     if not validate_target(target):
         return
@@ -187,7 +188,7 @@ def _ping_continuous(
     while time.monotonic() < deadline and not stop_event.is_set():
         try:
             proc = subprocess.run(
-                ["ping", "-n", "1", "-w", "2000", target],
+                windows_command(["ping", "-n", "1", "-w", "2000", target]),
                 capture_output=True, text=True, timeout=5,
                 creationflags=_CREATE_NO_WINDOW,
             )

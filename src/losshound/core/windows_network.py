@@ -13,6 +13,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+from losshound.core.windows_commands import windows_command
 
 logger = logging.getLogger(__name__)
 
@@ -131,13 +132,13 @@ def get_active_network_interface(timeout: float = 8.0) -> ActiveNetworkInterface
         return None
     try:
         result = subprocess.run(
-            [
+            windows_command([
                 "powershell.exe",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
                 _ACTIVE_INTERFACE_SCRIPT,
-            ],
+            ]),
             capture_output=True,
             text=True,
             encoding="utf-8",

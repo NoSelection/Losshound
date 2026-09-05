@@ -7,8 +7,9 @@ from dataclasses import asdict
 from functools import partial
 
 from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QCheckBox, QComboBox, QDialog, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
     QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -25,8 +26,9 @@ from losshound.core.dns_bench import DnsBenchmarkResult
 from losshound.core.optimizer import (
     NetworkOptimizer, OptimizeReport, OptimizeResult,
 )
-from losshound.gui.theme import button_style
 from losshound.gui.widgets import TelemetryHeader
+from losshound.gui.diagnostic_widgets import ReadingTile, compact_table, page_style, style_action
+from losshound.gui.optimization_preview import OptimizationPreview
 
 logger = logging.getLogger(__name__)
 
@@ -186,93 +188,95 @@ class OptimizerTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
+        content.setObjectName("optimizer-page")
+        content.setStyleSheet(page_style("optimizer-page"))
         main_layout = QVBoxLayout(content)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(16)
 
         main_layout.addWidget(TelemetryHeader(
             "Network Performance Optimizer",
             "Tune TCP/IP, benchmark DNS, optimize MTU, and manage Windows throttling from one console.",
             "OPTIMIZER",
             "ADMIN READY" if NetworkOptimizer.check_admin() else "LIMITED",
-            "#75c884",
+            "#62c7d8",
         ))
 
         # --- Admin status ---
         self._admin_label = QLabel()
-        self._admin_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._admin_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._admin_label.setWordWrap(True)
         main_layout.addWidget(self._admin_label)
         self._update_admin_label()
 
         # --- Action buttons ---
-        btn_group = QGroupBox("Actions")
+        btn_group = QWidget()
         btn_layout = QGridLayout(btn_group)
-        btn_layout.setSpacing(8)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(10)
+        btn_layout.addWidget(QLabel("Measure"), 0, 0)
+        btn_layout.addWidget(QLabel("Settings"), 1, 0)
+        btn_layout.setColumnStretch(5, 1)
 
-        self._optimize_btn = QPushButton("Optimize All")
-        self._optimize_btn.setStyleSheet(button_style("success"))
-        self._optimize_btn.setMinimumHeight(42)
+        self._optimize_btn = QPushButton("Review Changes…")
+        style_action(self._optimize_btn, "primary")
         self._optimize_btn.clicked.connect(self._on_optimize_all)
-        btn_layout.addWidget(self._optimize_btn, 0, 0)
+        btn_layout.addWidget(self._optimize_btn, 1, 1, Qt.AlignmentFlag.AlignLeft)
 
         self._dns_bench_btn = QPushButton("Benchmark DNS")
-        self._dns_bench_btn.setStyleSheet(button_style("primary"))
-        self._dns_bench_btn.setMinimumHeight(42)
+        style_action(self._dns_bench_btn)
         self._dns_bench_btn.clicked.connect(self._on_dns_benchmark)
-        btn_layout.addWidget(self._dns_bench_btn, 0, 1)
+        btn_layout.addWidget(self._dns_bench_btn, 0, 4, Qt.AlignmentFlag.AlignLeft)
 
         self._restore_btn = QPushButton("Revert All Changes")
-        self._restore_btn.setStyleSheet(button_style("danger"))
-        self._restore_btn.setMinimumHeight(42)
+        style_action(self._restore_btn, "danger")
         self._restore_btn.setToolTip(
             "Undo ALL optimizations and restore your original network settings"
         )
         self._restore_btn.clicked.connect(self._on_restore)
-        btn_layout.addWidget(self._restore_btn, 0, 2)
+        btn_layout.addWidget(self._restore_btn, 1, 3, Qt.AlignmentFlag.AlignLeft)
 
         self._status_btn = QPushButton("Check Status")
-        self._status_btn.setMinimumHeight(42)
+        style_action(self._status_btn)
         self._status_btn.clicked.connect(self._on_check_status)
-        btn_layout.addWidget(self._status_btn, 0, 3)
+        btn_layout.addWidget(self._status_btn, 1, 2, Qt.AlignmentFlag.AlignLeft)
 
         # Row 2: Benchmark buttons
-        self._bench_before_btn = QPushButton("Benchmark BEFORE")
-        self._bench_before_btn.setStyleSheet(button_style("primary"))
-        self._bench_before_btn.setMinimumHeight(42)
+        self._bench_before_btn = QPushButton("Benchmark Before")
+        style_action(self._bench_before_btn)
         self._bench_before_btn.setToolTip(
             "Run a full network benchmark BEFORE optimization to measure baseline"
         )
         self._bench_before_btn.clicked.connect(lambda: self._on_benchmark("before"))
-        btn_layout.addWidget(self._bench_before_btn, 1, 0)
+        btn_layout.addWidget(self._bench_before_btn, 0, 1, Qt.AlignmentFlag.AlignLeft)
 
-        self._bench_after_btn = QPushButton("Benchmark AFTER")
-        self._bench_after_btn.setStyleSheet(button_style("primary"))
-        self._bench_after_btn.setMinimumHeight(42)
+        self._bench_after_btn = QPushButton("Benchmark After")
+        style_action(self._bench_after_btn)
         self._bench_after_btn.setToolTip(
             "Run a full network benchmark AFTER optimization to measure improvement"
         )
         self._bench_after_btn.clicked.connect(lambda: self._on_benchmark("after"))
-        btn_layout.addWidget(self._bench_after_btn, 1, 1)
+        btn_layout.addWidget(self._bench_after_btn, 0, 2, Qt.AlignmentFlag.AlignLeft)
         self._compare_btn = QPushButton("Compare Before vs After")
-        self._compare_btn.setStyleSheet(button_style("warning"))
-        self._compare_btn.setMinimumHeight(42)
+        style_action(self._compare_btn)
         self._compare_btn.setToolTip("Compare your before and after benchmarks")
         self._compare_btn.clicked.connect(self._on_compare)
-        btn_layout.addWidget(self._compare_btn, 1, 2, 1, 2)  # span 2 columns
+        btn_layout.addWidget(self._compare_btn, 0, 3, Qt.AlignmentFlag.AlignLeft)
 
         main_layout.addWidget(btn_group)
 
         # --- Responsiveness controls ---
-        resp_group = QGroupBox("System Responsiveness & Latency Tuning")
+        resp_group = QGroupBox("System responsiveness")
         resp_layout = QHBoxLayout(resp_group)
         resp_layout.setSpacing(12)
 
-        resp_layout.addWidget(QLabel("Responsiveness Profile:"))
+        resp_layout.addWidget(QLabel("Profile"))
         self._resp_combo = QComboBox()
         self._resp_combo.addItem("20% - Standard (Default)", 20)
         self._resp_combo.addItem("10% - Optimized (Gaming/Multimedia)", 10)
         self._resp_combo.addItem("0% - Pure Latency Priority", 0)
         self._resp_combo.setMinimumHeight(36)
+        self._resp_combo.setMaximumWidth(360)
         self._resp_combo.setStyleSheet("""
             QComboBox {
                 background: #141822;
@@ -294,24 +298,26 @@ class OptimizerTab(QWidget):
         resp_layout.addWidget(self._resp_combo)
 
         self._resp_apply_btn = QPushButton("Apply Selected Profile")
-        self._resp_apply_btn.setMinimumHeight(36)
-        self._resp_apply_btn.setStyleSheet(button_style("primary"))
+        style_action(self._resp_apply_btn, "primary")
         self._resp_apply_btn.clicked.connect(self._on_apply_responsiveness)
         resp_layout.addWidget(self._resp_apply_btn)
 
         self._resp_autotune_btn = QPushButton("Auto-Tune Profile")
-        self._resp_autotune_btn.setMinimumHeight(36)
-        self._resp_autotune_btn.setStyleSheet(button_style("warning"))
+        style_action(self._resp_autotune_btn)
         self._resp_autotune_btn.setToolTip("Benchmark latency and jitter for 20%, 10%, and 0% to find the optimal setting for your network stack")
         self._resp_autotune_btn.clicked.connect(self._on_autotune_responsiveness)
         resp_layout.addWidget(self._resp_autotune_btn)
+        resp_layout.addStretch()
 
         main_layout.addWidget(resp_group)
 
         # --- Advanced Adapter Tweaks Group ---
-        adapter_group = QGroupBox("Advanced Adapter Tweaks (Opt-in)")
+        adapter_group = QGroupBox("Optional adapter changes")
         adapter_layout = QVBoxLayout(adapter_group)
         adapter_layout.setSpacing(8)
+        adapter_hint = QLabel("Selected options are included in Review Changes before you apply them.")
+        adapter_hint.setWordWrap(True)
+        adapter_layout.addWidget(adapter_hint)
 
         cb_style = """
             QCheckBox {
@@ -357,14 +363,21 @@ class OptimizerTab(QWidget):
         self._progress_bar.setFormat("Idle")
         self._progress_bar.setRange(0, 1)
         self._progress_bar.setValue(0)
-        main_layout.addWidget(self._progress_bar)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.hide()
+        self._status_label = QLabel("Ready to check settings or run a benchmark")
+        self._status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._status_label.setWordWrap(True)
+        main_layout.insertWidget(main_layout.indexOf(btn_group) + 1, self._status_label)
+        main_layout.insertWidget(main_layout.indexOf(btn_group) + 2, self._progress_bar)
 
         # --- Current status cards ---
-        status_group = QGroupBox("Current Settings")
+        status_group = QGroupBox("Current settings")
         self._status_grid = QGridLayout(status_group)
-        self._status_grid.setSpacing(8)
+        self._status_grid.setSpacing(12)
 
-        self._status_cards: dict[str, QLabel] = {}
+        self._status_cards: dict[str, ReadingTile] = {}
         card_defs = [
             ("admin", "Privileges"),
             ("tcp_tuning", "TCP Auto-Tuning"),
@@ -378,7 +391,7 @@ class OptimizerTab(QWidget):
             ("throttling", "Network Throttling"),
         ]
         for i, (key, label) in enumerate(card_defs):
-            card = self._make_status_card(label)
+            card = ReadingTile(label)
             self._status_cards[key] = card
             row, col = divmod(i, 4)
             self._status_grid.addWidget(card, row, col)
@@ -386,8 +399,11 @@ class OptimizerTab(QWidget):
         main_layout.addWidget(status_group)
 
         # --- DNS Benchmark results table ---
-        dns_group = QGroupBox("DNS Benchmark Results")
+        dns_group = QGroupBox("DNS benchmark results")
         dns_layout = QVBoxLayout(dns_group)
+        self._dns_empty = QLabel("Benchmark DNS to compare response time and reliability across providers.")
+        self._dns_empty.setWordWrap(True)
+        dns_layout.addWidget(self._dns_empty)
         self._dns_table = QTableWidget(0, 6)
         self._dns_table.setHorizontalHeaderLabels([
             "Rank", "Server", "Provider", "Avg (ms)", "Min (ms)", "Success %",
@@ -402,12 +418,19 @@ class OptimizerTab(QWidget):
         self._dns_table.verticalHeader().setVisible(False)
         self._dns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._dns_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        compact_table(self._dns_table, self._dns_empty)
+        self._dns_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._dns_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self._dns_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         dns_layout.addWidget(self._dns_table)
         main_layout.addWidget(dns_group)
 
         # --- Optimization results table ---
-        results_group = QGroupBox("Optimization Results")
+        results_group = QGroupBox("Optimization results")
         results_layout = QVBoxLayout(results_group)
+        self._results_empty = QLabel("Applied, skipped, and failed changes appear here after an optimization.")
+        self._results_empty.setWordWrap(True)
+        results_layout.addWidget(self._results_empty)
 
         self._results_table = QTableWidget(0, 5)
         self._results_table.setHorizontalHeaderLabels([
@@ -422,11 +445,12 @@ class OptimizerTab(QWidget):
         self._results_table.verticalHeader().setVisible(False)
         self._results_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._results_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        compact_table(self._results_table, self._results_empty)
         results_layout.addWidget(self._results_table)
         main_layout.addWidget(results_group)
 
         # --- Benchmark comparison table ---
-        bench_group = QGroupBox("Performance Benchmark — Before vs After")
+        bench_group = QGroupBox("Before and after comparison")
         bench_layout = QVBoxLayout(bench_group)
 
         self._bench_table = QTableWidget(0, 4)
@@ -449,8 +473,13 @@ class OptimizerTab(QWidget):
             "padding: 8px; font-size: 13px; color: #d8dee9;"
         )
         bench_layout.addWidget(self._bench_summary_label)
+        # The summary also explains partially completed comparisons.
+        compact_table(self._bench_table, None)
+        self._bench_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
 
         main_layout.addWidget(bench_group)
+        for group in content.findChildren(QGroupBox):
+            group.layout().setContentsMargins(0, 4, 0, 0)
 
         main_layout.addStretch()
 
@@ -468,37 +497,24 @@ class OptimizerTab(QWidget):
     # Helpers
     # ------------------------------------------------------------------
 
-    def _make_status_card(self, label: str) -> QLabel:
-        """Create a styled status card widget."""
-        card = QLabel(f"{label}\n--")
-        card.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        card.setStyleSheet("""
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
-            border: 1px solid #20293a;
-            border-radius: 0px;
-            padding: 12px;
-            font-size: 12px;
-            color: #d8dee9;
-        """)
-        card.setMinimumHeight(76)
-        card.setWordWrap(True)
-        return card
-
     def _update_admin_label(self):
         is_admin = NetworkOptimizer.check_admin()
         if is_admin:
-            self._admin_label.setText("Running as Administrator — all optimizations available")
+            self._admin_label.setText("Administrator session · network setting changes are available.")
             self._admin_label.setStyleSheet(
-                "color: #75c884; font-weight: bold; padding: 4px;"
+                "color: #75c884; padding: 10px 14px; background: #101a20; border-left: 2px solid #62c7d8;"
             )
         else:
             self._admin_label.setText(
-                "Running without Administrator — some optimizations will be skipped. "
-                "Re-launch as Admin for full optimization."
+                "Standard user session · diagnostics and previews are available. Applying settings requires Administrator."
             )
             self._admin_label.setStyleSheet(
-                "color: #d9b65f; font-weight: bold; padding: 4px;"
+                "color: #b7c4cc; padding: 10px 14px; background: #101a20; border-left: 2px solid #62c7d8;"
             )
+
+    def _show_progress(self, message: str):
+        self._status_label.setText(message)
+        self._progress_bar.setFormat(message)
 
     def _set_busy(self, busy: bool, message: str = ""):
         """Toggle button states and progress bar."""
@@ -512,6 +528,10 @@ class OptimizerTab(QWidget):
         self._resp_combo.setEnabled(not busy)
         self._resp_apply_btn.setEnabled(not busy)
         self._resp_autotune_btn.setEnabled(not busy)
+        for checkbox in (self._eee_checkbox, self._rsc_checkbox, self._lso_checkbox):
+            checkbox.setEnabled(not busy)
+        self._show_progress(message or ("Working..." if busy else "Ready"))
+        self._progress_bar.setVisible(busy)
 
         if busy:
             self._progress_bar.setRange(0, 0)  # indeterminate
@@ -533,15 +553,7 @@ class OptimizerTab(QWidget):
             "neutral": "#d8dee9",
         }
         color = colors.get(status, "#d8dee9")
-        card.setText(f"{title}\n{value}")
-        card.setStyleSheet(f"""
-            background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
-            border: 1px solid #20293a;
-            border-radius: 0px;
-            padding: 12px;
-            font-size: 12px;
-            color: {color};
-        """)
+        card.set_reading(title, value, color)
 
     # ------------------------------------------------------------------
     # Actions
@@ -550,23 +562,25 @@ class OptimizerTab(QWidget):
     def _on_optimize_all(self):
         if self._worker is not None and self._worker.isRunning():
             return  # already running, ignore the click
-        reply = QMessageBox.question(
-            self, "Optimize All",
-            "This will modify your network settings to optimize performance.\n"
-            "A backup will be created first so you can restore later.\n\n"
-            "Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        )
-        if reply != QMessageBox.StandardButton.Yes:
-            return
-
-        self._set_busy(True, "Optimizing network...")
-        self._worker = _OptimizeWorker(
+        # Freeze the reviewed selection before entering the modal event loop.
+        options = dict(
             optimize_eee=self._eee_checkbox.isChecked(),
             optimize_rsc=self._rsc_checkbox.isChecked(),
             optimize_lso=self._lso_checkbox.isChecked(),
         )
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        preview = OptimizationPreview(
+            options, is_admin=NetworkOptimizer.check_admin(), parent=self,
+        )
+        accepted = preview.exec() == QDialog.DialogCode.Accepted
+        preview.deleteLater()
+        if not accepted or not NetworkOptimizer.check_admin():
+            return
+
+        self._set_busy(True, "Optimizing network...")
+        self._worker = _OptimizeWorker(
+            skip_dns=True, apply_dns=False, skip_mtu=False, **options,
+        )
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_optimize_done)
         self._worker.start()
 
@@ -585,7 +599,8 @@ class OptimizerTab(QWidget):
         QMessageBox.information(
             self, "Optimization Complete",
             f"{report.summary}\n\n"
-            f"Backup saved — you can restore your original settings anytime.",
+            "Review the results above. Revert All Changes uses the saved original backup; "
+            "check its results for any settings that could not be restored.",
         )
 
     def _on_dns_benchmark(self):
@@ -593,7 +608,7 @@ class OptimizerTab(QWidget):
             return  # already running, ignore the click
         self._set_busy(True, "Benchmarking DNS servers...")
         self._worker = _DnsBenchmarkWorker()
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_dns_benchmark_done)
         self._worker.start()
 
@@ -611,25 +626,20 @@ class OptimizerTab(QWidget):
             return  # already running, ignore the click
         reply = QMessageBox.question(
             self, "Revert All Changes",
-            "This will REVERT all optimizations and restore your original\n"
-            "network settings from before optimization was applied.\n\n"
-            "Everything will go back to exactly how it was:\n"
-            "  - DNS servers\n"
-            "  - TCP/IP settings\n"
-            "  - MTU\n"
-            "  - Network throttling\n"
-            "  - Nagle's algorithm\n"
-            "  - Adapter power management\n"
-            "  - Interrupt moderation\n\n"
-            "Continue?",
+            "Restore the network settings recorded in the original backup?\n\n"
+            "This can replace changes made since that backup, including DNS, TCP/IP, "
+            "MTU, and adapter settings. It is not limited to the latest batch.\n\n"
+            "Administrator privileges are required for most settings. Review the "
+            "results for skipped or failed restores; some settings need a reboot.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
         self._set_busy(True, "Reverting all changes...")
         self._worker = _RestoreWorker()
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_restore_done)
         self._worker.start()
 
@@ -661,14 +671,18 @@ class OptimizerTab(QWidget):
     def _on_check_status(self):
         if self._worker is not None and self._worker.isRunning():
             return  # already running, ignore the click
+        self._show_progress("Reading current network settings...")
         self._worker = _StatusWorker()
         self._worker.finished.connect(self._on_status_done)
         self._worker.start()
 
     def _on_status_done(self, status: dict):
-        self._worker = None
+        # Result delivery can precede run() returning. Keep the worker until
+        # the next action replaces it after isRunning() becomes false.
         if not status:
+            self._show_progress("Could not read settings. Try Check Status again.")
             return
+        self._show_progress("Current settings updated")
 
         # Admin
         is_admin = status.get("admin", False)
@@ -768,7 +782,7 @@ class OptimizerTab(QWidget):
         self._set_busy(True, f"Running {label} benchmark (this takes ~60s)...")
         self._active_benchmark_label = label
         self._worker = _BenchmarkWorker(label=label)
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_benchmark_done)
         self._worker.start()
 
@@ -806,7 +820,7 @@ class OptimizerTab(QWidget):
         )
 
         if label == "before":
-            msg += "\n\nNow run 'Optimize All', then click 'Benchmark AFTER'."
+            msg += "\n\nUse 'Review Changes' to inspect the proposed settings, then benchmark again if you apply them."
         elif label == "after":
             msg += "\n\nClick 'Compare Before vs After' to see the difference!"
 
@@ -930,9 +944,9 @@ class OptimizerTab(QWidget):
             )
 
         colors = {
-            "healthy": Qt.GlobalColor.green,
-            "error": Qt.GlobalColor.red,
-            "neutral": Qt.GlobalColor.white,
+            "healthy": QColor("#75c884"),
+            "error": QColor("#e06363"),
+            "neutral": QColor("#aebbc6"),
         }
 
         self._bench_table.setRowCount(len(rows))
@@ -944,7 +958,7 @@ class OptimizerTab(QWidget):
                 QTableWidgetItem(change_text),
             ]
             # Color the change column
-            items[3].setForeground(colors.get(status, Qt.GlobalColor.white))
+            items[3].setForeground(colors.get(status, QColor("#aebbc6")))
             # Bold aggregate rows
             if not metric.startswith("  "):
                 for item in items:
@@ -986,10 +1000,10 @@ class OptimizerTab(QWidget):
             # Color-code the row based on ranking
             if row == 0:
                 for item in (rank_item, server_item, name_item, avg_item, min_item, success_item):
-                    item.setForeground(Qt.GlobalColor.green)
+                    item.setForeground(QColor("#75c884"))
             elif r.success_rate < 0.5:
                 for item in (rank_item, server_item, name_item, avg_item, min_item, success_item):
-                    item.setForeground(Qt.GlobalColor.red)
+                    item.setForeground(QColor("#e06363"))
 
             self._dns_table.setItem(row, 0, rank_item)
             self._dns_table.setItem(row, 1, server_item)
@@ -1000,13 +1014,13 @@ class OptimizerTab(QWidget):
 
     def _populate_results_table(self, results: list[OptimizeResult]):
         _STATUS_COLORS = {
-            "Applied": Qt.GlobalColor.green,
-            "Verified": Qt.GlobalColor.cyan,
-            "No change": Qt.GlobalColor.white,
-            "Skipped": Qt.GlobalColor.yellow,
-            "Failed": Qt.GlobalColor.red,
-            "Unsupported": Qt.GlobalColor.darkYellow,
-            "Reboot required": Qt.GlobalColor.magenta,
+            "Applied": QColor("#75c884"),
+            "Verified": QColor("#62c7d8"),
+            "No change": QColor("#aebbc6"),
+            "Skipped": QColor("#d9b65f"),
+            "Failed": QColor("#e06363"),
+            "Unsupported": QColor("#d9b65f"),
+            "Reboot required": QColor("#c98652"),
         }
 
         self._results_table.setRowCount(len(results))
@@ -1024,7 +1038,7 @@ class OptimizerTab(QWidget):
                 else:
                     status_text = "Failed"
 
-            color = _STATUS_COLORS.get(status_text, Qt.GlobalColor.white)
+            color = _STATUS_COLORS.get(status_text, QColor("#aebbc6"))
             status_item = QTableWidgetItem(status_text)
             status_item.setForeground(color)
             status_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1108,7 +1122,7 @@ class OptimizerTab(QWidget):
 
         self._set_busy(True, "Starting auto-tune responsiveness benchmark...")
         self._worker = _AutoTuneResponsivenessWorker()
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_autotune_done)
         self._worker.start()
 

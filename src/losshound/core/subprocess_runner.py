@@ -12,6 +12,8 @@ import sys
 import time
 from PySide6.QtCore import QThread
 
+from losshound.core.windows_commands import windows_command
+
 logger = logging.getLogger(__name__)
 
 # Windows creation flags: hide console windows and isolate child process groups
@@ -31,7 +33,7 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
     if sys.platform == "win32":
         try:
             result = subprocess.run(
-                ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                windows_command(["taskkill", "/F", "/T", "/PID", str(proc.pid)]),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=2.0,
@@ -63,7 +65,9 @@ def _terminate_process_tree(proc: subprocess.Popen[str]) -> None:
         proc.kill()
 
 
-def run_subprocess_interruptible(args: list[str], timeout_sec: float) -> tuple[str, str, int]:
+def run_subprocess_interruptible(
+    args: list[str], timeout_sec: float, *, encoding: str | None = None,
+) -> tuple[str, str, int]:
     """Run an external command via subprocess.Popen in a thread-interruption-safe way.
 
     Checks for QThread interruption requests every 50ms and kills the process
@@ -74,10 +78,12 @@ def run_subprocess_interruptible(args: list[str], timeout_sec: float) -> tuple[s
         subprocess.TimeoutExpired: If the process runs longer than timeout_sec.
     """
     proc = subprocess.Popen(
-        args,
+        windows_command(args),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding=encoding,
+        errors="replace",
         creationflags=PROCESS_CREATION_FLAGS,
     )
     start_time = time.monotonic()

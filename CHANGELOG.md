@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Live Drop Analyzer connection readings, recent samples, and a countdown that
+  distinguishes monitoring, stopping, and report preparation.
+- An Optimizer change preview with explicit targets, selected adapter options,
+  an Administrator requirement for applying, and cancellation as the default.
+- Packaged Qt startup smoke tests in Windows CI.
+
+### Changed
+- Grouped specialist pages under Diagnostics and Tuning while keeping Dashboard,
+  History, Drops, Settings, and Export directly accessible.
+- Refined Score, Optimizer, and WiFi layouts with readable values, compact
+  actions, useful empty states, and tables sized to their results.
+- Clarified LAN device-name advice, optimization expectations, and backup/restore
+  scope. Estimated scores and DNS samples now identify their measurement limits.
+
+### Fixed
+- Isolated PyInstaller native-library discovery from unrelated tools on PATH,
+  preventing an incompatible ICU DLL from breaking QtWidgets startup.
+- Retained Drop Analyzer, export, and startup-query workers until their work
+  finishes; stopping a drop scan preserves completed samples.
+- Cleared stale WiFi readings after disconnection and hid unavailable load-test
+  measurements instead of retaining an earlier result.
+
+### Security
+- Resolved approved Windows commands through the protected system directory.
+- Bounded LAN description downloads and restricted redirects to the same local
+  device; prevented webhook credentials from appearing in failure logs.
+
 ## [0.1.3] - 2026-07-09
 
 Trust and clarity release: measurements now fail honestly, optimizer restores

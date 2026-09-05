@@ -23,12 +23,13 @@ class _CommandResult:
     returncode: int = 0
 
 
-def _run(cmd: str, timeout: float = 15) -> _CommandResult:
-    """Run a command with English locale and hidden window."""
+def _run(cmd: list[str], timeout: float = 15) -> _CommandResult:
+    """Run netsh directly, decoding its Windows OEM output without a shell."""
     try:
         stdout, stderr, returncode = run_subprocess_interruptible(
-            ["cmd", "/c", f"chcp 437 >nul && {cmd}"],
+            cmd,
             timeout,
+            encoding="oem",
         )
         return _CommandResult(stdout=stdout, stderr=stderr, returncode=returncode)
     except subprocess.TimeoutExpired:
@@ -169,7 +170,7 @@ def _signal_quality(pct: int) -> str:
 def get_wifi_interface() -> Optional[WifiInterface]:
     """Read current WiFi adapter state via ``netsh wlan show interfaces``."""
     try:
-        proc = _run("netsh wlan show interfaces")
+        proc = _run(["netsh", "wlan", "show", "interfaces"])
         if proc.returncode != 0 or not proc.stdout.strip():
             return None
 
@@ -222,7 +223,7 @@ def get_wifi_interface() -> Optional[WifiInterface]:
 def scan_networks() -> list[WifiNetwork]:
     """Scan for visible WiFi networks via ``netsh wlan show networks mode=bssid``."""
     try:
-        proc = _run("netsh wlan show networks mode=bssid")
+        proc = _run(["netsh", "wlan", "show", "networks", "mode=bssid"])
         if proc.returncode != 0:
             return []
 

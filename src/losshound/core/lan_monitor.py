@@ -5,13 +5,14 @@ import ipaddress
 import re
 import socket
 import subprocess
-import ssl
-import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from html.parser import HTMLParser
 from typing import Optional, List, Dict
 from urllib.parse import urlparse
+
+from losshound.core.lan_http import fetch_device_document
+from losshound.core.windows_commands import windows_command
 
 logger = logging.getLogger(__name__)
 
@@ -444,7 +445,7 @@ def run_command_resilient(args: List[str]) -> str:
     """Run a subprocess command and decode its output using CP850 fallback to avoid crashes."""
     try:
         res = subprocess.run(
-            args,
+            windows_command(args),
             capture_output=True,
             timeout=15,
             creationflags=subprocess.CREATE_NO_WINDOW,
@@ -536,7 +537,7 @@ def ping_ip(ip: str) -> None:
     """Send a single low-timeout ping to trigger ARP tables."""
     try:
         subprocess.run(
-            ["ping", "-n", "1", "-w", "150", ip],
+            windows_command(["ping", "-n", "1", "-w", "150", ip]),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             timeout=2.0,
@@ -833,10 +834,8 @@ def _extract_title(html: str) -> str:
     return " ".join(title.split()) if title else ""
 
 
-def _fetch_html(url: str, ctx) -> str:
-    req = urllib.request.Request(url, headers={'User-Agent': 'Losshound/1.0'})
-    with urllib.request.urlopen(req, timeout=1.5, context=ctx) as response:
-        html_bytes = response.read()
+def _fetch_html(url: str, device_ip: str) -> str:
+    html_bytes = fetch_device_document(url, device_ip=device_ip)
     try:
         return html_bytes.decode("utf-8")
     except Exception:
@@ -853,14 +852,10 @@ def resolve_http_title(ip: str) -> str:
     if not is_lan_scoped_ip(ip):
         return ""
 
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-
     for proto in ["http", "https"]:
         try:
             base_url = f"{proto}://{ip}/"
-            html = _fetch_html(base_url, ctx)
+            html = _fetch_html(base_url, ip)
         except Exception:
             continue
 
@@ -881,7 +876,7 @@ def resolve_http_title(ip: str) -> str:
             parsed = urlparse(absolute)
             if parsed.hostname != ip:
                 continue
-            html2 = _fetch_html(absolute, ctx)
+            html2 = _fetch_html(absolute, ip)
         except Exception:
             continue
 
@@ -939,24 +934,16 @@ def scan_ssdp() -> Dict[str, str]:
             sock.close()
             
     if locations:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        
         def fetch_friendly_name(ip_url_tuple):
             ip, url = ip_url_tuple
             try:
-                req = urllib.request.Request(url, headers={'User-Agent': 'Losshound/1.0'})
-                with urllib.request.urlopen(req, timeout=0.6, context=ctx) as response:
-                    xml = response.read().decode("utf-8", errors="ignore")
-                    
-                    fn_match = re.search(r"<friendlyName>([^<]+)</friendlyName>", xml, re.IGNORECASE)
-                    if fn_match:
-                        return ip, fn_match.group(1).strip()
-                        
-                    mn_match = re.search(r"<modelName>([^<]+)</modelName>", xml, re.IGNORECASE)
-                    if mn_match:
-                        return ip, mn_match.group(1).strip()
+                xml = fetch_device_document(url, device_ip=ip, timeout=2.0).decode("utf-8", errors="ignore")
+                fn_match = re.search(r"<friendlyName>([^<]+)</friendlyName>", xml, re.IGNORECASE)
+                if fn_match:
+                    return ip, fn_match.group(1).strip()
+                mn_match = re.search(r"<modelName>([^<]+)</modelName>", xml, re.IGNORECASE)
+                if mn_match:
+                    return ip, mn_match.group(1).strip()
             except Exception:
                 pass
             return ip, None

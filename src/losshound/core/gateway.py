@@ -5,6 +5,8 @@ import re
 import subprocess
 from typing import Optional
 
+from losshound.core.windows_commands import windows_command
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,7 +27,7 @@ def _detect_via_ipconfig() -> Optional[str]:
     """Parse ipconfig output to find the default gateway."""
     try:
         result = subprocess.run(
-            ["ipconfig"],
+            windows_command(["ipconfig"]),
             capture_output=True, text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )

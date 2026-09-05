@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from html import escape
 
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtWidgets import (
-    QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
+    QFrame, QGridLayout, QGroupBox, QHBoxLayout, QHeaderView,
     QLabel, QMessageBox, QProgressBar, QPushButton, QScrollArea,
-    QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QSizePolicy, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from losshound.core.benchmark import BenchmarkSnapshot, run_benchmark, save_snapshot
@@ -19,6 +21,63 @@ from losshound.gui.widgets import TelemetryHeader
 from losshound.storage.history import HistoryStore
 
 logger = logging.getLogger(__name__)
+
+
+_PAGE_STYLE = """
+    QWidget#score-page QLabel {
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 13px;
+        color: #aebbc6;
+        background: transparent;
+        border: none;
+    }
+    QWidget#score-page QGroupBox {
+        border: none;
+        border-top: 1px solid #28333b;
+        margin-top: 22px;
+        padding: 18px 0 0 0;
+    }
+    QWidget#score-page QGroupBox::title {
+        subcontrol-origin: margin;
+        subcontrol-position: top left;
+        padding: 0 12px 0 0;
+        color: #aebbc6;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0;
+        text-transform: none;
+    }
+    QFrame#score-overview {
+        background: #101a20;
+        border: 1px solid #30434d;
+        border-left: 3px solid #62c7d8;
+    }
+    QFrame#score-metric {
+        background: #101519;
+        border: 1px solid #27333b;
+    }
+    QWidget#score-page QTableWidget {
+        background: #080c0e;
+        alternate-background-color: #101619;
+        border: none;
+        font-family: 'Consolas', monospace;
+        font-size: 13px;
+        selection-background-color: #203640;
+    }
+    QWidget#score-page QHeaderView::section {
+        background: #080c0e;
+        color: #90a4b2;
+        border: none;
+        border-bottom: 1px solid #28333b;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: none;
+        letter-spacing: 0;
+        padding: 8px;
+    }
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -85,9 +144,11 @@ class ScoreTab(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         content = QWidget()
+        content.setObjectName("score-page")
+        content.setStyleSheet(_PAGE_STYLE)
         main_layout = QVBoxLayout(content)
-        main_layout.setContentsMargins(16, 16, 16, 16)
-        main_layout.setSpacing(12)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(16)
 
         main_layout.addWidget(TelemetryHeader(
             "Network Score & Trends",
@@ -98,19 +159,31 @@ class ScoreTab(QWidget):
         ))
 
         # --- Action buttons ---
-        btn_group = QGroupBox("Actions")
+        btn_group = QWidget()
         btn_layout = QHBoxLayout(btn_group)
-        btn_layout.setSpacing(8)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setSpacing(10)
+        self._status_label = QLabel("Ready for a benchmark")
+        self._status_label.setWordWrap(True)
+        btn_layout.addWidget(self._status_label, 1)
 
         self._score_btn = QPushButton("Run Score Benchmark")
-        self._score_btn.setStyleSheet(button_style("primary"))
-        self._score_btn.setMinimumHeight(42)
+        self._score_btn.setStyleSheet(button_style("primary") + """
+            QPushButton { background: #17343c; border-color: #62c7d8;
+                font-family: 'Segoe UI'; font-size: 13px; letter-spacing: 0;
+                text-transform: none; padding: 9px 16px; }
+            QPushButton:hover { background: #234955; }
+        """)
+        self._score_btn.setMinimumHeight(40)
         self._score_btn.clicked.connect(self._on_run_score)
         btn_layout.addWidget(self._score_btn)
 
         self._trends_btn = QPushButton("Refresh Trends")
-        self._trends_btn.setStyleSheet(button_style("default"))
-        self._trends_btn.setMinimumHeight(42)
+        self._trends_btn.setStyleSheet(button_style("default") + """
+            QPushButton { font-family: 'Segoe UI'; font-size: 13px;
+                letter-spacing: 0; text-transform: none; padding: 9px 16px; }
+        """)
+        self._trends_btn.setMinimumHeight(40)
         self._trends_btn.clicked.connect(self._on_refresh_trends)
         btn_layout.addWidget(self._trends_btn)
 
@@ -122,77 +195,88 @@ class ScoreTab(QWidget):
         self._progress_bar.setValue(0)
         self._progress_bar.setTextVisible(True)
         self._progress_bar.setFormat("Idle")
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setFixedHeight(4)
+        self._progress_bar.hide()
         main_layout.addWidget(self._progress_bar)
 
         # --- Score display ---
-        score_group = QGroupBox("Network Score")
+        score_group = QWidget()
         score_layout = QHBoxLayout(score_group)
-        score_layout.setContentsMargins(12, 16, 12, 12)
-        score_layout.setSpacing(16)
+        score_layout.setContentsMargins(0, 0, 0, 0)
+        score_layout.setSpacing(12)
 
         # Left: Main Score Card
-        from PySide6.QtWidgets import QFrame
         self._main_score_card = QFrame()
-        self._main_score_card.setFrameShape(QFrame.Shape.StyledPanel)
+        self._main_score_card.setObjectName("score-overview")
         self._main_score_card.setFixedWidth(240)
-        self._main_score_card.setStyleSheet("""
-            QFrame {
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
-                border: 1px solid #20293a;
-                border-radius: 0px;
-            }
-            QFrame:hover {
-                border-color: #62c7d8;
-            }
-        """)
 
         main_card_layout = QVBoxLayout(self._main_score_card)
-        main_card_layout.setContentsMargins(16, 20, 16, 20)
-        main_card_layout.setSpacing(12)
-        main_card_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        main_card_layout.setContentsMargins(22, 22, 22, 22)
+        main_card_layout.setSpacing(8)
 
         title_label = QLabel("OVERALL SCORE")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         title_label.setStyleSheet("""
-            font-size: 11px;
-            font-weight: bold;
-            color: #788596;
+            font-size: 12px;
+            font-weight: 600;
+            color: #90a4b2;
             text-transform: uppercase;
             letter-spacing: 1.5px;
         """)
         main_card_layout.addWidget(title_label)
+        main_card_layout.addStretch()
 
         # Big score number
         self._score_label = QLabel("--")
-        self._score_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._score_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._score_label.setStyleSheet(
-            "font-size: 72px; font-weight: 900; color: #4a5565; padding: 0px; font-family: 'Segoe UI Variable', sans-serif;"
+            "font-size: 76px; font-weight: 600; color: #90a4b2; padding: 0; font-family: 'Consolas';"
         )
-        main_card_layout.addWidget(self._score_label)
+        score_number = QHBoxLayout()
+        score_number.setSpacing(8)
+        score_number.addWidget(self._score_label)
+        scale_label = QLabel("/ 100")
+        scale_label.setStyleSheet("font-size: 16px; color: #90a4b2; padding-bottom: 16px;")
+        score_number.addWidget(scale_label, 1, Qt.AlignmentFlag.AlignBottom)
+        main_card_layout.addLayout(score_number)
 
         self._grade_label = QLabel("Run benchmark to score")
-        self._grade_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._grade_label.setAlignment(Qt.AlignmentFlag.AlignLeft)
         self._grade_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #8f9aaa; padding: 4px;")
         self._grade_label.setWordWrap(True)
         main_card_layout.addWidget(self._grade_label)
+        main_card_layout.addStretch()
+        self._score_timestamp = QLabel("Your next benchmark appears here.")
+        self._score_timestamp.setWordWrap(True)
+        self._score_timestamp.setStyleSheet("font-size: 12px; color: #90a4b2;")
+        main_card_layout.addWidget(self._score_timestamp)
 
         score_layout.addWidget(self._main_score_card)
 
         # Right: Sub-score cards grid
         self._subscore_grid = QGridLayout()
-        self._subscore_grid.setSpacing(8)
-        self._subscore_cards: dict[str, QLabel] = {}
-        score_layout.addLayout(self._subscore_grid)
+        self._subscore_grid.setSpacing(12)
+        self._subscore_cards: dict[str, QFrame] = {}
+        self._subscore_columns = 3
+        score_layout.addLayout(self._subscore_grid, 1)
+        self._metrics_empty = QLabel("See what shapes your score\n\nRun a benchmark to measure latency, jitter, packet loss, DNS, and TCP connection time.")
+        self._metrics_empty.setWordWrap(True)
+        self._metrics_empty.setStyleSheet("font-size: 15px; color: #90a4b2; padding: 24px;")
+        self._subscore_grid.addWidget(self._metrics_empty, 0, 0, 1, 3)
 
         main_layout.addWidget(score_group)
 
         # --- History table ---
-        history_group = QGroupBox("Benchmark History")
+        history_group = QGroupBox("Recent benchmarks")
         history_layout = QVBoxLayout(history_group)
+        history_layout.setContentsMargins(0, 4, 0, 0)
+        self._history_empty = QLabel("No benchmarks yet. Run your first benchmark to establish a baseline.")
+        history_layout.addWidget(self._history_empty)
 
         self._history_table = QTableWidget(0, 7)
         self._history_table.setHorizontalHeaderLabels([
-            "Timestamp", "Label", "Score", "Grade", "Latency", "Jitter", "Loss",
+            "Date / time", "Label", "Score", "Grade", "Latency", "Jitter", "Loss",
         ])
         self._history_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         self._history_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
@@ -205,15 +289,15 @@ class ScoreTab(QWidget):
         self._history_table.verticalHeader().setVisible(False)
         self._history_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._history_table.setAlternatingRowColors(True)
-        self._history_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #141923; }
-        """)
+        self._configure_table(self._history_table)
+        self._history_table.hide()
         history_layout.addWidget(self._history_table)
         main_layout.addWidget(history_group)
 
         # --- Patterns / alerts ---
-        patterns_group = QGroupBox("Detected Patterns")
+        patterns_group = QWidget()
         patterns_layout = QVBoxLayout(patterns_group)
+        patterns_layout.setContentsMargins(0, 0, 0, 0)
 
         self._patterns_label = QLabel("Run a few benchmarks over time to detect patterns.")
         self._patterns_label.setWordWrap(True)
@@ -223,26 +307,22 @@ class ScoreTab(QWidget):
         main_layout.addWidget(patterns_group)
 
         # --- Metric trend table ---
-        metric_group = QGroupBox("Metric Trends")
+        metric_group = QGroupBox("Metric trends · last 7 days")
         metric_layout = QVBoxLayout(metric_group)
+        metric_layout.setContentsMargins(0, 4, 0, 0)
+        self._metric_empty = QLabel("Metric comparisons appear after your first benchmark.")
+        metric_layout.addWidget(self._metric_empty)
 
         self._metric_table = QTableWidget(0, 6)
         self._metric_table.setHorizontalHeaderLabels([
             "Metric", "Current", "Average", "Best", "Worst", "Trend",
         ])
-        self._metric_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        self._metric_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self._metric_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self._metric_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self._metric_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self._metric_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self._metric_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self._metric_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self._metric_table.verticalHeader().setVisible(False)
         self._metric_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._metric_table.setAlternatingRowColors(True)
-        self._metric_table.setStyleSheet("""
-            QTableWidget { alternate-background-color: #141923; }
-        """)
+        self._configure_table(self._metric_table)
+        self._metric_table.hide()
         metric_layout.addWidget(self._metric_table)
         main_layout.addWidget(metric_group)
 
@@ -260,9 +340,64 @@ class ScoreTab(QWidget):
     # Helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _configure_table(table: QTableWidget):
+        table.setShowGrid(False)
+        table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        table.verticalHeader().setDefaultSectionSize(34)
+        table.horizontalHeader().setMinimumSectionSize(72)
+        table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+    @staticmethod
+    def _fit_table(table: QTableWidget, max_rows: int = 6):
+        rows = min(table.rowCount(), max_rows)
+        height = table.horizontalHeader().sizeHint().height() + sum(
+            table.rowHeight(row) for row in range(rows)
+        ) + 4
+        # Reserve room for horizontal scrolling at small window sizes.
+        height += table.horizontalScrollBar().sizeHint().height()
+        table.setFixedHeight(height)
+        table.setVisible(table.rowCount() > 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        columns = 2 if self.width() < 1120 else 3
+        if columns == self._subscore_columns:
+            return
+        self._subscore_columns = columns
+        for i, card in enumerate(self._subscore_cards.values()):
+            self._subscore_grid.removeWidget(card)
+            self._subscore_grid.addWidget(card, i // columns, i % columns)
+
+    @staticmethod
+    def _display_time(timestamp: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            if parsed.tzinfo is not None:
+                parsed = parsed.astimezone()
+            return parsed.strftime("%d %b %Y · %H:%M")
+        except (ValueError, TypeError, AttributeError):
+            return str(timestamp or "--")
+
+    def _set_overall(self, value: float, grade: str, rating: str):
+        color = self._score_color(value)
+        self._score_label.setText(f"{value:.0f}")
+        self._score_label.setStyleSheet(
+            f"font-size: 76px; font-weight: 600; color: {color}; "
+            "padding: 0; font-family: 'Consolas';"
+        )
+        self._grade_label.setText(f"Grade {grade} · {rating}")
+        self._grade_label.setStyleSheet(f"font-size: 17px; font-weight: 600; color: {color};")
+
+    def _show_progress(self, message: str):
+        self._status_label.setText(message)
+        self._progress_bar.setFormat(message)
+
     def _set_busy(self, busy: bool, message: str = ""):
         self._score_btn.setEnabled(not busy)
         self._trends_btn.setEnabled(not busy)
+        self._progress_bar.setVisible(busy)
+        self._show_progress(message or ("Working..." if busy else "Ready"))
         if busy:
             self._progress_bar.setRange(0, 0)
             self._progress_bar.setFormat(message or "Working...")
@@ -292,7 +427,7 @@ class ScoreTab(QWidget):
             return  # already running, ignore the click
         self._set_busy(True, "Running score benchmark...")
         self._worker = _ScoreWorker()
-        self._worker.progress.connect(self._progress_bar.setFormat)
+        self._worker.progress.connect(self._show_progress)
         self._worker.finished.connect(self._on_score_done)
         self._worker.start()
 
@@ -309,31 +444,9 @@ class ScoreTab(QWidget):
 
     def _display_score(self, score: NetworkScore):
         """Update the score display widgets."""
-        color = self._score_color(score.overall)
-
-        self._score_label.setText(f"{score.overall:.0f}")
-        self._score_label.setStyleSheet(
-            f"font-size: 72px; font-weight: 900; color: {color}; padding: 0px; font-family: 'Segoe UI Variable', sans-serif;"
-        )
-
-        self._grade_label.setText(
-            f"GRADE {score.grade} • {score.rating.upper()}"
-        )
-        self._grade_label.setStyleSheet(
-            f"font-size: 13px; font-weight: bold; color: {color}; padding: 6px 12px; "
-            f"background-color: {color}1a; border: 1px solid {color}4d; border-radius: 0px;"
-        )
-
-        self._main_score_card.setStyleSheet(f"""
-            QFrame {{
-                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
-                border: 1px solid {color}33;
-                border-radius: 0px;
-            }}
-            QFrame:hover {{
-                border-color: #62c7d8;
-            }}
-        """)
+        self._set_overall(score.overall, score.grade, score.rating)
+        self._score_timestamp.setText(f"Last benchmark\n{self._display_time(score.timestamp)}")
+        self._metrics_empty.setVisible(not score.sub_scores)
 
         # Clear old sub-score cards
         for card in self._subscore_cards.values():
@@ -343,38 +456,56 @@ class ScoreTab(QWidget):
 
         # Create new sub-score cards
         for i, sub in enumerate(score.sub_scores):
-            raw_str = f"{sub.raw_value:.1f}{sub.raw_unit}" if sub.raw_unit != "grade" else f"Grade {sub.raw_value:.0f}"
-            if sub.name == "Packet Loss":
-                raw_str = f"{sub.raw_value:.1f}%"
-            elif sub.name == "Bufferbloat":
-                raw_str = f"+{sub.raw_value:.0f}%" if sub.raw_value > 0 else "None"
-
-            card = QLabel(
-                f"<div style='line-height: 1.2;'>"
-                f"<span style='font-size: 10px; font-weight: bold; color: #788596; text-transform: uppercase;'>{sub.name}</span><br/>"
-                f"<span style='font-size: 22px; font-weight: 900; color: {self._score_color(sub.value)};'>{sub.value:.0f}</span>"
-                f"<span style='font-size: 11px; color: #52637a;'>/100</span><br/>"
-                f"<span style='font-size: 11px; font-family: monospace; color: #a9b7c6;'>{raw_str} ({sub.rating})</span>"
-                f"</div>"
-            )
-            card.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            sub_color = self._score_color(sub.value)
-            card.setStyleSheet(f"""
-                QLabel {{
-                    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #141822, stop:1 #0d1016);
-                    border: 1px solid {sub_color}2b;
-                    border-radius: 0px;
-                    padding: 10px;
-                }}
-                QLabel:hover {{
-                    border-color: #62c7d8;
-                }}
-            """)
-            card.setMinimumHeight(80)
-            card.setWordWrap(True)
-            row, col = divmod(i, 3)
+            card = self._make_metric_card(sub)
+            row, col = divmod(i, self._subscore_columns)
             self._subscore_grid.addWidget(card, row, col)
             self._subscore_cards[sub.name] = card
+
+    def _make_metric_card(self, sub: SubScore) -> QFrame:
+        card = QFrame()
+        card.setObjectName("score-metric")
+        card.setMinimumHeight(142)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(8)
+        title = QLabel(sub.name)
+        title.setStyleSheet("font-size: 13px; color: #aebbc6; font-weight: 600;")
+        layout.addWidget(title)
+
+        estimated = sub.name == "Bufferbloat" and "est." in sub.raw_unit
+        value, unit = f"{sub.raw_value:.1f}", sub.raw_unit
+        if estimated:
+            value, unit = f"{sub.value:.0f}", "/ 100 estimated"
+        elif sub.name == "Bufferbloat":
+            value, unit = f"{sub.raw_value:+.0f}", "% under load"
+
+        reading = QLabel(
+            f"<span style='font-family: Consolas; font-size: 30px; color: #eef3f5;'>{escape(value)}</span>"
+            f" <span style='font-family: Segoe UI; font-size: 13px; color: #90a4b2;'>{escape(unit)}</span>"
+        )
+        reading.setObjectName("metric-reading")
+        reading.setWordWrap(True)
+        layout.addWidget(reading)
+        color = self._score_color(sub.value)
+        caption = f"{sub.rating} · score {sub.value:.0f}/100"
+        if estimated:
+            caption = f"{sub.rating} · inferred from jitter and loss"
+        detail = QLabel(caption)
+        detail.setObjectName("metric-detail")
+        detail.setWordWrap(True)
+        detail.setStyleSheet(f"font-size: 12px; color: {color};")
+        layout.addWidget(detail)
+        rail = QProgressBar()
+        rail.setRange(0, 100)
+        rail.setValue(round(sub.value))
+        rail.setTextVisible(False)
+        rail.setFixedHeight(3)
+        rail.setStyleSheet(f"""
+            QProgressBar {{ background: #263139; border: none; }}
+            QProgressBar::chunk {{ background: {color}; border: none; }}
+        """)
+        layout.addWidget(rail)
+        return card
 
     # ------------------------------------------------------------------
     # Trends
@@ -383,14 +514,20 @@ class ScoreTab(QWidget):
     def _on_refresh_trends(self):
         if self._worker is not None and self._worker.isRunning():
             return  # already running, ignore the click
+        self._show_progress("Loading saved benchmarks...")
         self._worker = _TrendsWorker(hours=168)
         self._worker.finished.connect(self._on_trends_done)
         self._worker.start()
 
     def _on_trends_done(self, summary: TrendSummary | None, benchmarks: list[dict]):
-        self._worker = None
+        # The result signal does not mean the native thread has exited yet.
+        # Keep its reference for the next action's isRunning() guard and shutdown.
         if summary is None:
+            self._show_progress("Could not load benchmark history. Try Refresh Trends.")
             return
+
+        noun = "benchmark" if summary.snapshot_count == 1 else "benchmarks"
+        self._show_progress(f"{summary.snapshot_count} {noun} recorded · Last 7 days")
 
         self._populate_history_table(benchmarks)
         self._populate_metric_table(summary)
@@ -408,11 +545,6 @@ class ScoreTab(QWidget):
             except Exception as exc:
                 logger.warning("Failed to score latest snapshot on trends done: %s", exc)
         elif summary.current_score is not None:
-            color = self._score_color(summary.current_score)
-            self._score_label.setText(f"{summary.current_score:.0f}")
-            self._score_label.setStyleSheet(
-                f"font-size: 72px; font-weight: 900; color: {color}; padding: 0px; font-family: 'Segoe UI Variable', sans-serif;"
-            )
             grade = "A" if summary.current_score >= 90 else (
                 "B" if summary.current_score >= 75 else (
                     "C" if summary.current_score >= 60 else (
@@ -420,10 +552,7 @@ class ScoreTab(QWidget):
                     )
                 )
             )
-            self._grade_label.setText(f"Grade {grade} — Last benchmark score")
-            self._grade_label.setStyleSheet(
-                f"font-size: 16px; font-weight: bold; color: {color}; padding: 4px;"
-            )
+            self._set_overall(summary.current_score, grade, "Last benchmark")
 
     def _populate_history_table(self, benchmarks: list[dict]):
         """Fill the history table with benchmark entries."""
@@ -433,7 +562,7 @@ class ScoreTab(QWidget):
 
         self._history_table.setRowCount(len(entries))
         for row, b in enumerate(entries):
-            ts = b.get("timestamp", "--")[:19].replace('T', ' ')
+            ts = self._display_time(b.get("timestamp", ""))
             label = b.get("label", "--") or "--"
             score_val = b.get("overall_score")
             grade = b.get("grade") or "--"
@@ -461,118 +590,61 @@ class ScoreTab(QWidget):
             for col, item in enumerate(items):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._history_table.setItem(row, col, item)
+        self._history_empty.setVisible(not entries)
+        self._fit_table(self._history_table, max_rows=5)
 
     def _populate_metric_table(self, summary: TrendSummary):
         """Fill the metric trend table."""
         metrics = list(summary.metric_summaries.values())
         self._metric_table.setRowCount(len(metrics))
 
-        _TREND_COLORS = {
-            "improving": Qt.GlobalColor.green,
-            "degrading": Qt.GlobalColor.red,
-            "stable": Qt.GlobalColor.white,
-        }
+        from PySide6.QtGui import QColor
+        colors = {"improving": "#75c884", "degrading": "#e06363", "stable": "#aebbc6"}
+        names = {"latency": "Latency (ms)", "jitter": "Jitter (ms)", "loss": "Packet loss (%)",
+                 "dns": "DNS (ms)", "tcp": "TCP connect (ms)", "score": "Score (/100)"}
 
         for row, mt in enumerate(metrics):
             cur = f"{mt.current:.1f}" if mt.current is not None else "--"
             items = [
-                QTableWidgetItem(mt.metric.capitalize()),
+                QTableWidgetItem(names.get(mt.metric, mt.metric.capitalize())),
                 QTableWidgetItem(cur),
                 QTableWidgetItem(f"{mt.average:.1f}"),
                 QTableWidgetItem(f"{mt.best:.1f}"),
                 QTableWidgetItem(f"{mt.worst:.1f}"),
-                QTableWidgetItem(mt.trend_direction.capitalize()),
+                QTableWidgetItem(mt.trend_direction.capitalize() if summary.snapshot_count > 1 else "Baseline"),
             ]
 
-            color = _TREND_COLORS.get(mt.trend_direction, Qt.GlobalColor.white)
-            items[5].setForeground(color)
+            items[5].setForeground(QColor(colors.get(mt.trend_direction, "#aebbc6")))
 
             for col, item in enumerate(items):
                 if col >= 1:
                     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self._metric_table.setItem(row, col, item)
+        self._metric_empty.setVisible(not metrics)
+        self._fit_table(self._metric_table)
 
     def _populate_patterns(self, summary: TrendSummary):
-        """Display detected patterns."""
-        if not summary.patterns:
-            if summary.snapshot_count >= 5:
-                self._patterns_label.setText(
-                    "<div style='padding: 12px; background: #0f131a; border: 1px solid #1f2735; "
-                    "color: #75c884; font-weight: bold; border-radius: 0px; font-size: 12px;'>"
-                    "<span style='color: #75c884;'>●</span> &nbsp; NO CONCERNING PATTERNS DETECTED &nbsp; "
-                    "| &nbsp; <span style='color: #a9b7c6; font-weight: normal;'>Your network is stable.</span>"
-                    "</div>"
+        """Summarize patterns without an empty panel or unsupported HTML boxes."""
+        if summary.patterns:
+            lines = []
+            for pattern in summary.patterns:
+                lines.append(
+                    f"<b>{escape(pattern.metric.upper())}</b> · {escape(pattern.description)} "
+                    f"<span style='color: #90a4b2;'>(confidence {pattern.confidence:.0%})</span>"
                 )
-            else:
-                count_needed = 5 - summary.snapshot_count
-                self._patterns_label.setText(
-                    f"<div style='padding: 12px; background: #0f131a; border: 1px solid #1f2735; "
-                    f"color: #788596; border-radius: 0px; font-size: 12px; font-weight: bold;'>"
-                    f"<span style='color: #788596;'>ℹ</span> &nbsp; INSUFFICIENT DATA &nbsp; "
-                    f"| &nbsp; <span style='color: #a9b7c6; font-weight: normal;'>"
-                    f"Need {count_needed} more benchmark(s) to detect patterns. "
-                    f"Run 'Run Score Benchmark' a few more times.</span>"
-                    f"</div>"
-                )
-            self._patterns_label.setStyleSheet("padding: 4px; font-size: 13px; background: transparent;")
-            return
-
-        _COLORS = {
-            "degradation": "#e06363",
-            "time_of_day": "#d9b65f",
-            "improving": "#75c884",
-            "volatile": "#c98652",
-            "weekday_vs_weekend": "#a78bfa",
-        }
-
-        html_lines = []
-        for p in summary.patterns:
-            color = _COLORS.get(p.pattern_type, "#d8dee9")
-
-            type_titles = {
-                "degradation": "Degradation Detected",
-                "time_of_day": "Time-Of-Day Variation",
-                "improving": "Health Improvement",
-                "volatile": "Latency Volatility",
-                "weekday_vs_weekend": "Weekday vs Weekend Difference",
-                "stable": "Performance Stability",
-            }
-            title = type_titles.get(p.pattern_type, "Network Pattern").upper()
-
-            conf_pct = p.confidence * 100.0
-            conf_str = f"Confidence: {conf_pct:.0f}%"
-
-            metric_tag = p.metric.upper()
-            if metric_tag == "DNS":
-                metric_tag = "DNS RESOLUTION"
-            elif metric_tag == "TCP":
-                metric_tag = "TCP CONNECT"
-            elif metric_tag == "LOSS":
-                metric_tag = "PACKET LOSS"
-            elif metric_tag == "SCORE":
-                metric_tag = "OVERALL SCORE"
-
-            html_lines.append(
-                f"<div style='margin-bottom: 8px; padding: 12px; background: #0f131a; border: 1px solid #1f2735; border-radius: 0px;'>"
-                f"<table width='100%' cellpadding='0' cellspacing='0' border='0'>"
-                f"  <tr>"
-                f"    <td style='font-size: 11px; font-weight: bold; letter-spacing: 0.5px;'>"
-                f"      <span style='color: {color}; font-size: 12px;'>●</span> &nbsp; "
-                f"      <span style='color: #e6edf6; text-transform: uppercase;'>{title}</span> &nbsp; "
-                f"      <span style='color: #788596; font-size: 9px; font-weight: bold;'>| &nbsp; {metric_tag}</span>"
-                f"    </td>"
-                f"    <td align='right' style='color: #788596; font-size: 10px; font-family: monospace; font-weight: bold;'>"
-                f"      {conf_str}"
-                f"    </td>"
-                f"  </tr>"
-                f"  <tr>"
-                f"    <td colspan='2' style='padding-top: 6px; font-size: 12px; color: #a9b7c6; font-family: sans-serif; line-height: 1.4;'>"
-                f"      {p.description}"
-                f"    </td>"
-                f"  </tr>"
-                f"</table>"
-                f"</div>"
+            text = "<br/><br/>".join(lines)
+        elif summary.snapshot_count >= 5:
+            text = "<b>No concerning patterns detected</b> · Based on the recorded benchmarks."
+        elif summary.snapshot_count:
+            needed = 5 - summary.snapshot_count
+            text = (
+                f"<b>Building your baseline</b> · {summary.snapshot_count} of 5 benchmarks recorded. "
+                f"Run {needed} more over time to look for patterns."
             )
-
-        self._patterns_label.setText("".join(html_lines))
-        self._patterns_label.setStyleSheet("padding: 4px; font-size: 13px; background: transparent;")
+        else:
+            text = "<b>Start a baseline</b> · Benchmarks taken over time help reveal changes in your connection."
+        self._patterns_label.setText(text)
+        self._patterns_label.setStyleSheet(
+            "padding: 12px 16px; font-size: 13px; color: #aebbc6; "
+            "background: #101a20; border: none; border-left: 2px solid #62c7d8;"
+        )

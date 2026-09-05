@@ -5,7 +5,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal
+from PySide6.QtCore import QThread, Signal, Slot
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QHBoxLayout, QLabel, QMessageBox,
     QPushButton, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
@@ -19,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 
 class _IspReportWorker(QThread):
-    finished = Signal(str)  # formatted report text
+    report_ready = Signal(str)  # formatted report text
     error = Signal(str)
 
-    def __init__(self, db_path: Path, hours: int):
-        super().__init__()
+    def __init__(self, db_path: Path, hours: int, parent=None):
+        super().__init__(parent)
         self._db_path = db_path
         self._hours = hours
 
@@ -33,17 +33,17 @@ class _IspReportWorker(QThread):
             with HistoryStore(self._db_path) as history:
                 report = generate_isp_report(history, self._hours)
                 text = format_isp_report(report)
-            self.finished.emit(text)
+            self.report_ready.emit(text)
         except Exception as exc:
             logger.exception("ISP report generation failed")
             self.error.emit(str(exc))
 
 
 class _IspPdfWorker(QThread):
-    finished = Signal(object)  # tuple[Path | None, str]  (path, error_msg)
+    report_ready = Signal(object)  # tuple[Path | None, str]  (path, error_msg)
 
-    def __init__(self, db_path: Path, hours: int, output_path):
-        super().__init__()
+    def __init__(self, db_path: Path, hours: int, output_path, parent=None):
+        super().__init__(parent)
         self._db_path = db_path
         self._hours = hours
         self._output_path = output_path
@@ -55,11 +55,11 @@ class _IspPdfWorker(QThread):
             with HistoryStore(self._db_path) as history:
                 report = generate_isp_report(history, self._hours)
             render_isp_report_pdf(report, self._output_path)
-            self.finished.emit((self._output_path, ""))
+            self.report_ready.emit((self._output_path, ""))
         except Exception as exc:
             import logging
             logging.getLogger(__name__).exception("PDF generation failed")
-            self.finished.emit((None, str(exc)))
+            self.report_ready.emit((None, str(exc)))
 
 
 from losshound.gui.db_workers import DbQueryWorker
@@ -174,20 +174,31 @@ class ExportTab(QWidget):
         self._preview.setText("Generating ISP report...")
         self._set_export_availability(text=False, json_data=False)
 
-        worker = _IspReportWorker(self._history._db_path, hours)
-        worker.finished.connect(self._on_isp_done)
+        worker = _IspReportWorker(self._history._db_path, hours, self)
+        worker.report_ready.connect(self._on_isp_done)
         worker.error.connect(self._on_report_error)
-        worker.start()
+        self._start_report_worker(worker)
+
+    def _start_report_worker(self, worker: QThread) -> None:
+        # A report result can arrive before run() returns. Retain the worker
+        # until QThread's own finished signal so Qt never destroys a live thread.
         self._thread = worker
+        worker.finished.connect(self._on_report_thread_finished)
+        worker.start()
+
+    @Slot()
+    def _on_report_thread_finished(self) -> None:
+        worker = self.sender()
+        if self._thread is worker:
+            self._thread = None
+        worker.deleteLater()
 
     def _on_isp_done(self, text: str):
-        self._thread = None
         self._preview.setText(text)
         self._report_data = None  # ISP report is text-only for now
         self._set_export_availability(text=bool(text), json_data=False)
 
     def _on_report_error(self, message: str):
-        self._thread = None
         detail = (message or "Unknown report error")[:240]
         self._preview.setText(
             f"Report generation failed:\n{detail}\n\nCheck the log and try again."
@@ -324,13 +335,11 @@ class ExportTab(QWidget):
         self._preview.setText(f"Generating PDF report to:\n{path}\n\nPlease wait...")
         self._set_export_availability(text=False, json_data=False)
 
-        worker = _IspPdfWorker(self._history._db_path, hours, Path(path))
-        worker.finished.connect(self._on_pdf_done)
-        worker.start()
-        self._thread = worker
+        worker = _IspPdfWorker(self._history._db_path, hours, Path(path), self)
+        worker.report_ready.connect(self._on_pdf_done)
+        self._start_report_worker(worker)
 
     def _on_pdf_done(self, result):
-        self._thread = None
         out_path, error = result
         if out_path is None:
             self._preview.setText(f"PDF generation failed:\n{error}")

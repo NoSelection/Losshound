@@ -59,6 +59,7 @@ class ConnSample:
     wan_rtt_ms: Optional[float]
     # DNS
     dns_ok: bool
+    dns_checked: bool = True          # False when this poll skipped DNS.
 
 
 @dataclass
@@ -703,6 +704,7 @@ def run_drop_analysis(
     poll_interval: float = 3.0,
     progress_callback=None,
     stop_check=None,
+    sample_callback=None,
 ) -> DropAnalysisReport:
     """Run rapid connectivity polling to catch and classify drop events.
 
@@ -713,6 +715,7 @@ def run_drop_analysis(
         poll_interval: Seconds between samples.
         progress_callback: Optional callable for status updates.
         stop_check: optional callable returning True to abort early.
+        sample_callback: Optional callable receiving each completed ConnSample.
     """
     if duration_seconds <= 0:
         raise ValueError("duration_seconds must be greater than 0")
@@ -739,26 +742,38 @@ def run_drop_analysis(
         sample_num += 1
         now = datetime.now()
 
-        # NIC link state
-        conn_type, link_up, speed = _get_active_nic_info()
-        if conn_type != "unknown":
-            detected_conn_type = conn_type
+        try:
+            # Check between probes so Stop does not start more Windows queries.
+            conn_type, link_up, speed = _get_active_nic_info()
+            if conn_type != "unknown":
+                detected_conn_type = conn_type
+            if stop_check is not None and stop_check():
+                break
 
-        # WiFi state (only if on WiFi)
-        wifi_sig, wifi_ssid, wifi_ch = 0, "", 0
-        if conn_type == "wifi":
-            _, wifi_sig, wifi_ssid, wifi_ch = _get_wifi_state()
+            wifi_sig, wifi_ssid, wifi_ch = 0, "", 0
+            if conn_type == "wifi":
+                _, wifi_sig, wifi_ssid, wifi_ch = _get_wifi_state()
+            if stop_check is not None and stop_check():
+                break
 
-        # Gateway ping
-        gw_ok, gw_rtt = _quick_ping(gateway)
+            gw_ok, gw_rtt = _quick_ping(gateway)
+            if stop_check is not None and stop_check():
+                break
+            wan_ok, wan_rtt = _quick_ping(wan_target)
+            if stop_check is not None and stop_check():
+                break
 
-        # WAN ping
-        wan_ok, wan_rtt = _quick_ping(wan_target)
-
-        # Quick DNS (less frequent — every 5th sample to avoid hammering)
-        dns_ok = True
-        if sample_num % 5 == 1:
-            dns_ok = _quick_dns()
+            # DNS runs every fifth sample to avoid hammering the resolver.
+            dns_ok = True
+            dns_checked = sample_num % 5 == 1
+            if dns_checked:
+                dns_ok = _quick_dns()
+        except InterruptedError:
+            if stop_check is None or not stop_check():
+                raise
+            # A user Stop cancels the active child command. Preserve earlier
+            # complete samples rather than reporting cancellation as failure.
+            break
 
         sample = ConnSample(
             timestamp=now,
@@ -773,8 +788,11 @@ def run_drop_analysis(
             wan_reachable=wan_ok,
             wan_rtt_ms=wan_rtt,
             dns_ok=dns_ok,
+            dns_checked=dns_checked,
         )
         samples.append(sample)
+        if sample_callback:
+            sample_callback(sample)
 
         if progress_callback and sample_num % 5 == 0:
             elapsed = time.monotonic() - start_time
@@ -783,7 +801,7 @@ def run_drop_analysis(
             wan_str = f"{wan_rtt:.0f}ms" if wan_ok and wan_rtt else ("OK" if wan_ok else "LOST")
             link_str = f"{speed:.0f}Mbps" if link_up else "DOWN"
             progress_callback(
-                f"  [{elapsed:3.0f}s/{duration_seconds}s] "
+                f"Monitoring — {sample_num} samples [{elapsed:3.0f}s/{duration_seconds}s] "
                 f"Link:{link_str}  GW:{gw_str}  WAN:{wan_str}  "
                 f"({remaining:.0f}s left)"
             )
@@ -798,9 +816,17 @@ def run_drop_analysis(
             time.sleep(0.2)
 
     actual_duration = time.monotonic() - start_time
+    if progress_callback:
+        progress_callback(f"Preparing report from {len(samples)} samples...")
 
-    # Grab event logs
-    events = _get_network_events(hours=3)
+    # Do not start potentially slow event-log queries after the user stops.
+    events = []
+    if stop_check is None or not stop_check():
+        try:
+            events = _get_network_events(hours=3)
+        except InterruptedError:
+            if stop_check is None or not stop_check():
+                raise
 
     # Analyze
     drops = _detect_drops(samples)

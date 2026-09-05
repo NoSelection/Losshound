@@ -27,7 +27,8 @@ from losshound.gui.tray import TrayIcon
 from losshound.gui.wifi_tab import WifiTab
 from losshound.gui.lan_tab import LANTab
 from losshound.gui.branding import app_icon
-from losshound.gui.painted import LosshoundTabBar, TexturedSurface
+from losshound.gui.painted import TexturedSurface
+from losshound.gui.navigation import PageNavigation
 from losshound.gui.theme import get_dark_stylesheet
 from losshound.gui.widgets import LosshoundHeader, MonitorStatusBar
 from losshound.storage.history import HistoryStore
@@ -201,7 +202,6 @@ class MainWindow(QMainWindow):
             f"QStackedWidget {{ background: transparent; }} "
             f"QWidget#dashboard-tab {{ background: transparent; }}"
         )
-        self._tabs.setTabBar(LosshoundTabBar(self._tabs))
         self._tabs.setDocumentMode(True)
         layout.addWidget(self._tabs)
 
@@ -236,6 +236,8 @@ class MainWindow(QMainWindow):
         self._tabs.addTab(self._drop_tab, "Drops")
         self._tabs.addTab(self._settings_tab, "Settings")
         self._tabs.addTab(self._export_tab, "Export")
+        self._navigation = PageNavigation(self._tabs)
+        layout.insertWidget(1, self._navigation)
 
         # Custom monitor status bar
         self._status_bar = MonitorStatusBar()

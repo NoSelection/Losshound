@@ -21,6 +21,8 @@ import logging
 import subprocess
 import sys
 
+from losshound.core.windows_commands import windows_command
+
 logger = logging.getLogger(__name__)
 
 _RULE_NAME = "Losshound-LAN-Discovery-UDP"
@@ -55,7 +57,7 @@ def _run_powershell(script: str, timeout: float = 15.0) -> tuple[int, str, str]:
     if sys.platform == "win32":
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.run(
-        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+        windows_command(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script]),
         capture_output=True,
         text=True,
         timeout=timeout,

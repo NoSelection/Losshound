@@ -6,7 +6,7 @@
   <img src="assets/dashboard_preview.png" alt="Losshound network diagnostics dashboard" width="100%">
 </p>
 
-Lightweight Windows network diagnosis and optimization tool that continuously monitors connectivity, determines the most likely cause of network issues, and can automatically tune your network stack for better performance.
+Windows network diagnostics with continuous connectivity monitoring, rule-based explanations of likely causes, and optional network settings adjustments. Before/after benchmarks help you assess whether a change helped.
 
 Losshound identifies whether failures originate from your **LAN**, **router/gateway**, **ISP/WAN**, **DNS**, or **upstream routing** — and tells you in plain language.
 
@@ -114,6 +114,24 @@ For a useful first session:
 3. Run a Score or load benchmark before changing network settings.
 4. Apply only the reviewed Optimizer/QoS actions you want, then benchmark again.
 5. Use Export to create an ISP-ready report when the problem is upstream.
+
+Dashboard, History, and Drops are directly accessible in the navigation bar.
+**Diagnostics** contains Routes, Score, WiFi, and LAN Monitor; **Tuning** contains
+Optimizer and QoS. Settings and Export remain directly accessible.
+
+In Optimizer, **Review Changes** previews the requested targets and selected
+adapter options before **Apply listed changes** can start a batch. Applying
+requires Administrator; previews and diagnostics are available without elevation.
+The MTU target is discovered during the run and skipped if probes are inconclusive.
+DNS settings stay unchanged in this batch. Compare benchmarks to assess the effect;
+the requested settings are not a guarantee of better performance.
+
+In **Drops**, choose a duration and press **Start Monitoring**. Connection cards
+update after each completed sample; the live timeline shows the latest 40 samples.
+DNS shows its last actual check (every fifth sample). The scan stops automatically
+after the selected duration, then finishes any active check and prepares the report.
+**Stop** ends it early and keeps completed samples. The dashboard monitor runs
+independently of a Drops scan.
 
 ### CLI mode
 

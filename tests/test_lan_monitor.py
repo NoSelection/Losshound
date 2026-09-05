@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
+from pathlib import Path
 
 from losshound.core.lan_monitor import (
     get_local_network_info,
@@ -153,9 +154,9 @@ def test_scan_local_network():
     mock_arp.stdout = MOCK_ARP_OUTPUT.encode("cp850")
     
     def mock_subprocess_run(args, *argv, **kwargs):
-        if "ipconfig" in args:
+        if Path(args[0]).stem.lower() == "ipconfig":
             return mock_ipconfig
-        elif "arp" in args:
+        elif Path(args[0]).stem.lower() == "arp":
             return mock_arp
         # For pings inside the sweep
         return MagicMock()
@@ -207,9 +208,9 @@ def test_get_active_connections():
     mock_netstat.stdout = MOCK_NETSTAT_OUTPUT.encode("cp850")
     
     def mock_subprocess_run(args, *argv, **kwargs):
-        if "tasklist" in args:
+        if Path(args[0]).stem.lower() == "tasklist":
             return mock_tasklist
-        elif "netstat" in args:
+        elif Path(args[0]).stem.lower() == "netstat":
             return mock_netstat
         return MagicMock()
         
@@ -237,9 +238,9 @@ def test_scan_local_network_fallbacks():
     mock_arp.stdout = MOCK_ARP_OUTPUT.encode("cp850")
     
     def mock_subprocess_run(args, *argv, **kwargs):
-        if "ipconfig" in args:
+        if Path(args[0]).stem.lower() == "ipconfig":
             return mock_ipconfig
-        elif "arp" in args:
+        elif Path(args[0]).stem.lower() == "arp":
             return mock_arp
         return MagicMock()
         
@@ -283,13 +284,11 @@ def test_resolve_llmnr_name():
 def test_resolve_http_title():
     from losshound.core.lan_monitor import resolve_http_title
 
-    mock_response = MagicMock()
-    mock_response.__enter__.return_value = mock_response
-    mock_response.read.return_value = b"<html><head><TITLE>MalFormed\nRouter Title </TITLE></head></html>"
-
-    with patch("urllib.request.urlopen", return_value=mock_response):
+    body = b"<html><head><TITLE>MalFormed\nRouter Title </TITLE></head></html>"
+    with patch("losshound.core.lan_monitor.fetch_device_document", return_value=body) as fetch:
         title = resolve_http_title("192.168.1.1")
         assert title == "MalFormed Router Title"
+    fetch.assert_called_once_with("http://192.168.1.1/", device_ip="192.168.1.1")
 
 
 def test_resolve_http_title_follows_meta_refresh():
@@ -297,50 +296,45 @@ def test_resolve_http_title_follows_meta_refresh():
     from losshound.core.lan_monitor import resolve_http_title
 
     # First response: meta-refresh stub with no <title>
-    stub = MagicMock()
-    stub.__enter__.return_value = stub
-    stub.read.return_value = (
+    stub = (
         b'<html><head>'
         b'<meta http-equiv="refresh" content="0; URL=/webpages/index.html" />'
         b'</head></html>'
     )
 
     # Second response: the redirected page has a real title
-    real = MagicMock()
-    real.__enter__.return_value = real
-    real.read.return_value = b"<html><head><title>TP-Link Router</title></head></html>"
+    real = b"<html><head><title>TP-Link Router</title></head></html>"
 
-    with patch("urllib.request.urlopen", side_effect=[stub, real]):
+    with patch("losshound.core.lan_monitor.fetch_device_document", side_effect=[stub, real]) as fetch:
         title = resolve_http_title("192.168.1.1")
         assert title == "TP-Link Router"
+    assert fetch.call_count == 2
+    fetch.assert_called_with("http://192.168.1.1/webpages/index.html", device_ip="192.168.1.1")
 
 
 def test_resolve_http_title_meta_refresh_must_be_same_host():
     """Don't follow meta-refresh to an external host (avoid being redirected to a public site)."""
     from losshound.core.lan_monitor import resolve_http_title
 
-    stub = MagicMock()
-    stub.__enter__.return_value = stub
-    stub.read.return_value = (
+    stub = (
         b'<html><head>'
         b'<meta http-equiv="refresh" content="0; URL=http://evil.example.com/" />'
         b'</head></html>'
     )
 
-    # If we accidentally follow it, urlopen would be called a second time;
-    # set side_effect to also return stub the second time so the test fails noisily
-    # if the redirect is followed.
-    with patch("urllib.request.urlopen", side_effect=[stub, stub, stub, stub]):
+    with patch("losshound.core.lan_monitor.fetch_device_document", return_value=stub) as fetch:
         title = resolve_http_title("192.168.1.1")
         assert title == ""
+    assert fetch.call_count == 2  # HTTP and HTTPS roots only.
+    assert all(call.kwargs["device_ip"] == "192.168.1.1" for call in fetch.call_args_list)
 
 
 def test_resolve_http_title_skips_public_ip():
     from losshound.core.lan_monitor import resolve_http_title
 
-    with patch("urllib.request.urlopen") as urlopen:
+    with patch("losshound.core.lan_monitor.fetch_device_document") as fetch:
         assert resolve_http_title("8.8.8.8") == ""
-        urlopen.assert_not_called()
+        fetch.assert_not_called()
 
 
 def test_scan_ssdp():
@@ -359,14 +353,13 @@ def test_scan_ssdp():
         socket.timeout("timeout")
     ]
     
-    mock_xml_response = MagicMock()
-    mock_xml_response.__enter__.return_value = mock_xml_response
-    mock_xml_response.read.return_value = b"<device><friendlyName>Google Nest Mini</friendlyName></device>"
+    body = b"<device><friendlyName>Google Nest Mini</friendlyName></device>"
     
     with patch("socket.socket", return_value=mock_socket), \
-         patch("urllib.request.urlopen", return_value=mock_xml_response):
+         patch("losshound.core.lan_monitor.fetch_device_document", return_value=body) as fetch:
         names = scan_ssdp()
         assert names.get("192.168.1.190") == "Google Nest Mini"
+    fetch.assert_called_once_with("http://192.168.1.190:8008/device-desc.xml", device_ip="192.168.1.190", timeout=2.0)
 
 
 def test_scan_ssdp_ignores_public_location():
@@ -385,6 +378,6 @@ def test_scan_ssdp_ignores_public_location():
     ]
 
     with patch("socket.socket", return_value=mock_socket), \
-         patch("urllib.request.urlopen") as urlopen:
+         patch("losshound.core.lan_monitor.fetch_device_document") as fetch:
         assert scan_ssdp() == {}
-        urlopen.assert_not_called()
+        fetch.assert_not_called()

@@ -70,6 +70,27 @@ jobs:
           '@ | python -
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Smoke-check packaged Qt startup
+        run: |
+          $exe = (Resolve-Path -LiteralPath 'dist/Losshound.exe').Path
+          $start = [System.Diagnostics.ProcessStartInfo]::new()
+          $start.FileName = $exe
+          $start.Arguments = '--gui-smoke-test'
+          $start.UseShellExecute = $false
+          $start.CreateNoWindow = $true
+          $process = [System.Diagnostics.Process]::Start($start)
+          try {
+            if (-not $process.WaitForExit(60000)) {
+              $process.Kill($true)
+              throw 'Packaged Qt startup did not exit within 60 seconds.'
+            }
+            if ($process.ExitCode -ne 0) {
+              throw "Packaged Qt startup failed with exit code $($process.ExitCode)."
+            }
+          } finally {
+            $process.Dispose()
+          }
+
       - name: Smoke-check packaged help and write checksum
         run: |
           $exe = (Resolve-Path -LiteralPath 'dist/Losshound.exe').Path

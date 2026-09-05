@@ -56,7 +56,8 @@ def format_generic_payload(event: AlertEvent) -> dict:
 def post_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
     """POST ``payload`` as JSON to ``url``. Returns True on 2xx.
 
-    Catches all exceptions and logs them. Never raises — callers that
+    Logs failure categories without URLs or exception text, which can contain
+    webhook credentials. Never raises — callers that
     fire-and-forget can ignore the return value.
     """
     try:
@@ -73,13 +74,14 @@ def post_webhook(url: str, payload: dict, timeout: float = 10.0) -> bool:
             status = getattr(resp, "status", 0)
             return 200 <= status < 300
     except urllib.error.HTTPError as exc:
-        logger.warning("Webhook POST returned %s for %s", exc.code, url)
+        logger.warning("Webhook POST returned HTTP %s", exc.code)
         return False
-    except urllib.error.URLError as exc:
-        logger.warning("Webhook POST failed (network): %s", exc)
+    except urllib.error.URLError:
+        logger.warning("Webhook POST failed (network)")
         return False
-    except Exception:
-        logger.exception("Webhook POST raised unexpectedly")
+    except Exception as exc:
+        # Tracebacks/exception messages can repeat the secret-bearing URL.
+        logger.warning("Webhook POST failed (%s)", type(exc).__name__)
         return False
 
 
@@ -136,7 +138,7 @@ def _send(url: str, payload: dict, channel: str) -> None:
     if ok:
         logger.debug("%s webhook delivered", channel)
     else:
-        logger.warning("%s webhook FAILED for %s", channel, url)
+        logger.warning("%s webhook FAILED", channel)
 
 
 def _clean_url(url: Optional[str]) -> Optional[str]:

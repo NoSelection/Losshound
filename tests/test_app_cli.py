@@ -54,3 +54,23 @@ def test_cli_help_exits_without_initializing_runtime(monkeypatch):
         app.main()
 
     assert exc.value.code == 0
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_gui_smoke_test_reports_failure_without_starting_app(monkeypatch, fails):
+    from losshound.core import config
+
+    def smoke_test():
+        if fails:
+            raise ImportError("DLL load failed while importing QtWidgets")
+
+    def unexpected_startup(*args, **kwargs):
+        pytest.fail("Smoke test must not start configuration or monitoring")
+
+    monkeypatch.setattr(app.sys, "argv", ["losshound", "--gui-smoke-test"])
+    monkeypatch.setattr(app, "_run_gui_smoke_test", smoke_test)
+    monkeypatch.setattr(config, "load_config", unexpected_startup)
+    monkeypatch.setattr(app, "_run_gui", unexpected_startup)
+    with pytest.raises(SystemExit) as exc:
+        app.main()
+    assert exc.value.code == int(fails)

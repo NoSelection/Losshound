@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 from losshound.storage.history import HistoryStore
+from losshound.core.windows_commands import windows_command
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +60,10 @@ def get_system_info() -> dict:
     # Get adapter info
     try:
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            windows_command(["powershell", "-NoProfile", "-Command",
              "Get-NetAdapter | Where-Object {$_.Status -eq 'Up'} | "
              "Select-Object Name, InterfaceDescription, LinkSpeed, MacAddress "
-             "| ConvertTo-Json -Depth 2"],
+             "| ConvertTo-Json -Depth 2"]),
             capture_output=True, text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
@@ -85,9 +86,9 @@ def get_system_info() -> dict:
     # Get default gateway
     try:
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
+            windows_command(["powershell", "-NoProfile", "-Command",
              "(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "
-             "Select-Object -First 1).NextHop"],
+             "Select-Object -First 1).NextHop"]),
             capture_output=True, text=True, timeout=10,
             creationflags=subprocess.CREATE_NO_WINDOW,
         )

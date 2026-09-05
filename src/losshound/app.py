@@ -97,6 +97,7 @@ def main():
         "--cli", action="store_true",
         help="Run in CLI mode (no GUI)",
     )
+    parser.add_argument("--gui-smoke-test", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--config", type=str, default=None,
         help="Path to configuration file",
@@ -210,6 +211,15 @@ def main():
     )
 
     args = parser.parse_args()
+    if args.gui_smoke_test:
+        try:
+            _run_gui_smoke_test()
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            raise SystemExit(1)
+        raise SystemExit(0)
+
     if args.command == "drop-analyze":
         if args.duration <= 0:
             parser.error("drop-analyze --duration must be greater than 0 seconds")
@@ -247,6 +257,33 @@ def main():
         run_cli(config)
     else:
         _run_gui(config)
+
+
+def _run_gui_smoke_test():
+    """Exercise packaged Qt imports, the platform plugin and painting only.
+
+    CI uses the offscreen platform. No configuration, database, monitoring,
+    firewall setup or other application workers are started.
+    """
+    from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
+    from losshound.gui.branding import app_icon
+    from losshound.gui.main_window import MainWindow  # Check transitive GUI imports.
+
+    app = QApplication.instance() or QApplication(["losshound-gui-smoke-test"])
+    window = QWidget()
+    window.setWindowTitle("Losshound GUI smoke test")
+    window.setWindowIcon(app_icon())
+    layout = QVBoxLayout(window)
+    layout.addWidget(QLabel(MainWindow.__name__))
+    window.resize(320, 120)
+    try:
+        window.show()
+        app.processEvents()
+        if window.grab().isNull() or window.windowIcon().isNull():
+            raise RuntimeError("Qt could not render the smoke-test window or load its icon")
+    finally:
+        window.close()
+        app.processEvents()
 
 
 def _run_gui(config):

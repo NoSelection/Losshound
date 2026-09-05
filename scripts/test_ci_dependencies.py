@@ -137,18 +137,23 @@ class QtXmlExclusionTests(unittest.TestCase):
 
     def run_spec(self, **entries):
         # Execute only our spec with inert builders: no PyInstaller/app imports.
+        import os
+        import sys
+        from unittest.mock import patch
         from types import SimpleNamespace
         captured = {}
         def analysis(*args, **kwargs):
             captured.update(kwargs)
+            captured["build_path"] = os.environ.get("PATH", "")
             return SimpleNamespace(
-                binaries=entries.get("binaries", [("PySide6/Qt6Core.dll", "core.dll", "BINARY")]),
+                binaries=entries.get("binaries", [("PySide6/Qt6Core.dll", str(Path(sys.prefix) / "core.dll"), "BINARY")]),
                 datas=entries.get("datas", []), pure=entries.get("pure", []), scripts=[],
             )
         namespace = {"Analysis": analysis, "PYZ": lambda *args: None,
                      "EXE": lambda *args, **kwargs: captured.update(built=True)}
         spec_path = Path(__file__).resolve().parents[1] / "Losshound.spec"
-        exec(compile(spec_path.read_text(encoding="utf-8"), str(spec_path), "exec"), namespace)
+        with patch.dict(os.environ):
+            exec(compile(spec_path.read_text(encoding="utf-8"), str(spec_path), "exec"), namespace)
         return captured
 
     def test_actual_spec_builds_without_xml(self):
@@ -166,6 +171,21 @@ class QtXmlExclusionTests(unittest.TestCase):
             with self.subTest(collection=collection, name=name):
                 with self.assertRaisesRegex(RuntimeError, "Qt XML must not be bundled"):
                     self.run_spec(**{collection: [(name, "unused", "BINARY")]})
+
+    def test_actual_spec_rejects_external_native_library(self):
+        with self.assertRaisesRegex(RuntimeError, "outside approved Python/Windows roots"):
+            self.run_spec(binaries=[("icuuc.dll", str(Path(__file__).parent / "unexpected.dll"), "BINARY")])
+
+    def test_actual_spec_excludes_ambient_tool_path_on_windows(self):
+        import os
+        import sys
+        from unittest.mock import patch
+        if sys.platform != "win32":
+            self.skipTest("Windows DLL search policy")
+        external = str(Path(__file__).parent / "unrelated-tools")
+        with patch.dict(os.environ, {"PATH": external + os.pathsep + os.environ.get("PATH", "")}):
+            captured = self.run_spec()
+        self.assertNotIn(external, captured["build_path"].split(os.pathsep))
 
 
 if __name__ == "__main__":
