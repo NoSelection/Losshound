@@ -1,8 +1,9 @@
 # Windows CI dependency review
 
-Reviewed 2026-09-05. **The fresh local environment, all 252 application tests,
-and a fresh EXE build/help smoke check have passed. A real Windows CI run is
-still pending.**
+Reviewed 2026-09-05. **CI requires Python 3.13.15, reviewed wheels, passing
+tests, and packaged component/startup checks.** See the
+[Windows CI runs](https://github.com/NoSelection/Losshound/actions/workflows/windows-ci.yml)
+for each commit's result. Local and initial hosted-run evidence is recorded below.
 A green advisory scan or a checksum is not proof that a package cannot contain malware.
 
 ## Local environment findings
@@ -58,9 +59,8 @@ wheels; this was not a forensic malware scan or a full native-library/OS audit.
 - Only a passing check produces a hash-bound installation file. pip installs
   wheels from official PyPI with --require-hashes --no-deps; undeclared
   dependencies fail pip check rather than being installed automatically.
-- Python 3.12 on a GitHub Windows 2022 runner is the proposed CI target. The
-  dependency set and packaged behavior still need clean-runner validation.
-  Dependencies are not automatically upgraded.
+- CI pins 64-bit Python 3.13.15 on a GitHub Windows 2022 runner, matching the
+  verified local interpreter version. Dependencies are not automatically upgraded.
 
 ## Scoped Qt XML applicability decision
 
@@ -117,7 +117,7 @@ exhaustive advisory feed.
 After the gate passes: run the full tests, build the executable, check packaged
 --help exits successfully within 60 seconds, and inspect the uploaded artifact.
 That smoke check proves process startup/exit, not console output rendering or
-the GUI/network feature set. A real GitHub run remains necessary.
+the GUI/network feature set. Hosted-run evidence is recorded below.
 
 ## Fresh local environment: 2026-09-05
 
@@ -170,8 +170,8 @@ The project was not installed as an editable package. Tests use the src path
 configured in pyproject.toml. The source launcher sets PYTHONPATH to src;
 manual source launches need that path too, as in CI.
 Neither the application, its test suite nor PyInstaller was run during this
-environment setup. Local Python is 3.13.15 while CI remains on Python 3.12;
-compatibility on the CI interpreter still needs a real runner check.
+environment setup. Local Python is 3.13.15; the subsequent CI runtime review
+and pin are recorded below.
 
 Matching publisher files and passing advisory checks do not certify a package
 as malware-free. The full Qt XML component remains present in the environment;
@@ -200,12 +200,34 @@ the previously documented application/bundle exclusion still applies.
   inside the project.
 
 This validates local tests, packaging and process startup/exit. The full GUI
-and live monitoring/tuning were not launched. CI still targets Python 3.12 on
-windows-2022 and has not run on GitHub; local success does not establish that
-runner's result.
+and live monitoring/tuning were not launched. CI pins Python 3.13.15 on
+windows-2022; its logs and artifacts provide the separate runner result.
+
+## Hosted CI and Python runtime review: 2026-09-05
+
+The [initial Windows run](https://github.com/NoSelection/Losshound/actions/runs/33953468731)
+at commit d3626a432521e0a535f03ff2d6226455547b71d4 passed all 14 gate tests,
+the live dependency gate, all 252 application tests, packaging, the Qt XML
+absence check, the packaged help smoke check, and artifact upload.
+
+The logs also revealed that the floating 3.12 setting selected Python 3.12.10.
+That was the last 3.12 release with Windows binary installers; later source-only
+releases contain security fixes, including tarfile extraction-filter bypasses.
+Passing package checks did not establish that this older interpreter was current.
+The initial artifact is superseded as the intended development build.
+
+CI now pins Python 3.13.15 x64, matching the verified local environment. Its
+official release and the x64 entry in actions/python-versions were checked
+before adopting the pin. Use a successful run whose setup log confirms this
+version; its test report, dependency lock, EXE and checksum are uploaded together.
+Interpreter and bundled native-library reviews remain necessary when updating
+this pin; the PyPI/OSV gate is not an exhaustive interpreter or OS advisory scan.
 
 ## Sources
 
+- [Python 3.12.11 security release and binary-support transition](https://www.python.org/downloads/release/python-31211/)
+- [Python 3.13.15 release](https://www.python.org/downloads/release/python-31315/)
+- [Official Actions Python versions](https://github.com/actions/python-versions/blob/main/versions-manifest.json)
 - [pip advisory](https://github.com/advisories/GHSA-qwm4-qh6w-59xr)
 - [Qt SVG advisory](https://www.qt.io/blog/security-advisory-type-confusion-and-heap-buffer-overflow-vulnerability-in-qt-svg-marker-handling)
 - [Qt XML advisory](https://www.qt.io/blog/security-advisory-cve-2026-15037-xml-injection)

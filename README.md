@@ -303,7 +303,9 @@ Qt XML is unused and explicitly excluded from the executable. CI checks that
 exclusion before installation and rejects an EXE containing Qt XML before
 launching or uploading it. This is a scoped assessment of CVE-2026-15037;
 other advisory checks remain active. See [the dependency review](docs/CI_SECURITY.md).
-The workflow still needs its first successful Windows run.
+CI pins Python 3.13.15 to match the verified local environment. See the
+[Windows CI runs](https://github.com/NoSelection/Losshound/actions/workflows/windows-ci.yml)
+for each commit's validation result and artifact.
 
 Once a run passes, open **Actions → Windows CI → the successful run → Artifacts**
 and download `Losshound-windows-x64-<commit>`. It contains the unsigned executable,
