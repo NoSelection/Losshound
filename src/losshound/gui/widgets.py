@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-from math import cos, sin, tau
 from typing import Optional
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -18,6 +17,7 @@ from PySide6.QtWidgets import (
 
 from losshound import __version__
 from losshound.gui.branding import losshound_pixmap
+from losshound.gui.diagnostic_widgets import style_action
 from losshound.gui.painted import (
     BracketedPanel,
     LiveDot,
@@ -39,12 +39,26 @@ from losshound.gui.palette import (
 # ---------------------------------------------------------------------------
 
 
+class MonitorToggleButton(QPushButton):
+    """Reserve both captions using the final styled font, including DPI changes."""
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        metrics = self.fontMetrics()
+        longest = max(metrics.horizontalAdvance(text) for text in (
+            "Pause monitor", "Resume monitor",
+        ))
+        hint.setWidth(
+            hint.width() + max(0, longest - metrics.horizontalAdvance(self.text())) + 4
+        )
+        return hint
+
+
 class LosshoundHeader(QWidget):
-    """Top app rail: logo + wordmark + halo + window/monitor actions."""
+    """Brand rail with monitoring actions; Settings lives in page navigation."""
 
     pause_clicked = Signal()
     run_now_clicked = Signal()
-    settings_clicked = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -87,40 +101,27 @@ class LosshoundHeader(QWidget):
 
         row.addStretch()
 
-        # Action group — Pause / Run Now / Settings cog.
-        self._pause_btn = QPushButton("⏸  PAUSE MONITOR")
+        # One compact action group; no duplicate Settings shortcut.
+        actions = QHBoxLayout()
+        actions.setSpacing(10)
+        self._pause_btn = MonitorToggleButton("Pause monitor")
         self._pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._pause_btn.setAccessibleName("Pause monitoring")
-        self._pause_btn.setToolTip("Pause monitoring and freeze the current readings")
-        self._pause_btn.setStyleSheet(_header_button_qss(primary=True))
+        self._pause_btn.setAutoDefault(False)
         self._pause_btn.clicked.connect(self.pause_clicked.emit)
-        row.addWidget(self._pause_btn)
+        actions.addWidget(self._pause_btn)
 
-        self._run_btn = QPushButton("RUN CHECK")
+        self._run_btn = QPushButton("Run check")
         self._run_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._run_btn.setAutoDefault(False)
         self._run_btn.setAccessibleName("Run network check")
-        self._run_btn.setToolTip("Run a monitoring check now")
-        self._run_btn.setStyleSheet(_header_button_qss(primary=False))
         self._run_btn.clicked.connect(self.run_now_clicked.emit)
-        row.addWidget(self._run_btn)
-
-        self._settings_btn = QPushButton("")
-        self._settings_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._settings_btn.setFixedSize(QSize(40, 36))
-        self._settings_btn.setIcon(_gear_icon())
-        self._settings_btn.setIconSize(QSize(18, 18))
-        self._settings_btn.setAccessibleName("Open settings")
-        self._settings_btn.setAccessibleDescription(
-            "Open monitoring targets, thresholds, alerts, and behavior settings"
-        )
-        self._settings_btn.setToolTip("Open settings")
-        self._settings_btn.setStyleSheet(_header_cog_qss())
-        self._settings_btn.clicked.connect(self.settings_clicked.emit)
-        row.addWidget(self._settings_btn)
+        actions.addWidget(self._run_btn)
+        row.addLayout(actions)
+        self.set_paused(False)
 
     def set_paused(self, paused: bool) -> None:
         self._pause_btn.setText(
-            "▶  RESUME MONITOR" if paused else "⏸  PAUSE MONITOR"
+            "Resume monitor" if paused else "Pause monitor"
         )
         self._pause_btn.setAccessibleName(
             "Resume monitoring" if paused else "Pause monitoring"
@@ -130,8 +131,12 @@ class LosshoundHeader(QWidget):
             if paused
             else "Pause monitoring and freeze the current readings"
         )
-
-
+        style_action(self._pause_btn, "primary" if paused else "default")
+        style_action(self._run_btn, "default" if paused else "primary")
+        self._run_btn.setEnabled(not paused)
+        self._run_btn.setToolTip(
+            "Resume monitoring to run a check" if paused else "Run a monitoring check now"
+        )
 
     def paintEvent(self, event):  # type: ignore[override]
         painter = QPainter(self)
@@ -143,90 +148,6 @@ class LosshoundHeader(QWidget):
         pen.setCosmetic(True)
         painter.setPen(pen)
         painter.drawLine(0, self.height() - 1, self.width(), self.height() - 1)
-
-
-def _gear_icon(size: int = 22) -> QIcon:
-    pixmap = QPixmap(size, size)
-    pixmap.fill(QColor(0, 0, 0, 0))
-
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-    pen = QPen(qc("text_secondary"))
-    pen.setWidth(2)
-    pen.setCosmetic(True)
-    painter.setPen(pen)
-    painter.setBrush(Qt.BrushStyle.NoBrush)
-
-    center = size / 2
-    inner = size * 0.18
-    outer_a = size * 0.34
-    outer_b = size * 0.46
-    painter.drawEllipse(
-        int(center - inner),
-        int(center - inner),
-        int(inner * 2),
-        int(inner * 2),
-    )
-    for i in range(8):
-        angle = tau * i / 8
-        x1 = center + cos(angle) * outer_a
-        y1 = center + sin(angle) * outer_a
-        x2 = center + cos(angle) * outer_b
-        y2 = center + sin(angle) * outer_b
-        painter.drawLine(int(x1), int(y1), int(x2), int(y2))
-
-    painter.end()
-    return QIcon(pixmap)
-
-
-def _header_button_qss(primary: bool) -> str:
-    border = c("info") if primary else c("border_strong")
-    text = c("info") if primary else c("text_primary")
-    return f"""
-        QPushButton {{
-            background-color: {c('bg_panel')};
-            color: {text};
-            border: 1px solid {border};
-            border-radius: 0px;
-            font-family: {FONT_CHROME_FAMILIES};
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 1.5px;
-            text-transform: uppercase;
-            padding: 8px 18px;
-        }}
-        QPushButton:hover {{
-            background-color: {c('bg_panel_hover')};
-            border-color: {c('info')};
-            color: {c('info')};
-        }}
-        QPushButton:pressed {{
-            background-color: {c('bg_window')};
-        }}
-        QPushButton:focus {{
-            border: 2px solid {c('border_focus')};
-            padding: 7px 17px;
-        }}
-    """
-
-
-def _header_cog_qss() -> str:
-    return f"""
-        QPushButton {{
-            background-color: {c('bg_panel')};
-            color: {c('text_primary')};
-            border: 1px solid {c('border_strong')};
-            border-radius: 0px;
-            font-size: 16px;
-        }}
-        QPushButton:hover {{
-            border-color: {c('info')};
-            color: {c('info')};
-        }}
-        QPushButton:focus {{
-            border: 2px solid {c('border_focus')};
-        }}
-    """
 
 
 # ---------------------------------------------------------------------------

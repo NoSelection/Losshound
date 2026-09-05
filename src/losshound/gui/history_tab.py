@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 
 from losshound.storage.history import HistoryStore
 from losshound.gui.db_workers import DbQueryWorker
+from losshound.gui.diagnostic_widgets import page_style, style_action
 
 
 class HistoryTab(QWidget):
@@ -20,17 +21,45 @@ class HistoryTab(QWidget):
         super().__init__(parent)
         self._history = history
         self._worker: DbQueryWorker | None = None
+        self.setObjectName("history-page")
+        self.setStyleSheet(page_style("history-page") + """
+            QWidget#history-page QTableWidget {
+                background: transparent; alternate-background-color: transparent;
+            }
+        """)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        heading = QHBoxLayout()
+        copy = QVBoxLayout()
+        copy.setSpacing(5)
+        title = QLabel("Diagnosis history")
+        title.setStyleSheet("font-size: 23px; font-weight: 600; color: #eef3f5;")
+        subtitle = QLabel("Review the latest 200 diagnoses and the evidence behind them.")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("color: #90a4b2;")
+        copy.addWidget(title)
+        copy.addWidget(subtitle)
+        heading.addLayout(copy, 1)
+        self._refresh_btn = QPushButton("Refresh History")
+        style_action(self._refresh_btn)
+        self._refresh_btn.clicked.connect(self._refresh)
+        heading.addWidget(self._refresh_btn)
+        layout.addLayout(heading)
 
         # Controls row
         controls = QHBoxLayout()
-        controls.addWidget(QLabel("Filter:"))
+        controls.setSpacing(12)
+        filter_label = QLabel("Show")
+        controls.addWidget(filter_label)
 
         self._filter = QComboBox()
-        self._filter.setFixedWidth(150)
+        self._filter.setMinimumWidth(180)
+        self._filter.setMinimumHeight(40)
+        self._filter.setAccessibleName("Filter diagnosis history")
+        filter_label.setBuddy(self._filter)
         self._filter.addItems([
             "All", "Healthy", "LAN Issue", "ISP/WAN Issue",
             "DNS Issue", "Route Issue", "Intermittent",
@@ -40,14 +69,14 @@ class HistoryTab(QWidget):
 
         controls.addStretch()
 
-        refresh_btn = QPushButton("Refresh")
-        refresh_btn.clicked.connect(self._refresh)
-        controls.addWidget(refresh_btn)
+        self._count = QLabel("")
+        self._count.setStyleSheet("color: #90a4b2;")
+        controls.addWidget(self._count)
 
         layout.addLayout(controls)
 
         self._state = QLabel("Loading diagnosis history…")
-        self._state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state.setTextFormat(Qt.TextFormat.PlainText)
         self._state.setWordWrap(True)
         self._state.setProperty("role", "muted")
         layout.addWidget(self._state)
@@ -66,7 +95,12 @@ class HistoryTab(QWidget):
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        layout.addWidget(self._table)
+        self._table.setShowGrid(False)
+        self._table.setWordWrap(False)
+        self._table.verticalHeader().setDefaultSectionSize(42)
+        self._table.horizontalHeader().setMinimumSectionSize(90)
+        self._table.setAccessibleName("Diagnosis history")
+        layout.addWidget(self._table, 1)
 
         self._refresh()
 
@@ -76,6 +110,8 @@ class HistoryTab(QWidget):
 
         self._state.setText("Loading diagnosis history…")
         self._state.setVisible(True)
+        self._count.setText("")
+        self._refresh_btn.setEnabled(False)
 
         self._worker = DbQueryWorker(
             self._history._db_path,
@@ -87,6 +123,7 @@ class HistoryTab(QWidget):
         self._worker.start()
 
     def _on_refresh_done(self, entries: list[dict]):
+        self._refresh_btn.setEnabled(True)
         self._table.setRowCount(0)
 
         filter_text = self._filter.currentText()
@@ -114,6 +151,7 @@ class HistoryTab(QWidget):
                 ts = f"{date_part}  {time_part[:8]}"
 
             ts_item = QTableWidgetItem(ts)
+            ts_item.setToolTip(entry["timestamp"])
             ts_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 0, ts_item)
 
@@ -131,7 +169,11 @@ class HistoryTab(QWidget):
             cat_item.setForeground(QColor(color_map.get(entry["category"], "#d8dee9")))
             self._table.setItem(row, 1, cat_item)
 
-            self._table.setItem(row, 2, QTableWidgetItem(entry["summary"]))
+            summary_item = QTableWidgetItem(entry["summary"])
+            summary_item.setToolTip(
+                entry["summary"] + ("\n\n" + entry["explanation"] if entry.get("explanation") else "")
+            )
+            self._table.setItem(row, 2, summary_item)
 
             conf_item = QTableWidgetItem(entry["confidence"])
             conf_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -146,9 +188,13 @@ class HistoryTab(QWidget):
                 detail_parts.append(f"Pub: {ev['public_loss_avg']}%")
             if ev.get("dns_fail_rate") is not None:
                 detail_parts.append(f"DNS fail: {ev['dns_fail_rate']:.0%}")
-            self._table.setItem(row, 4, QTableWidgetItem(" | ".join(detail_parts)))
+            details = " | ".join(detail_parts)
+            detail_item = QTableWidgetItem(details)
+            detail_item.setToolTip(details)
+            self._table.setItem(row, 4, detail_item)
 
         # Scroll to bottom (latest)
+        self._count.setText(f"{self._table.rowCount()} shown · {len(entries)} recent diagnoses")
         if self._table.rowCount() > 0:
             self._state.setVisible(False)
             self._table.scrollToBottom()
@@ -159,6 +205,8 @@ class HistoryTab(QWidget):
             self._state.setVisible(True)
 
     def _on_refresh_error(self, message: str):
+        self._refresh_btn.setEnabled(True)
+        self._count.setText("")
         self._table.setRowCount(0)
         detail = (message or "Unknown database error")[:180]
         self._state.setText(

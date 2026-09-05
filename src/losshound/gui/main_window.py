@@ -191,7 +191,6 @@ class MainWindow(QMainWindow):
         self._header = LosshoundHeader()
         self._header.pause_clicked.connect(self._toggle_pause)
         self._header.run_now_clicked.connect(self._run_now)
-        self._header.settings_clicked.connect(self._open_settings)
         layout.addWidget(self._header)
 
         self._tabs = QTabWidget()
