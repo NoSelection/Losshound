@@ -1,5 +1,7 @@
 # Losshound
 
+[![Windows CI](https://github.com/NoSelection/Losshound/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/NoSelection/Losshound/actions/workflows/windows-ci.yml)
+
 <p align="center">
   <img src="assets/dashboard_preview.png" alt="Losshound network diagnostics dashboard" width="100%">
 </p>
@@ -62,8 +64,8 @@ git clone https://github.com/NoSelection/Losshound.git
 cd Losshound
 
 # Create a virtual environment
-python -m venv venv
-venv\Scripts\activate
+python -m venv .venv
+.venv\Scripts\activate
 
 # Install Losshound and its dependencies in editable mode
 pip install -e .
@@ -75,9 +77,9 @@ python -m losshound
 ### `run_as_admin.bat` (source checkout only)
 
 The batch launcher starts the source version of Losshound with Windows
-Administrator privileges. It activates the repository's `venv` when present,
-requests elevation through the standard UAC prompt, and then runs
-`python -m losshound` from the project directory.
+Administrator privileges. It requires the repository's `.venv`, requests
+elevation through the standard UAC prompt, and runs its Python interpreter
+with `PYTHONPATH` pointing to `src`. It stops if `.venv` is missing.
 
 1. Complete the **From source** installation above first.
 2. Inspect `run_as_admin.bat` before running it, as you should with any script
@@ -288,6 +290,27 @@ The engine uses a priority-ordered rule cascade:
 6. Everything OK → **Healthy**
 
 ## Building
+
+### Automated Windows checks and builds
+
+The Windows CI workflow runs on pushes, pull requests, and manual dispatches.
+It checks exact dependency versions against OSV, official PyPI metadata, and
+the recorded Qt vendor advisories before installing anything. After that gate
+passes, it runs tests, builds the executable, and checks that packaged `--help`
+exits successfully without starting monitoring or changing network settings.
+
+Qt XML is unused and explicitly excluded from the executable. CI checks that
+exclusion before installation and rejects an EXE containing Qt XML before
+launching or uploading it. This is a scoped assessment of CVE-2026-15037;
+other advisory checks remain active. See [the dependency review](docs/CI_SECURITY.md).
+The workflow still needs its first successful Windows run.
+
+Once a run passes, open **Actions → Windows CI → the successful run → Artifacts**
+and download `Losshound-windows-x64-<commit>`. It contains the unsigned executable,
+its SHA-256 checksum, the checked dependency hashes, and the test report.
+Artifacts expire after 14 days. These are development builds; the workflow does
+not publish a GitHub release. The checksum detects changes to the downloaded
+file; it is not a code signature or a malware certificate.
 
 ### Development
 

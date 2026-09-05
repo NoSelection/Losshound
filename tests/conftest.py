@@ -1,5 +1,16 @@
 """Shared test fixtures and sample data."""
 
+import pytest
+
+
+@pytest.fixture
+def mock_dashboard_interface(monkeypatch):
+    """Keep dashboard UI tests independent of Windows interface discovery."""
+    monkeypatch.setattr(
+        "losshound.gui.dashboard._resolve_active_interface", lambda _signals: None
+    )
+
+
 # Sample Windows ping output (English locale, codepage 437)
 PING_SUCCESS_OUTPUT = """
 Pinging 1.1.1.1 with 32 bytes of data:

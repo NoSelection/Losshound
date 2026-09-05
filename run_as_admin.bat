@@ -1,6 +1,14 @@
 @echo off
+setlocal
 :: Losshound - Run as Administrator
 :: One-click launcher with elevated privileges
+
+:: Require the project environment before requesting elevation.
+if not exist "%~dp0.venv\Scripts\python.exe" (
+    echo Losshound requires the project .venv. Complete setup in README.md first.
+    pause
+    exit /b 1
+)
 
 :: Reliable admin check via PowerShell IsInRole.
 :: NOTE: Do NOT use 'net session' here — it fails if the Server (LanmanServer)
@@ -17,10 +25,7 @@ exit /b
 cd /d "%~dp0"
 title Losshound (Administrator)
 
-:: Activate venv if it exists, otherwise use system Python
-if exist "venv\Scripts\activate.bat" (
-    call venv\Scripts\activate.bat
-)
-
-python -m losshound %*
+:: Run the source checkout with the reviewed project environment.
+set "PYTHONPATH=%~dp0src"
+".venv\Scripts\python.exe" -m losshound %*
 pause

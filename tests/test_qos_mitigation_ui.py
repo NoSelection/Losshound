@@ -16,7 +16,7 @@ def qapp():
     return app
 
 
-def test_dashboard_qos_offer_emits_requested_app(qapp):
+def test_dashboard_qos_offer_emits_requested_app(qapp, mock_dashboard_interface):
     from losshound.gui.dashboard import DashboardTab
 
     dashboard = DashboardTab()

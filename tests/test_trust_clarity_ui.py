@@ -63,7 +63,7 @@ def _observation(*, public_loss: float = 0.0, public_rtt: float = 20.0) -> Obser
     )
 
 
-def test_dashboard_starts_collecting_and_restores_truthful_state(qapp):
+def test_dashboard_starts_collecting_and_restores_truthful_state(qapp, mock_dashboard_interface):
     from losshound.gui.dashboard import DashboardTab
 
     dashboard = DashboardTab()
@@ -85,7 +85,7 @@ def test_dashboard_starts_collecting_and_restores_truthful_state(qapp):
     dashboard.shutdown()
 
 
-def test_dashboard_labels_and_configured_loss_threshold(qapp):
+def test_dashboard_labels_and_configured_loss_threshold(qapp, mock_dashboard_interface):
     from losshound.gui.dashboard import DashboardTab
 
     config = AppConfig(
@@ -117,7 +117,7 @@ def test_dashboard_labels_and_configured_loss_threshold(qapp):
     dashboard.shutdown()
 
 
-def test_alerts_exclude_routine_health_and_dedupe_repeats(qapp):
+def test_alerts_exclude_routine_health_and_dedupe_repeats(qapp, mock_dashboard_interface):
     from losshound.gui.dashboard import DashboardTab
 
     dashboard = DashboardTab()

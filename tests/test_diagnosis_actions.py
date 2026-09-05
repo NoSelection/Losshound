@@ -54,7 +54,7 @@ def test_bad_bufferbloat_grade_offers_qos_action():
     assert "F" in actions[0]["detail"]
 
 
-def test_dashboard_action_panel_emits_key(qapp):
+def test_dashboard_action_panel_emits_key(qapp, mock_dashboard_interface):
     from losshound.gui.dashboard import DashboardTab
 
     dashboard = DashboardTab()

@@ -23,10 +23,17 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter'],
+    # Unused QDom implementation: CVE-2026-15037 (see docs/CI_SECURITY.md).
+    excludes=['tkinter', 'PySide6.QtXml'],
     noarchive=False,
     optimize=0,
 )
+
+# Fail if a hook or native dependency reintroduces the excluded component.
+# Do not silently remove a DLL another component requires.
+for entry in a.binaries + a.datas + a.pure:
+    if any(marker in entry[0].lower() for marker in ('qtxml', 'qt6xml')):
+        raise RuntimeError(f'Qt XML must not be bundled: {entry[0]}')
 
 pyz = PYZ(a.pure)
 
